@@ -696,14 +696,16 @@ test('㉕ B4：消息已送达后，记账失败不能改判成「发送失败�
     '兜住之后不能把记账错误再抛出去 —— 那会让模型以为没送达而重发');
 });
 
-test('㉖ B4 正解：送达后的记账（appendSelf + onSent）六条写路径都要被单独兜住', async () => {
+test('㉖ B4 正解：送达后的记账（appendSelf + onSent）七条写路径都要被单独兜住', async () => {
   // 上一版只包了 #deliver 里的 finishSend，而复现点是 appendSelf / onSent ——
   // 锚点认证了一个没覆盖复现路径的修复（2026-10-04 全面复审）。这里盯真正的落点。
   // 第六条是 set_group_card（PR#19 合并后补上的，2026-10-05 复审）。
+  // 第七条是 image（插件 chat:send-image 能力，2026-10-08）—— 加发送路径就**必须**回来加这条，
+  // 所以这个计数是刻意的：它拦的正是"新写一条发送路径却忘了兜住送达后记账"。
   const src = fs.readFileSync('src/onebot/sender.js', 'utf8');
   assert.match(src, /#afterSent\(run\) \{/, '要有「送达后记账」的统一兜底');
   const wrapped = (src.match(/this\.#afterSent\(\(\) => \{/g) || []).length;
-  assert.equal(wrapped, 6, `文本/贴纸/语音/拍一拍/表情/改群名片 六条写路径都要包（实际 ${wrapped}）`);
+  assert.equal(wrapped, 7, `文本/贴纸/语音/拍一拍/表情/改群名片/图片 七条写路径都要包（实际 ${wrapped}）`);
   // 每处包里必须真的同时含 appendSelf 与 onSent
   // 每处包里必须真的同时含 appendSelf 与 onSent（按出现位置取窗口：花括号嵌套正则不可靠）
   let from = 0;

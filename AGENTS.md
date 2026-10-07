@@ -80,6 +80,11 @@ In particular:
 - **不给插件原始 ctx。** 一切宿主能力都要经过 `plugins/_host/context.js` 的收窄门面，且
   必须存在 `plugins/_host/capabilities.js` 的白名单里；没声明的能力**连属性都不许有**。
   新增能力 = 清单加一项 + 门面接一个字段 + `docs/PLUGINS.md` 补一节。
+  已有的外发能力只有两个：`chat:send`（文本）与 `chat:send-image`（图片）。
+  后者两条硬规则别动：① `{ path }` 的图片**必须在插件自己的状态目录之内**
+  （`realpath` 后判包含）—— 不设这条守卫，插件就能把宿主的 `data/config.json`
+  （含明文 Key 与控制台令牌）当图片发到群里；② `SendQueue.image()` 的 outbox **payload
+  里不许带 base64**（那是会被 `beginSend` 写进 sqlite 的字段，几 MB 的图会把数据目录写胖）。
 - **能力指纹必须幂等**：`manifestFingerprint(manifestFingerprint(m))` 要等于
   `manifestFingerprint(m)`（控制台存的就是指纹本身，装载器拿它比对）。改指纹口径时
   先想这条，否则所有已装插件会集体停在 `pending-approval`。

@@ -14,16 +14,21 @@
 //      第二份口径 —— 而它守的正是"回复/上级到别的会话"这类事故。等它被导出再开放。
 //   ② session 只给 {id, rounds} 快照，不给活的 session 对象：那是宿主的状态机，
 //      插件改它等于绕过额度、审计与发送记账。
+import fs from 'node:fs';
+import path from 'node:path';
 import { normalizeMessageList } from '../../src/core/util.js';
 import { SECRET_KEY_EXCLUDE, SECRET_KEY_PATTERN } from '../../src/core/secret-keys.js';
+import { validateImageUrl } from '../../src/llm/safe-fetch.js';
 import { pluginFetch } from './http.js';
-import { PluginKvStore } from './storage.js';
+import { PluginKvStore, pluginStateDir } from './storage.js';
 
 export const DEFAULT_RECENT_LIMIT = 20;
 export const MAX_RECENT_LIMIT = 100;
 export const MAX_SEND_MESSAGES = 5;
 export const MAX_SEND_TEXT_LENGTH = 3000;
 export const MAX_RESULT_BYTES = 64 * 1024;
+/** 插件能发的单张图片上限。与内置链路读图的量级一致（safeFetchBinary 默认 12MB）。 */
+export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 export const SECRET_NAME_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/;
 
 /** 审计用的凭据容器名（与 secret-keys.js 的 SECRET_CONTAINER 同口径）。 */
@@ -37,6 +42,24 @@ function secretKeyName(key) {
   if (/^has[A-Z]/.test(key)) return false;
   if (SECRET_KEY_EXCLUDE.test(key)) return false;
   return SECRET_KEY_PATTERN.test(key) || SECRET_CONTAINER.test(key);
+}
+
+/**
+ * 发送**之后**的记账（进 session.sent + 广播 session-update），失败绝不上抛。
+ *
+ * 与内置工具的 `afterSent()`（tools-core.js）同一条原则，也是这个仓库复审里修过两次的那类
+ * bug：消息**已经送达**之后，记账抛错不能改判成"发送失败" —— 那会让模型以为没发出去而重发，
+ * 群里就多一条一模一样的内容。
+ */
+function afterDelivered(hostCtx, session, entry) {
+  try {
+    if (Array.isArray(session?.sent)) {
+      session.sent.push(entry);
+      if (typeof hostCtx.emit === 'function') hostCtx.emit('session-update', session.id);
+    }
+  } catch (error) {
+    console.warn('[plugin] 消息已送达但会话记账失败（该条仍算已发出）:', error?.message ?? error);
+  }
 }
 
 /**
@@ -238,16 +261,79 @@ export function buildPluginToolContext({
       });
       // 与内置 send_message 同一套记账：不记账的话控制台会话视图与"我发过什么"会与
       // 模型看到的上下文分叉（内置工具也在这里 push + 广播 session-update）。
-      if (Array.isArray(session?.sent) && Array.isArray(result?.sent)) {
+      if (Array.isArray(result?.sent)) {
         for (const item of result.sent) {
-          session.sent.push({ type: 'text', text: item.text, at: item.at });
+          afterDelivered(hostCtx, session, { type: 'text', text: item.text, at: item.at });
         }
-        if (typeof hostCtx.emit === 'function') hostCtx.emit('session-update', session.id);
       }
       return {
         sent: Array.isArray(result?.sent) ? result.sent.length : 0,
         failed: Array.isArray(result?.failed) ? result.failed.length : 0
       };
+    };
+  }
+
+  if (capabilities.includes('chat:send-image')) {
+    const sender = hostCtx.sender;
+    const session = hostCtx.session;
+    const chatKey = String(hostCtx.chatKey ?? '');
+    // 路径守卫要用状态目录做包含判定，所以在这里独立算一次（不依赖下面 storage 块的先后）。
+    const ownDir = pluginStateDir(dataDir, manifest.id);
+    toolCtx.sendImage = async (source, options = {}) => {
+      if (!sender || typeof sender.image !== 'function') throw new Error('宿主发送队列不可用');
+      if (!isPlainObject(source)) throw new Error('sendImage 需要 { path } 或 { url }');
+      // 与 send() 同一口径：目标校验（replyToMessageId/atUserId 是否属于本会话）是内置工具
+      // 私有的，抄一份就会出现第二份口径 —— 明确报错，而不是静默忽略。
+      if (options.replyToMessageId !== undefined || options.atUserId !== undefined) {
+        throw new Error('插件的 sendImage() 暂不支持 replyToMessageId/atUserId；需要引用/@ 时请改用内置工具');
+      }
+      let url = '';
+      let bytes = 0;
+      if (typeof source.path === 'string' && source.path.trim()) {
+        if (!capabilities.includes('storage')) {
+          throw new Error('用 { path } 发图需要同时声明 storage 能力（图片必须放在插件自己的状态目录里）');
+        }
+        const abs = path.resolve(String(source.path).trim());
+        let realDir = '';
+        try { realDir = fs.realpathSync(ownDir); } catch { throw new Error(`插件状态目录还不存在：${ownDir}`); }
+        let real = '';
+        try { real = fs.realpathSync(abs); } catch { throw new Error(`图片文件不存在：${abs}`); }
+        const rel = path.relative(realDir, real);
+        // ⚠️ 这条守卫是硬要求：不限制目录的话，插件可以把宿主的任意文件当"图片"发到群里
+        //（最直接的例子就是 data/config.json —— 里面有明文 API Key 与控制台令牌）。
+        if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+          throw new Error(`sendImage 只接受插件自己状态目录里的文件：${abs} 不在 ${realDir} 之内`);
+        }
+        const stat = fs.statSync(real);
+        if (!stat.isFile()) throw new Error(`不是普通文件：${real}`);
+        if (stat.size > MAX_IMAGE_BYTES) {
+          throw new Error(`图片超过 ${MAX_IMAGE_BYTES} 字节上限（实际 ${stat.size}）`);
+        }
+        bytes = stat.size;
+        // base64:// 是本地图片的既有约定（内置表情那条路用的就是它）。
+        url = `base64://${fs.readFileSync(real).toString('base64')}`;
+      } else if (typeof source.url === 'string' && source.url.trim()) {
+        const raw = String(source.url).trim();
+        // 与内置表情发送远程图同一道守卫：只收公网 http(s)，拒绝内网/本机与非法协议。
+        await validateImageUrl(raw);
+        url = raw;
+      } else {
+        throw new Error('sendImage 需要 { path }（状态目录内的文件）或 { url }（公网图片地址）');
+      }
+      const result = await sender.image(chatKey, {
+        url,
+        bytes,
+        label: String(options.label ?? '')
+      }, {
+        runId: session?.leaseId,
+        signal: toolCtx.signal
+      });
+      afterDelivered(hostCtx, session, {
+        type: 'image',
+        text: `[图片${bytes ? `:${Math.max(1, Math.round(bytes / 1024))}KB` : ''}]`,
+        at: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      });
+      return { sent: true, messageId: result?.message_id ?? null, bytes };
     };
   }
 

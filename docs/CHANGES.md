@@ -98,7 +98,35 @@
   设置是**整体替换**（`__replace__`）而不是深合并：界面编辑的是"这一个插件的完整设置"，
   深合并会让"删掉的键"永远删不掉。页面结构上把可编辑控件放在**自动刷新容器之外**，
   从根上避开"整块重画把正在输入的内容冲掉"那套坑（`test/ui-preserve-editable.test.mjs` 的 5 条用例全是它）。
-- **顺手修掉的两处既有缺陷**：
+- **能力扩展：发图片（`chat:send-image`）+ 一次真实插件移植**：`src/onebot/sender.js`、
+  `plugins/_host/capabilities.js`、`plugins/_host/context.js`、`plugins/pixiv-illust/`（新增）、
+  `test/delivery-integration.test.mjs`、`test/plugin-tools.test.mjs`、`test/pixiv-illust-plugin.test.mjs`（新增）、
+  `docs/PLUGINS.md`。
+  **失败模式**：v1 的插件只能发**文本**，而"取一张图发到群里"这类插件的核心价值恰恰是发图 ——
+  一个别人写的 Pixiv 取图插件（1284 行，逻辑相当扎实：PID 索引不重复发、死图拉黑、按会话分级、
+  代理支持、备选换图）因此在 v1 上完全用不了。它调的是一套**本仓不存在的接口**：
+  `setup(a)` + `a.registerTool({ id, name })` + `api.config()`（函数）+ `api.fetch()` +
+  原始 `ctx.sender.sendImage(...)`；连 `import { DATA_DIR } from '../../src/config.js'` 指向的文件
+  都不存在（本项目是 `src/core/config.js`，从来没有过 `src/config.js`）—— 也就是说它在**任何版本**上
+  都加载不起来，不是"差几个字段"的问题。
+  **现行做法**：
+  ① `SendQueue.image(chatKey, { url, bytes, label }, options)` —— 走既有的私有 `#deliver`，
+  白拿禁言预检、outbox 记账、「可确认未送达才重试」与异常捕获。**payload 里只记体积与类型，
+  绝不带 base64**：那是会被 `beginSend` 写进 outbox 表的字段，几 MB 的图会把数据目录写胖。
+  ② 新能力 `chat:send-image`，门面 `sendImage({ path } | { url }, { label })`。
+  `{ path }` 必须是**该插件自己状态目录之内**的文件（`realpath` 后判包含，`../` 与符号链接绕行都挡得住），
+  单张 12MB 上限 —— 不设这条守卫的话，插件能把宿主的 `data/config.json`（含明文 API Key 与控制台令牌）
+  当"图片"发到群里。`{ url }` 走内置表情发远程图的同一道守卫（拒内网/本机/非法协议）。
+  ③ 顺手把「消息已送达但记账失败不能改判成发送失败」这条既有原则也用到门面的 `send()` 上
+  （原先只有新增的 `sendImage` 有）—— 这是本仓复审里修过两次的那类 bug。
+  ④ 移植保留了原作者的全部逻辑与注释，只改宿主接触面。它的网络请求仍由插件自己发出
+  （全局 `fetch` + undici `ProxyAgent`，为了带 `Referer` 与支持 HTTP 代理），
+  **所以宿主的 SSRF 防护对它不生效** —— 这一点如实写进了 `docs/PLUGINS.md` 的已知限制与插件 README，
+  没有含糊过去（门面是"声明 + 可见"，不是围栏）。
+  ⑤ **唯一的功能性差异**：本项目没有提示词注入能力，原作者想用 `prompt.sections` 教模型
+  「分级是按会话的、只有主人能改」，改成折进 `pixiv_set_rating` 的 `description`
+  （那是模型唯一能看到插件文字的地方）。
+- **顺手修掉的三处既有缺陷**：
   ① `SECRET_KEY_PATTERN` 原先只认 `^token$` / `accesstoken` / `access_token`，
   **`apiToken` / `webhookToken` / `botToken` 这类驼峰名一个都不匹配** —— 它们会明文下发到
   控制台并明文写进审计日志（与 2026-09-30 补 `authorization`/`cookie` 是同一类）。

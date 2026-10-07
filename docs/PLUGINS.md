@@ -191,9 +191,10 @@ export async function activate(api) {
 | *（总是）* | `chatKey` `kind` `chatId` `selfId` `selfNickname` `botName` `session` `signal` `log` `capabilities` `pluginId/Name/Version` | `session` 只有 `{id, rounds}` 快照 —— 不是活对象 |
 | `chat:send` | `send(messages, options?)` | `messages` 是字符串或字符串数组（≤5 条、每条 ≤3000 字）；**chatKey 由宿主绑死**，发不到别的会话；与内置 `send_message` 一样计入会话留档并广播 `session-update`。**不支持** `replyToMessageId` / `atUserId`（传了就报错，不会静默忽略） |
 | `chat:read` | `recent(limit?)` | 只读**当前会话**，默认 20、上限 100；只给 `{id, mid, at, senderId, senderName, self, text}` |
+| `chat:send-image` | `sendImage(source, options?)` | 见第 9 节 |
 | `storage` | `kv` `dir` | 见第 7 节 |
 | `http` | `fetch(url, options?)` | 见第 8 节 |
-| `secrets` | `secret(name)` | 见第 9 节 |
+| `secrets` | `secret(name)` | 见第 10 节 |
 
 ## 7. `storage`
 
@@ -243,7 +244,34 @@ const res = await toolCtx.fetch(url, {
 拒绝是 `PluginHttpError`（策略问题：method/头/body/URL/内网目标）；真正的网络失败原样冒泡 ——
 两者分得开。
 
-## 9. `secrets`
+## 9. 发送图片（`chat:send-image`）
+
+```js
+// ① 发自己状态目录里的文件（需要同时声明 storage 能力）
+await toolCtx.sendImage({ path: path.join(toolCtx.dir, 'tmp', 'a.png') }, { label: '初音ミク' });
+// ② 发一个公网图片地址（由协议端自行下载）
+await toolCtx.sendImage({ url: 'https://example.com/a.png' });
+
+// → { sent: true, messageId: 123, bytes: 4096 }
+```
+
+| 参数 | 说明 |
+| --- | --- |
+| `{ path }` | **必须是该插件自己状态目录之内**的文件（`<数据目录>/plugin-state/<插件 id>/`）。宿主读出来按既有约定拼成 `base64://` 发送。**需要同时声明 `storage`** —— 状态目录是路径守卫的边界 |
+| `{ url }` | 公网 http(s) 图片地址，按内置表情发远程图的**同一道守卫**校验（拒绝内网/本机/非法协议），由协议端去下载 |
+| `options.label` | 可选，写进留档与日志的短标签（截到 40 字） |
+
+- **`{ path }` 的目录守卫不是洁癖**：不限制的话，插件可以把宿主的任意文件当"图片"发到群里 ——
+  最直接的例子就是 `data/config.json`（里面有明文 API Key 与控制台令牌）。所以路径先 `realpath`
+  再判包含，`../` 与符号链接绕行都挡得住；单张上限 12MB。
+- 发送走既有的发送队列：禁言预检、限频、outbox 记账、「可确认未送达才重试」与异常捕获全部继承；
+  成功后与内置工具一样进 `session.sent` 并广播 `session-update`。
+- **不支持** `replyToMessageId` / `atUserId`（理由与 `send()` 相同：内置的目标校验是模块私有的，
+  抄一份就会出现第二份口径）。
+- 留档文案是 `[图片:标签]`，与内置表情的 `[表情包:…]` **分开** —— 那张"我发过什么"的清单
+  模型自己也会读到，把插画记成表情包会污染它的上下文。
+
+## 10. `secrets`
 
 `plugins.settings.<id>` 下存凭据：
 
@@ -266,7 +294,7 @@ const res = await toolCtx.fetch(url, {
 - 只能读自己那段；名字不许含点号（防止穿透到别的段）。
 - 这些字段在 `/api/config` 响应与审计日志里始终被抹掉。
 
-## 10. 工具返回值
+## 11. 工具返回值
 
 与内置工具**逐字同一份契约**，返回值照原样交给 `tools-core` 的执行包装：
 
@@ -283,7 +311,7 @@ const res = await toolCtx.fetch(url, {
 
 `content` 超过 64KB 会被截断并附一句说明（免得一次工具调用把上下文撑爆）。
 
-## 11. 超时的真实语义
+## 12. 超时的真实语义
 
 `execute` 被 `Promise.race` 裹着，超时后宿主**不再等它**，返回一条"执行超时"的工具错误。
 
@@ -297,7 +325,7 @@ async execute(toolCtx, args) {
 }
 ```
 
-## 12. 启用、停用与"重新确认"
+## 13. 启用、停用与"重新确认"
 
 ### 12.1 在控制台里做（推荐）
 
@@ -364,7 +392,7 @@ async execute(toolCtx, args) {
 
 **任何非 `loaded` 的插件都不会注入任何工具** —— 宁可模型少一个工具，也不要一个必然报错的工具。
 
-## 13. 排查
+## 14. 排查
 
 启动日志：
 
@@ -379,23 +407,33 @@ async execute(toolCtx, args) {
 - 想验证"坏插件不会拖垮机器人"：随便改坏某个插件的语法，重启后它应该是 `failed`，
   而机器人照常聊天。
 
-## 14. 已知限制（刻意的）
+## 15. 已知限制（刻意的）
 
 - **插件不能加控制台页面**：控制台是零构建 + `ui/index.html` 静态清单，且
   `test/ui-modules.test.mjs` 做文件↔清单双向校验、服务端静态分发只有一段写死 `ui/` 的
   catch-all。第三方页面要动这两处，风险与收益不成比例。
-  （插件自己的**管理**页是控制台的一部分，见第 12 节 —— 那是宿主实现，不是插件提供的。）
+  （插件自己的**管理**页是控制台的一部分，见第 13 节 —— 那是宿主实现，不是插件提供的。）
 - **不能挂消息钩子**（收到消息 / 触发前 / 发送前后）。
 - **不能注册定时器或后台常驻服务**，只能在一次工具调用里做事。
-- 上面三条都是"能力"维度的留白：以后要加是往 `capabilities.js` 里加一项、在
-  `context.js` 里接一个门面字段，而不是重写装载器。
-- 插件与宿主**同进程**，没有沙箱（见文首）。
+- **没有提示词注入能力**：插件不能往系统提示词里加段落。这条是实践中撞到的硬限制 ——
+  一个"按会话分级过滤图片"的插件本来想用提示词告诉模型「分级是按会话的、只有主人能改」，
+  在本项目里只能把这条规则**写进工具描述**（那是模型唯一能看到插件文字的地方），
+  或者干脆靠工具自己核身份、拒绝时把原因讲清楚。
+- 上面四条都是"能力"维度的留白：以后要加是往 `capabilities.js` 里加一项、在
+  `context.js` 里接一个门面字段，而不是重写装载器。**这个边界已经被真实需求推动过一次**：
+  `chat:send-image` 就是为"把图发到群里"这类插件加的（见第 9 节）—— 原先 v1 只发文本，
+  一个 Pixiv 取图插件因此完全用不了。
+- 插件与宿主**同进程**，没有沙箱（见文首）。由此有一条必须知道的推论：
+  **同进程代码可以绕过门面自己发网络请求**。例如 Pixiv 那个插件用全局 `fetch` +
+  undici `ProxyAgent`（为了带 `Referer` 与支持 HTTP 代理），它声明了 `http` 能力，
+  但宿主的 SSRF 防护对它**不生效**。门面是"声明 + 可见"，不是围栏 ——
+  装第三方插件前请确认你信得过它的作者，需要审计就去看它的源码里怎么发请求。
 - `chat:send` 暂不支持引用 / @（内置 `send_message` 的目标校验是模块私有的，抄一份就会出现
-  第二份口径，而它守的正是"回复到别的会话"这类事故）。
+  第二份口径，而它守的正是"回复到别的会话"这类事故）。`chat:send-image` 同理。
 - 控制台的启停 / 确认 / 改设置都**只改配置**，要重启才生效（装载只在启动时发生一次）。
   页面会把这句话写出来、响应里也回 `restartRequired`，而不是让人以为点了就该立刻生效。
 
-## 15. 写测试
+## 16. 写测试
 
 宿主的契约用例在：
 

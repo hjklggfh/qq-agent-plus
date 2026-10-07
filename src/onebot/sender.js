@@ -392,6 +392,52 @@ export class SendQueue {
     });
   }
 
+  /**
+   * 发送一张图片（独立气泡）。
+   *
+   * 为什么不直接复用 sendSticker：那一条的留档文案是 `[表情包:…]`、payload 的 type 也是
+   * `sticker` —— 一张插画被记成"表情包"会污染两处**用户可见**的地方：模型自己看到的
+   * "我发过什么"（store 的 self 记录）与 outbox／控制台的记账。所以图片走自己的类型，
+   * 但**传输层完全相同**（onebot.sendSticker 其实就是"发一个 image 段"，带媒体超时）。
+   *
+   * `url` 既可以是 http(s) 地址（协议端自己去取），也可以是 `base64://…`
+   * —— 后者是本地图片的既有约定（内置表情那条路用的就是它），本方法**只收已经拼好的 url**：
+   * 读文件、限体积、拼 base64 都由调用方（插件门面）负责，发送队列不碰文件系统。
+   *
+   * ⚠️ payload 里**绝不能放 base64 本体**：它会被 beginSend 写进 outbox 表，几 MB 的图
+   * 直接把数据目录写胖。所以这里只记体积与来源类型。
+   */
+  image(chatKey, { url, bytes = 0, label = '' } = {}, options = {}) {
+    const [kind, id] = String(chatKey).split(':');
+    const chain = this.#chain(chatKey);
+    return chain(async () => {
+      // 与 sendTextBatch/sendSticker 同一道防线：上一次发送结果 unknown（超时/5xx）时
+      // 停止后续发送，避免"不知道发没发出去"的消息与图片叠加出多笔 unknown 记账。
+      if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
+      this.#checkRate(chatKey);
+      await sleep(randInt(600, 1500)); // 发图前真人式的短暂停顿
+      const data = await this.#deliver(chatKey, options, { type: 'image', bytes: Number(bytes) || 0 }, () => this.onebot.sendSticker(kind, id, url, {
+        replyToMessageId: options.replyToMessageId ?? null,
+        atUserId: options.atUserId ?? null,
+        signal: options.signal
+      }));
+      const ts = Date.now();
+      let targetUserId = this.#replyTarget(chatKey, options);
+      if (!targetUserId && kind === 'private') targetUserId = String(id);
+      const text = `[图片${label ? `:${String(label).slice(0, 40)}` : ''}]`;
+      this.#afterSent(() => {
+        this.store.appendSelf(chatKey, {
+        text,
+        ts,
+        mid: data?.message_id ?? null,
+        targetUserId,
+        eventKind: 'message'
+        });
+      this.onSent?.({ chatKey, text, messageId: data?.message_id ?? null, imageBytes: Number(bytes) || 0 });
+      });      return { message_id: data?.message_id ?? null };
+    });
+  }
+
   /** 发送语音（本地合成的音频 → base64 record 段）。发送成功后留档，否则下次运行不知道自己发过语音。 */
   voice(chatKey, { file, seconds = 0, label = '' } = {}, options = {}) {
     const [kind, id] = String(chatKey).split(':');

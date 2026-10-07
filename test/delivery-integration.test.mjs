@@ -385,3 +385,59 @@ it('classifies a parsed OneBot retcode as failed but keeps malformed responses u
     (error) => error instanceof OneBotActionError && error.outcome === 'unknown'
   );
 });
+
+it('image()：按 image 段发出、留档写 [图片] 而不是表情包，且 base64 本体不进 outbox', async (t) => {
+  const caseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-delivery-image-'));
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active';
+  cfg.allow.groups = ['1', '2'];
+  cfg.api.model = 'test';
+  cfg.api.baseUrl = 'https://model.invalid';
+  cfg.sticker.enabled = false;
+  cfg.memory.consolidateEnabled = false;
+  setRuntimeConfig(cfg);
+  const store = new ChatStore(0, { dataDir: caseDir });
+  t.after(() => { store.close(); fs.rmSync(caseDir, { recursive: true, force: true }); });
+
+  const calls = [];
+  const onebot = {
+    selfId: '888',
+    sendSticker: async (kind, id, url, opts) => {
+      calls.push({ kind, id, url, opts });
+      return { message_id: 77 };
+    }
+  };
+  const sender = new SendQueue({ store, onebot });
+
+  // 用一段足够长的假 base64：短了就算写进 outbox 也看不出来
+  const body = Buffer.alloc(4096, 7).toString('base64');
+  const out = await sender.image('group:1', { url: `base64://${body}`, bytes: 4096, label: '初音ミク' });
+  assert.equal(out.message_id, 77);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].kind, 'group');
+  assert.equal(calls[0].id, '1');
+  assert.equal(calls[0].url, `base64://${body}`, '原样把 url 交给 onebot（它负责拼 image 段）');
+
+  // 留档：必须是"图片"。写成 [表情包:…] 会让模型自己读到的"我发过什么"与 outbox 记账都失真
+  const selfTexts = store.recent('group:1', { limit: 5 }).filter((m) => m.self).map((m) => m.text);
+  assert.ok(selfTexts.some((x) => x.startsWith('[图片') && x.includes('初音ミク')),
+    `留档应含 [图片:初音ミク]，实际 ${JSON.stringify(selfTexts)}`);
+  assert.equal(selfTexts.some((x) => x.includes('表情包')), false, '图片不该被记成表情包');
+
+  // ⚠️ outbox 的 payload 里绝不能出现 base64 本体：那是会被 beginSend 写进 sqlite 的字段，
+  //    几 MB 的图会把数据目录写胖（这里直接查表，不靠推断）。
+  const rows = store.db.prepare('SELECT payload FROM outbox').all();
+  assert.ok(rows.length >= 1);
+  for (const row of rows) {
+    assert.equal(String(row.payload).includes(body), false, 'outbox payload 里混进了图片 base64');
+    assert.ok(String(row.payload).includes('"type":"image"'), `payload 应是 image 类型：${row.payload}`);
+  }
+
+  // 记账失败发生在**已经送达之后**：不许改判成发送失败（否则模型会重发，群里多一张）
+  const realAppend = store.appendSelf.bind(store);
+  store.appendSelf = () => { throw new Error('disk full'); };
+  const second = await sender.image('group:2', { url: 'https://example.invalid/x.png', bytes: 1 });
+  store.appendSelf = realAppend;
+  assert.equal(second.message_id, 77, '记账失败不该让已送达的发图 reject');
+  assert.equal(calls.length, 2);
+});

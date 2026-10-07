@@ -67,6 +67,7 @@ async function loadFixture(ids, extra = {}) {
 /** 一个尽量贴近 orchestrator 真实 ctx 的假宿主上下文（含那些**不许**泄漏给插件的字段）。 */
 function fakeHostCtx(overrides = {}) {
   const sends = [];
+  const images = [];
   const emitted = [];
   const session = { id: 'sess-1', leaseId: 'lease-1', rounds: 3, sent: [], triggerText: '在吗' };
   const ctx = {
@@ -81,6 +82,10 @@ function fakeHostCtx(overrides = {}) {
       async sendTextBatch(chatKey, messages, options) {
         sends.push({ chatKey, messages, options });
         return { sent: messages.map((text) => ({ text, messageId: sends.length, at: '00:00:01' })), failed: [] };
+      },
+      async image(chatKey, payload, options) {
+        images.push({ chatKey, payload, options });
+        return { message_id: 4242 };
       }
     },
     store: { recent: () => [{ id: 1, mid: 10, ts: 1700000000000, senderId: '7', senderName: '阿花', self: false, text: '在吗' }] },
@@ -94,7 +99,7 @@ function fakeHostCtx(overrides = {}) {
     session,
     ...overrides
   };
-  return { ctx, sends, emitted, session };
+  return { ctx, sends, images, emitted, session };
 }
 
 test.after(async () => {
@@ -330,4 +335,106 @@ test('runPluginTool：返回内容超过上限时截断并写明（不许把上�
   assert.equal(result.truncated, true);
   assert.ok(result.content.length < 70000);
   assert.match(result.content, /已截断/);
+});
+
+// ── chat:send-image 能力面 ───────────────────────────────────────────────
+
+const { buildPluginToolContext, MAX_IMAGE_BYTES } = await import('../plugins/_host/context.js');
+
+/** 直接造门面（不经装载器），能力面测试用这个最省事。 */
+function facade(capabilities, hostCtx) {
+  return buildPluginToolContext({
+    manifest: { id: 'cap-test', name: 'Cap Test', version: '1.0.0', capabilities },
+    hostCtx,
+    config: {},
+    dataDir,
+    log: null
+  });
+}
+
+/** 插件的状态目录（sendImage 的路径守卫以它为界）。 */
+function stateDir() {
+  const dir = path.join(dataDir, 'plugin-state', 'cap-test');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+test('没声明 chat:send-image 时，门面上根本没有 sendImage', () => {
+  assert.equal('sendImage' in facade(['storage'], fakeHostCtx().ctx), false);
+  assert.equal(typeof facade(['chat:send-image'], fakeHostCtx().ctx).sendImage, 'function');
+});
+
+test('sendImage：状态目录内的文件被读出来拼成 base64://，并记账进 session.sent', async () => {
+  const dir = stateDir();
+  const file = path.join(dir, 'pixiv.png');
+  fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const { ctx, images, emitted, session } = fakeHostCtx();
+
+  const result = await facade(['storage', 'chat:send-image'], ctx).sendImage({ path: file }, { label: '初音ミク' });
+
+  assert.equal(result.sent, true);
+  assert.equal(result.messageId, 4242);
+  assert.equal(result.bytes, 4);
+  assert.equal(images.length, 1);
+  assert.equal(images[0].chatKey, 'group:12345', 'chatKey 必须由宿主绑死');
+  assert.equal(images[0].payload.url, `base64://${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`);
+  assert.equal(images[0].payload.label, '初音ミク');
+  assert.equal(images[0].options.runId, 'lease-1', '要带 runId，否则 outbox 记账挂不上这次运行');
+  // 与内置工具同一套记账
+  assert.equal(session.sent.length, 1);
+  assert.match(session.sent[0].text, /^\[图片/);
+  assert.deepEqual(emitted, [['session-update', 'sess-1']]);
+});
+
+test('sendImage：**状态目录之外的文件一律拒绝**（否则插件能把 config.json 当图片发到群里）', async () => {
+  stateDir();
+  // 造一个"看起来像凭据文件"的目标：真实场景里就是 <数据目录>/config.json
+  const secret = path.join(dataDir, 'config.json');
+  fs.writeFileSync(secret, JSON.stringify({ server: { token: 'SECRET-TOKEN' } }));
+  const { ctx, images } = fakeHostCtx();
+
+  await assert.rejects(
+    () => facade(['storage', 'chat:send-image'], ctx).sendImage({ path: secret }),
+    /只接受插件自己状态目录里的文件/
+  );
+  // 也挡住 ../ 绕行
+  await assert.rejects(
+    () => facade(['storage', 'chat:send-image'], ctx).sendImage({ path: path.join(stateDir(), '..', '..', 'config.json') }),
+    /只接受插件自己状态目录里的文件/
+  );
+  assert.deepEqual(images, [], '被拒的调用一张都不许发出去');
+});
+
+test('sendImage：只声明 chat:send-image 而没声明 storage 时，用 path 会明确报错', async () => {
+  const dir = stateDir();
+  const file = path.join(dir, 'a.png');
+  fs.writeFileSync(file, 'x');
+  await assert.rejects(
+    () => facade(['chat:send-image'], fakeHostCtx().ctx).sendImage({ path: file }),
+    /需要同时声明 storage 能力/
+  );
+});
+
+test('sendImage：{url} 走内置表情那道守卫（内网/本机/非法协议都拒绝）', async () => {
+  const { ctx } = fakeHostCtx();
+  const api = facade(['storage', 'chat:send-image'], ctx);
+  for (const url of ['http://127.0.0.1/a.png', 'http://10.0.0.1/a.png', 'file:///etc/passwd', 'base64://x']) {
+    await assert.rejects(() => api.sendImage({ url }), /内网|本机|只允许|仅允许|不合法|URL/, `${url} 应被拒绝`);
+  }
+  await assert.rejects(() => api.sendImage({ url: 'not a url' }), /不合法|URL/);
+});
+
+test('sendImage：体积上限、缺参数、引用/@ 都要有明确的可读错误', async () => {
+  const dir = stateDir();
+  const big = path.join(dir, 'big.png');
+  fs.writeFileSync(big, Buffer.alloc(MAX_IMAGE_BYTES + 1, 1));
+  const api = facade(['storage', 'chat:send-image'], fakeHostCtx().ctx);
+
+  await assert.rejects(() => api.sendImage({ path: big }), /超过 \d+ 字节上限/);
+  await assert.rejects(() => api.sendImage({}), /需要 \{ path \}/);
+  await assert.rejects(() => api.sendImage('nope'), /需要 \{ path \} 或 \{ url \}/);
+  await assert.rejects(() => api.sendImage({ url: 'https://example.invalid/a.png' }, { atUserId: '7' }),
+    /暂不支持 replyToMessageId\/atUserId/);
+  await assert.rejects(() => api.sendImage({ path: path.join(dir, 'missing.png') }), /图片文件不存在/);
+  assert.equal(fs.existsSync(path.join(dir, 'state.json')) || true, true);
 });
