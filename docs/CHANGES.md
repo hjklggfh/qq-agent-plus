@@ -48,7 +48,38 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
-## 00. 工具插件系统（v0.7.9 起）
+## 00. 插件发图能力与 Pixiv 取图插件（v0.7.10 起）
+
+- **能力扩展：发图片（`chat:send-image`）+ 一次真实插件移植**：`src/onebot/sender.js`、
+  `plugins/_host/capabilities.js`、`plugins/_host/context.js`、`plugins/pixiv-illust/`（新增）、
+  `test/delivery-integration.test.mjs`、`test/plugin-tools.test.mjs`、`test/pixiv-illust-plugin.test.mjs`（新增）、
+  `docs/PLUGINS.md`。
+  **失败模式**：v1 的插件只能发**文本**，而"取一张图发到群里"这类插件的核心价值恰恰是发图 ——
+  一个别人写的 Pixiv 取图插件（1284 行，逻辑相当扎实：PID 索引不重复发、死图拉黑、按会话分级、
+  代理支持、备选换图）因此在 v1 上完全用不了。它调的是一套**本仓不存在的接口**：
+  `setup(a)` + `a.registerTool({ id, name })` + `api.config()`（函数）+ `api.fetch()` +
+  原始 `ctx.sender.sendImage(...)`；连 `import { DATA_DIR } from '../../src/config.js'` 指向的文件
+  都不存在（本项目是 `src/core/config.js`，从来没有过 `src/config.js`）—— 也就是说它在**任何版本**上
+  都加载不起来，不是"差几个字段"的问题。
+  **现行做法**：
+  ① `SendQueue.image(chatKey, { url, bytes, label }, options)` —— 走既有的私有 `#deliver`，
+  白拿禁言预检、outbox 记账、「可确认未送达才重试」与异常捕获。**payload 里只记体积与类型，
+  绝不带 base64**：那是会被 `beginSend` 写进 outbox 表的字段，几 MB 的图会把数据目录写胖。
+  ② 新能力 `chat:send-image`，门面 `sendImage({ path } | { url }, { label })`。
+  `{ path }` 必须是**该插件自己状态目录之内**的文件（`realpath` 后判包含，`../` 与符号链接绕行都挡得住），
+  单张 12MB 上限 —— 不设这条守卫的话，插件能把宿主的 `data/config.json`（含明文 API Key 与控制台令牌）
+  当"图片"发到群里。`{ url }` 走内置表情发远程图的同一道守卫（拒内网/本机/非法协议）。
+  ③ 顺手把「消息已送达但记账失败不能改判成发送失败」这条既有原则也用到门面的 `send()` 上
+  （原先只有新增的 `sendImage` 有）—— 这是本仓复审里修过两次的那类 bug。
+  ④ 移植保留了原作者的全部逻辑与注释，只改宿主接触面。它的网络请求仍由插件自己发出
+  （全局 `fetch` + undici `ProxyAgent`，为了带 `Referer` 与支持 HTTP 代理），
+  **所以宿主的 SSRF 防护对它不生效** —— 这一点如实写进了 `docs/PLUGINS.md` 的已知限制与插件 README，
+  没有含糊过去（门面是"声明 + 可见"，不是围栏）。
+  ⑤ **唯一的功能性差异**：本项目没有提示词注入能力，原作者想用 `prompt.sections` 教模型
+  「分级是按会话的、只有主人能改」，改成折进 `pixiv_set_rating` 的 `description`
+  （那是模型唯一能看到插件文字的地方）。
+
+## 0. 工具插件系统（v0.7.9 起）
 
 这一版加了插件系统：**给模型加新工具而不用改主仓代码**。插件的产物只有一样 —— 工具；
 它不能加控制台页面、不能挂消息钩子、不能注册定时器。
@@ -98,34 +129,6 @@
   设置是**整体替换**（`__replace__`）而不是深合并：界面编辑的是"这一个插件的完整设置"，
   深合并会让"删掉的键"永远删不掉。页面结构上把可编辑控件放在**自动刷新容器之外**，
   从根上避开"整块重画把正在输入的内容冲掉"那套坑（`test/ui-preserve-editable.test.mjs` 的 5 条用例全是它）。
-- **能力扩展：发图片（`chat:send-image`）+ 一次真实插件移植**：`src/onebot/sender.js`、
-  `plugins/_host/capabilities.js`、`plugins/_host/context.js`、`plugins/pixiv-illust/`（新增）、
-  `test/delivery-integration.test.mjs`、`test/plugin-tools.test.mjs`、`test/pixiv-illust-plugin.test.mjs`（新增）、
-  `docs/PLUGINS.md`。
-  **失败模式**：v1 的插件只能发**文本**，而"取一张图发到群里"这类插件的核心价值恰恰是发图 ——
-  一个别人写的 Pixiv 取图插件（1284 行，逻辑相当扎实：PID 索引不重复发、死图拉黑、按会话分级、
-  代理支持、备选换图）因此在 v1 上完全用不了。它调的是一套**本仓不存在的接口**：
-  `setup(a)` + `a.registerTool({ id, name })` + `api.config()`（函数）+ `api.fetch()` +
-  原始 `ctx.sender.sendImage(...)`；连 `import { DATA_DIR } from '../../src/config.js'` 指向的文件
-  都不存在（本项目是 `src/core/config.js`，从来没有过 `src/config.js`）—— 也就是说它在**任何版本**上
-  都加载不起来，不是"差几个字段"的问题。
-  **现行做法**：
-  ① `SendQueue.image(chatKey, { url, bytes, label }, options)` —— 走既有的私有 `#deliver`，
-  白拿禁言预检、outbox 记账、「可确认未送达才重试」与异常捕获。**payload 里只记体积与类型，
-  绝不带 base64**：那是会被 `beginSend` 写进 outbox 表的字段，几 MB 的图会把数据目录写胖。
-  ② 新能力 `chat:send-image`，门面 `sendImage({ path } | { url }, { label })`。
-  `{ path }` 必须是**该插件自己状态目录之内**的文件（`realpath` 后判包含，`../` 与符号链接绕行都挡得住），
-  单张 12MB 上限 —— 不设这条守卫的话，插件能把宿主的 `data/config.json`（含明文 API Key 与控制台令牌）
-  当"图片"发到群里。`{ url }` 走内置表情发远程图的同一道守卫（拒内网/本机/非法协议）。
-  ③ 顺手把「消息已送达但记账失败不能改判成发送失败」这条既有原则也用到门面的 `send()` 上
-  （原先只有新增的 `sendImage` 有）—— 这是本仓复审里修过两次的那类 bug。
-  ④ 移植保留了原作者的全部逻辑与注释，只改宿主接触面。它的网络请求仍由插件自己发出
-  （全局 `fetch` + undici `ProxyAgent`，为了带 `Referer` 与支持 HTTP 代理），
-  **所以宿主的 SSRF 防护对它不生效** —— 这一点如实写进了 `docs/PLUGINS.md` 的已知限制与插件 README，
-  没有含糊过去（门面是"声明 + 可见"，不是围栏）。
-  ⑤ **唯一的功能性差异**：本项目没有提示词注入能力，原作者想用 `prompt.sections` 教模型
-  「分级是按会话的、只有主人能改」，改成折进 `pixiv_set_rating` 的 `description`
-  （那是模型唯一能看到插件文字的地方）。
 - **顺手修掉的三处既有缺陷**：
   ① `SECRET_KEY_PATTERN` 原先只认 `^token$` / `accesstoken` / `access_token`，
   **`apiToken` / `webhookToken` / `botToken` 这类驼峰名一个都不匹配** —— 它们会明文下发到
@@ -158,7 +161,7 @@
   （`buildToolDefs()` 在注册表为空时返回的数组与 `tools-core` 完全相同，有用例钉住）。
   新的 `plugins` 配置段由 `DEFAULT_CONFIG` + `deepMerge` 自动补齐。
 
-## 0. 切换服务预设时 API Key 跟随切换与四轮发布前审查修复（v0.7.8 起）
+## 1. 切换服务预设时 API Key 跟随切换与四轮发布前审查修复（v0.7.8 起）
 
 这一版的主体是控制台的一项日常操作：切换语音回复、语音转写、图片生成的服务预设时，已填过的 API Key
 随服务一起切换，不再需要逐家重新获取并填写。围绕该功能建立的凭据记忆机制，在四轮发布前审查中修正了
@@ -225,7 +228,7 @@
   控制台最后一次显式保存的那把。内联那份在下次重建列表时会被丢弃（成为不再使用的死数据）。
   设置 → 高级选项 → 模型 API 里重新保存一次 Key 即可把两份统一成同一把。
 
-## 1. 控制台性能、删除/保存体验与巡检判据修正（v0.7.7 起）
+## 2. 控制台性能、删除/保存体验与巡检判据修正（v0.7.7 起）
 
 这一版集中在控制台的响应速度与"整页重拉"体验，外加健康巡检判据的一次修正、两处依赖升级，
 以及发布前审查补上的一批小项。
@@ -271,7 +274,7 @@
   约 1 小时后也会告警；`docs/OPS.md` 与 `ops.js --help` 的
   第 3 项描述同步更新。控制台行为变化：删图与保存不再整页刷新，滚动位置保留。
 
-## 2. 架构拆分、图片生成与三轮审查修复（v0.7.6 起）
+## 3. 架构拆分、图片生成与三轮审查修复（v0.7.6 起）
 
 这一版是 v0.7.5 之后的收口：控制台 UI 结构性拆分并全量转 ES module、加入图片生成与完整的密钥控制，
 外加三轮对抗性审查的修复；同时让 WS 客户端兼容不回应 PING 的 NapCat 协议端。
@@ -338,7 +341,7 @@
   新增配置键随默认值自动补齐，老配置无需手改；控制台新增「设置 → OneBot」的心跳/补课控件与若干密钥开关。
   NapCat 用户在默认配置下自愈（进程启动后最多断一次，之后不再发 ping）。
 
-## 3. 群游戏、语音回复多供应商、定时提醒与群日报（v0.7.5 起）
+## 4. 群游戏、语音回复多供应商、定时提醒与群日报（v0.7.5 起）
 
 - **群游戏：数字炸弹 / 谁是卧底 / 狼人杀**：`src/features/group-game.js`（新增管理器）、
   `src/features/games/{number-bomb,undercover,werewolf}.js`（新增三个插件）、`src/console/app.js`、
@@ -480,7 +483,7 @@
   窗口内有入站消息且出站超时才失败；窗口内没有入站（或库里根本没有入站记录）记为**静默期**（ok，明细写明各自时间）。
   三处新用例（有入站且超时必红 / 无入站记静默 / 从来没有入站记静默）+ 2 条变异验证（拆掉两个静默期分支，对应用例如期变红）。
 
-## 4. 思考控制与表情匹配（v0.7.4 起）
+## 5. 思考控制与表情匹配（v0.7.4 起）
 
 - **思考控制（按渠道翻译档位、每家独立、可按任务分设）**：`src/core/provider-presets.js`（新增）、
   `src/llm/llm.js`、`src/core/providers.js`、`src/console/app.js`、`ui/app.js`、`src/core/config-legacy.js`。
@@ -520,7 +523,7 @@
   `access_token` / `api_key` 这类带下划线前缀的参数名补进规则（旧规则只认 `?token=` / `?key=`，会漏掉本项目
   OneBot 实际写在查询串上的 `access_token`）。
 
-## 5. 引用、记忆与人设（v0.7.3 起）
+## 6. 引用、记忆与人设（v0.7.3 起）
 
 - **引用块带被引用那条的消息 id**：`src/core/util.js`（`formatQuoteRef` / `quotePrefixFor` / `textWithQuote`）、
   `src/onebot/onebot.js`、`src/llm/prompt.js`、`src/tools/tools-core.js`、`src/console/app.js`。
@@ -557,7 +560,7 @@
   收藏即落盘（`sticker-assets/`），清单标出来源与发送形态（〔QQ收藏表情〕/〔本地图库·发出去是图片〕），
   发送前探活、失效不发并给出可照做的提示；QQ 收藏夹上限 500（非会员）因此本地库保留。
 
-## 6. 语音转写与视频（v0.7.2 起）
+## 7. 语音转写与视频（v0.7.2 起）
 
 - **多供应商语音转写**：`src/llm/asr-openai.js`、`asr-local.js`（本机 whisper.cpp）、`src/llm/seed-asr.js`（火山 Seed-ASR）、
   `asr-dashscope.js`（阿里云百炼）、`asr-baidu.js`、`asr-tencent.js`（TC3 签名）、`asr-iflytek.js`（签名 WSS 分帧）+
@@ -575,14 +578,14 @@
   `src/tools/tools-core.js`（`get_message_images` 按 kind 分流）。失败模式：只采音轨时模型会回"视频只能听声音"
   （用户实测反馈），画面根本没进过模型的眼睛。
 
-## 7. 对话行为
+## 8. 对话行为
 
 - **分条发言（多气泡）**：`src/llm/prompt.js`。失败形态有两种：一是"把想说的全塞进一条长消息"，二是"用空格把两句连成一条"。补丁注释记录，v1 之前实测 90% 的情况只发一条；v2 在尾部加了"别把一轮压成一句点评"，并明确"一轮常见 2-3 条短句、单条多数 ≤30 字、别一口气刷 4 条以上"。配套的 `humanRhythm` / 主体性文本属于上游自带内容，未通过脚本改动。
 - **提示词调优**：`src/llm/prompt.js`、`src/llm/qzone-interaction-prompt.js`。把"被 @ 或直接提问时优先判断是否需要回应"改成"被 @、点名或直接提问时默认要回一句（可以短、可以敷衍、可以怼回去），只有明显与你无关、对方 @ 别人、或纯刷屏误 @ 时才不回"（v0.6.3 起把其中的"可以怼回去"进一步软化为"也可以就回一句不痛不痒的"）；同时统一了"图库可以自己攒"的用法说明。
 - **聊天关思考**：`src/llm/llm.js`、`src/core/orchestrator.js`。聊天主调用传 `purpose:'chat'`，不携带 thinking 字段；判断/写作类调用不传，走 `default:'on'`。配置 `api.thinking = {chat:'off', default:'on'}`；脚本幂等，写配置前才停服务。
 - **看图先读情绪**：`src/llm/prompt.js`、`src/tools/tools-core.js`。模型看表情包/图片时容易去"描述画面"；改成先定性情绪再回话，v2 进一步收紧并给出正反例。顺手修了一个缺失：看库内表情时只给了 `desc`，没给模型自己写的 `localNote`。
 
-## 8. 发送链路健壮性
+## 9. 发送链路健壮性
 
 - **消息 id 归一化**：`src/tools/tools-core.js`、`src/core/store.js`。模型常把提示词里的 `#123` 连 `#` 一起传回来，而 OneBot 只认纯数字 id。关键教训：`tools-core.js` 用到的 `normalizeMid` 必须在同一个文件里定义（`store.js` 里那份是模块私有、没有 export），早先只替换调用点没插 helper，结果每次 `send_message` / `send_sticker` / `send_face` 都抛 `normalizeMid is not defined`，机器人一个字都发不出去。所以脚本把"插 helper"和"替换调用点"绑在一起，并且在最后自检两者必须同时存在。
 - **发送网络级重试**：`src/onebot/sender.js`。协议端重启或连接被掐时会抛 `fetch failed`，原来直接丢消息（用户视角是"它没回我"）；网络层错误重试一次即可救回，限频/参数类错误不重试（重试也没用）。回归用例见 `test/local/test-sender-retry.mjs`。
@@ -590,7 +593,7 @@
 - **启动/重连补课**：`src/console/app.js`。服务重启或协议端断线期间，消息事件会丢——消息根本没进库，也就永远没人回。做法：连上 OneBot（含重连）后从协议端拉一次最近历史，把库里没有的消息按 mid 去重补进来；≤30 分钟的按新消息处理（会触发回应），更早的只补进记录、不吵人。
 - **自检与静态扫描**：`src/ops.js scan`（原为 `ops/check-undefined-calls.sh` + `ops/scan-undefined-calls.py`，现已并入项目代码）。上面那次"整夜发不出一个字"的事故表现像"静默/掉线"，很难查；于是加了一个只记日志、永远 `exit 0`、不阻断启动的自检，挂在服务启动链上，另配 `src/ops.js audit` 的补丁标记检查做部署验收。
 
-## 9. 贴纸（表情包）系统
+## 10. 贴纸（表情包）系统
 
 - **自动收藏**：`src/onebot/sticker-manager.js`、`src/onebot/stickers.js`、`src/console/app.js`、`src/core/config-legacy.js`。让模型看一眼别人发的图，自己判断值不值得收（值得就存并写备注）；入口改成异步判断，不阻塞消息处理。条目保留 `srcKey` 作为去重键。
 - **收藏判断健壮性**：`src/onebot/sticker-manager.js`。两个失败模式：模型有时把决定写成 `<tool_call>` 文本或裸 JSON（判断逻辑只认结构化 `tool_calls` → 决定丢失）；`max_tokens=200` 会被"思考"吃掉（实测思考 80-595 token），截断后一个字段都收不到 → 提到 600。另外内容过滤是概率性的（实测同图 20/20 通过、偶发被挡），把尝试次数 2 提到 3，并把"被服务商内容过滤"和"模型没提交"在日志里分开。
@@ -598,7 +601,7 @@
 - **查找与备注**：`src/onebot/stickers.js`、`src/tools/tools-core.js`、`src/onebot/sticker-manager.js`。线上连续出现 5 次"找不到表情 NNN"，编号其实来自来信里的 `[表情NNN]` 标签，模型却拿去当表情库 id 查。于是：来信把系统表情标成 `[QQ表情N 名字]`；找不到时把有效 id 回给模型；`findSticker` 增加"唯一命中"的模糊兜底，提示改为直接用备注名选图；备注上限 16 → 24 字（真图实测里 16 字会把一句话硬切）。
 - **标签与收录规则**：`src/console/app.js`、`src/llm/prompt.js`、`src/tools/tools-core.js`、`src/onebot/stickers.js`、`src/onebot/sticker-manager.js`。表情包消息显示 `[表情包]`（普通图仍是 `[图片]`）；收藏规则收紧到"只认真正的表情包"，生活照/随手拍/自拍不收；相关文案统一叫"表情包"。
 
-## 10. 主动发言与空间互动
+## 11. 主动发言与空间互动
 
 - **开话题节奏**：`src/core/orchestrator.js`。间隔定为 2.5-3.5 小时；"没有安静的群"这种空转不算消耗本轮（45 分钟后再看）。概率、冷场阈值属于部署方偏好，脚本不强制。
 - **间隔守卫**：`src/core/orchestrator.js`。tick 第一次在启动后 15 秒触发，所以每重启一次就会多一次开话题判定，与"几小时才概率开一次"的设定不符。改为把"上次判定时间"落盘，重启后不足一个间隔直接跳过（补丁标记 `minGapMs`、`writeProactiveLastAttempt`）。
@@ -608,7 +611,7 @@
 - **抓取容错与通知阈值**：`src/features/qzone-interactions.js`、`ui/app.js`。好友动态这条外呼在腾讯侧被限流时会回 `{code:-10001, message:"network busy"}`（协议端原样透传），而它此前是硬失败：一次限流就让整轮——包括评论检查和已积压的未读——全部不跑，还会立刻顶一条"错误"级异常通知。现在抓取失败先等 45 秒重试一次（中止信号可打断等待）；仍失败只记 `run.feedError`，本轮继续跑评论检查与积压，运行记录标为「好友动态未取到」并在控制台显示原因；失败计数与退避照旧（2→4→8→16→30 分钟），连续第 3 次才发异常通知；失败轮不算建立动态基线，免得把上线前的旧动态当成新内容。用例：`test/qzone-interactions.test.mjs`、`test/local/test-qzone-backoff.mjs`、`test/local/test-qzone-intervals.mjs`。
 - **每日说说容错**：`src/features/daily-moments.js`。空间列表读不到时跳过查重，不阻断发布。
 
-## 11. 运维与控制台
+## 12. 运维与控制台
 
 - **控制台端口探测**：`src/console/integrations.js`。上游把 SnowLuma / noVNC 地址写死为旧端口 15099 / 16081，而 Linux 全栈部署实际使用 5099 / 6081，导致"服务与访问控制"页误报"不可达"。改为按实际部署端口探测，并修正改 SnowLuma 密码时的地址兜底端口。
 - **控制台自动登录**：`ui/app.js`（地址栏带 `?token=` 时先自动登录，成功后清掉 URL 里的明文令牌再重载，避免留在浏览历史）、`src/console/app.js`（登录 cookie 加 `Max-Age`，避免关掉浏览器就要重新输令牌）。
