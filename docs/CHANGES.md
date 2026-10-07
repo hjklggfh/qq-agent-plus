@@ -48,7 +48,7 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
-## 00. 插件发图能力与 Pixiv 取图插件（v0.7.10 起）
+## 00. 插件：发图能力、Pixiv 移植、接口速查与"自行增删插件"（v0.7.10 起）
 
 - **能力扩展：发图片（`chat:send-image`）+ 一次真实插件移植**：`src/onebot/sender.js`、
   `plugins/_host/capabilities.js`、`plugins/_host/context.js`、`plugins/pixiv-illust/`（新增）、
@@ -129,6 +129,44 @@
   设置是**整体替换**（`__replace__`）而不是深合并：界面编辑的是"这一个插件的完整设置"，
   深合并会让"删掉的键"永远删不掉。页面结构上把可编辑控件放在**自动刷新容器之外**，
   从根上避开"整块重画把正在输入的内容冲掉"那套坑（`test/ui-preserve-editable.test.mjs` 的 5 条用例全是它）。
+- **插件接口速查（`docs/PLUGIN-API.md`，新增）+ 用测试钉住它不漂移**：`test/plugin-api-doc.test.mjs`（新增）、
+  `plugins/_host/manifest.js`、`docs/PLUGINS.md`、`docs/README.md`。
+  **失败模式**：一个 1284 行的第三方插件调的接口本仓**一个都没有**（`setup(a)`、
+  `registerTool({ id, name })`、`api.config()` 当函数、`api.fetch()`、`ctx.sender.sendImage()`、
+  `configSchema`、`prompt.sections`、`permissions`，连 `import … from '../../src/config.js'`
+  指向的文件都不存在）。那不是作者水平问题 —— 他手上没有权威对照表，只能对着代码猜出一套
+  "合理但不存在"的接口。
+  **现行做法**：把接口速查写成一份文档（manifest 字段与上限、`api`/`toolCtx` 成员、能力边界、
+  返回契约、明确没有的东西、从别的接口迁过来的逐条对照表、11 个真实的坑），并且
+  **关键清单不靠人抄** —— manifest 已知键 / `api` 成员 / `toolCtx` 成员 / 能力 id 四张清单与
+  代码**双向**比对（代码多一个没写进文档、文档多写一个代码里没有，都判红），文档第 1 节的
+  示例被**真的装进宿主**（写临时插件 → 带审批 `initPlugins` → 再真的调用一次它注册的工具，
+  验 kv 计数与状态落点）。为此把 manifest 的"已知键"集合从 `normalizeManifest` 的闭包提到
+  模块级导出（`MANIFEST_KNOWN_KEYS`），让校验器、文档、测试共用同一个事实源。
+  反向验证过这组断言不是空跑：往成员清单塞假成员 / 改坏示例工具名 / 删掉一个能力 id /
+  加一个假 manifest 字段，四种漂移各自判红。
+- **插件页支持"自行增删插件"**：`plugins/console-routes.js`、`ui/pages/plugins.js`、
+  `ui/index.html`、`ui/style.css`、`plugins/loader.js`、`test/plugin-console-api.test.mjs`、
+  `test/plugin-page-ui.test.mjs`（新增）、`docs/PLUGINS.md`。
+  **失败模式**：想自己加插件时，插件根只能手改 `config.json`（停服/改/起服）；删插件根本没有
+  出口 —— 删掉目录后 `enabled` / `approved` / `settings` 三处残留，插件页显示成「找不到」，
+  而除了手改配置文件没有别的办法清掉它。而这条路的**前提**（`data/config.json` 被 rsync 排除、
+  控制台每次打开都重新扫盘、安装目录的 `plugins/` 有 deploy 保护）其实早就成立了，缺的只是操作面。
+  **现行做法**：① `POST /api/plugins/roots` + 控制台的插件根编辑器（trim、丢空行、上限 5、
+  拒控制字符；上限由服务端下发，界面不抄常量）；② `POST /api/plugins/remove` —— 把三处记录一次
+  清掉（把键设成 `null`，交给既有的 plugins 归一化删掉，不用另造通道），**不删插件目录**
+  （它可能在随版本发布的那个根里，删了下次部署又回来；与其做一个会被自己撤销的动作，不如把
+  确切路径告诉使用者），数据目录默认保留、只有显式 `purgeState` 才删（那个按钮只在真有
+  `plugin-state/<id>/` 时才出现，且不可逆）；③ 每个插件报出来源根以及"那个根是不是随版本发布的
+  那一个"（页面上是「随版本发布 / 自建」徽标）—— `deploy.sh` 会覆盖前者、完全不碰后者，而
+  "加插件不必发版本"走的正是后者，只显示路径不足以让人分辨；`rootInfo` 还带 `exists`，
+  因为"我加了根，怎么一个插件都没有"是这套东西最容易卡住人的一处；④ 页面上的操作指引
+  （怎么加、怎么删、目录名必须等于 id、都要重启才生效）。
+  顺带修一句与实现不符的注释：`plugins/loader.js` 原写"插件的设置改完不需要重启就能生效"，
+  真相是**冷热各一半** —— `toolCtx.secret` 每次调用现读，而 `api.config` 是激活时的非凭据快照。
+  插件页此前**没有任何内容级用例**（`ui-smoke` 只保证"切到这一页不抛"，且它的 fetch 桩对
+  `/api/plugins` 回 `{}`，只走空列表那条路），这次补了 4 例，并在三种变异（徽标恒为「自建」、
+  移除确认漏掉 `await`、roots 保存不做 trim）下验证过各自判红。
 - **顺手修掉的三处既有缺陷**：
   ① `SECRET_KEY_PATTERN` 原先只认 `^token$` / `accesstoken` / `access_token`，
   **`apiToken` / `webhookToken` / `botToken` 这类驼峰名一个都不匹配** —— 它们会明文下发到
@@ -147,13 +185,19 @@
 - **门禁同步**：`eslint.config.mjs` 纳入 `plugins/**`（并把故意写坏的 `test/fixtures/**` 排除）、
   CI 的 `node --check` 纳入 `plugins`、`ops scan --strict` 追加扫 `plugins/`
   （原先只扫 `src/`，等于"靠没被扫到而干净"）、`ops audit` 的语法与未定义调用两节也覆盖它。
-- **验证方法**：`test/plugin-{manifest,loader,tools,storage,http,console-api}.test.mjs` 共 164 例；
-  另建 HEAD 基线 worktree 对 36 个既有用例文件（含全部 `ui-*` 与脱敏相关用例）做失败集合差集，
-  确认**零回归**（两棵树各 36 条失败，逐条一致，全部是沙箱 `spawnSync` EPERM 的环境性失败）。
+- **验证方法**：`test/plugin-{manifest,loader,tools,storage,http,console-api}.test.mjs` 与
+  `pixiv-illust-plugin` / `plugin-api-doc` / `plugin-page-ui` 共 199 例（新增三组：Pixiv 移植 20、
+  接口速查 5、插件页内容级 4）；
+  另建 HEAD 基线 worktree 对全部 `*.test.mjs` 做失败集合差集，确认**零回归**
+  （两棵树各 86 条失败逐条一致，全部是沙箱环境性失败；另有 2 条网络偶发在单独复跑时通过）。
+  `test/plugin-page-ui.test.mjs` 的四条断言还各自做过变异验证（见上），确保不是空跑。
 - **已知限制（刻意）**：插件不能加控制台页面（控制台是零构建 + 静态清单双向校验 + 写死
-  `ui/` 的静态分发）、不能挂消息钩子、不能注册定时器；`chat:send` 暂不支持引用 / @
-  （内置的目标校验是模块私有的，抄一份就会出现第二份口径）。插件与宿主**同进程、无沙箱**。
-  控制台的启停/确认/改设置只写配置，要重启才生效。
+  `ui/` 的静态分发）、不能挂消息钩子、不能注册定时器、**不能注入提示词**；`chat:send` 与
+  `chat:send-image` 都不支持引用 / @（内置的目标校验是模块私有的，抄一份就会出现第二份口径）。
+  插件与宿主**同进程、无沙箱** —— 由此有一条必须知道的推论：同进程代码可以绕过门面自己发
+  网络请求（Pixiv 那个插件就是这么做的，为了带 `Referer` 与支持代理），宿主的 SSRF 防护对它
+  不生效。控制台的启停/确认/改设置/改插件根都只写配置，要重启才生效；**但凭据是热的**
+  （`toolCtx.secret` 每次调用现读），只有设置（`api.config`）是冷的。
 - **未能在这里验证的一项**：`rsync --filter='protect /plugins/***'` 的语义（开发机没有 rsync）。
   按 rsync 文档实现，并用两个方向的用例钉住"必须是 protect、不能退化成 exclude"，
   真正的验证要在 Linux 上跑一次部署。
