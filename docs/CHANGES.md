@@ -48,7 +48,42 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
-## 00. 插件：发图能力、Pixiv 移植、接口速查与"自行增删插件"（v0.7.10 起）
+## 000. 插件取图：响应体时限、体积上限与候选回退（v0.7.11 起）
+
+- **Pixiv 插件取图：给响应体加时限、加体积上限、软失败退到下一个候选**：`plugins/pixiv-illust/index.js`、
+  `plugins/pixiv-illust/README.md`、`test/pixiv-illust-plugin.test.mjs`。
+  **失败模式（现场实测，不是理论）**：部署后群里要图，日志每次都是
+  `pixiv_image 出错：插件工具 pixiv_image 执行超时（60000ms），已放弃等待。` —— 看起来像插件坏了。
+  逐层量下来是这样的：搜索 `api.lolicon.app` 一切正常（1 秒返回 15 张、分级筛完），卡在**取图**。
+  接口返回的图片地址是 `https://i.pixiv.re/img-original/img/…/x_p0.jpg`，那一张
+  **13,080,814 字节（12.5MB）**，而服务器到 `i.pixiv.re` 只有约 **118KB/s**
+  （30 秒只下到 3.6MB，curl 自己估要 ~108 秒）—— 而工具上限是 60 秒。
+  更关键的是**代码里有个真 bug**：`doFetch` 在拿到响应头时就 `clearTimeout`，于是 `timeoutMs`
+  只覆盖"等响应头"，**不覆盖"读完响应体"**。这个图床恰好是"头回来了、体不回来"，
+  于是 `arrayBuffer()` **无限挂着**，一路挂到宿主的 60 秒上限才被掐断 —— 所以 `timeoutMs`
+  调到多小都没用（调到 6 秒也一样）。这个 bug 来自原作者：移植时 `doFetch` 是原样保留的，
+  换到任何"头回体不回"的图床都会这样，不只是这一台。
+  **现行做法（三处）**：
+  ① **时限覆盖响应体**：`doFetch` 接受调用方给的 `AbortController`；取图那条路自己持有定时器，
+  读完 body 才清掉。响应体阶段的失败与"等响应头"阶段**同口径**包装（可读文案 + `netError`/
+  `hardNetError` 标记），否则日志里只剩一句裸的 `This operation was aborted`。
+  ② **加体积上限 `maxImageBytes`（默认 5MB）**：有 `Content-Length` 就**先看大小再决定下不下**
+  （一个字节都不下），没有就边读边算、越界即 abort。实测那台机器上原图被上限秒退之后，
+  同一作品的 PID 简写形式（压缩过的）**4.6 秒**就拿到了 —— 而且群里发一张图本来也不该是 12.5MB：
+  宿主还要把它 base64（膨胀 1.37 倍）塞进 OneBot 请求体。
+  ③ **软失败退到下一个候选**：原先"网络类错误一律 `break`"会让整张作品被放弃，而原作者那句
+  "换域名也救不了断掉的线路"在这种情形下不成立（线路是好的，坏的是那个域名/路径）。
+  现在区分**硬失败**（`ENOTFOUND`/`ECONNREFUSED`，换域名也没用 → 放弃整张）与**软失败**
+  （超时 / 连接重置 / "头回体不回" → 换下一个候选）。回退时写一条日志，
+  让"图床在这个网络上部分不可用"这件事在日志里看得见、而不是只留下"取不到图"。
+  **代价与取舍**：多图的第 2、3 页会失去（PID 简写形式只能取第 0 页）；想要原图就把
+  `maxImageBytes` 调大。两个值都在插件设置里，改完重启即可，不用再发版。
+  **验证**：新增 6 条用例，其中"响应体不回来必须在时限内掐断"是那个原始 bug 的回归哨兵
+  （**带看门狗** —— 时限一旦失效，等待是无限的，没有看门狗这条用例会挂住 CI 而不是判红）。
+  并做**三种变异**确认它们不是空跑：收回体时限、`break` 改回 `netError`、去掉 `Content-Length`
+  预检 —— 各自被对应用例抓到，还原后全绿。
+
+## 0. 插件：发图能力、Pixiv 移植、接口速查与"自行增删插件"（v0.7.10 起）
 
 - **能力扩展：发图片（`chat:send-image`）+ 一次真实插件移植**：`src/onebot/sender.js`、
   `plugins/_host/capabilities.js`、`plugins/_host/context.js`、`plugins/pixiv-illust/`（新增）、
@@ -79,7 +114,7 @@
   「分级是按会话的、只有主人能改」，改成折进 `pixiv_set_rating` 的 `description`
   （那是模型唯一能看到插件文字的地方）。
 
-## 0. 工具插件系统（v0.7.9 起）
+## 1. 工具插件系统（v0.7.9 起）
 
 这一版加了插件系统：**给模型加新工具而不用改主仓代码**。插件的产物只有一样 —— 工具；
 它不能加控制台页面、不能挂消息钩子、不能注册定时器。
@@ -205,7 +240,7 @@
   （`buildToolDefs()` 在注册表为空时返回的数组与 `tools-core` 完全相同，有用例钉住）。
   新的 `plugins` 配置段由 `DEFAULT_CONFIG` + `deepMerge` 自动补齐。
 
-## 1. 切换服务预设时 API Key 跟随切换与四轮发布前审查修复（v0.7.8 起）
+## 2. 切换服务预设时 API Key 跟随切换与四轮发布前审查修复（v0.7.8 起）
 
 这一版的主体是控制台的一项日常操作：切换语音回复、语音转写、图片生成的服务预设时，已填过的 API Key
 随服务一起切换，不再需要逐家重新获取并填写。围绕该功能建立的凭据记忆机制，在四轮发布前审查中修正了
@@ -272,7 +307,7 @@
   控制台最后一次显式保存的那把。内联那份在下次重建列表时会被丢弃（成为不再使用的死数据）。
   设置 → 高级选项 → 模型 API 里重新保存一次 Key 即可把两份统一成同一把。
 
-## 2. 控制台性能、删除/保存体验与巡检判据修正（v0.7.7 起）
+## 3. 控制台性能、删除/保存体验与巡检判据修正（v0.7.7 起）
 
 这一版集中在控制台的响应速度与"整页重拉"体验，外加健康巡检判据的一次修正、两处依赖升级，
 以及发布前审查补上的一批小项。
@@ -318,7 +353,7 @@
   约 1 小时后也会告警；`docs/OPS.md` 与 `ops.js --help` 的
   第 3 项描述同步更新。控制台行为变化：删图与保存不再整页刷新，滚动位置保留。
 
-## 3. 架构拆分、图片生成与三轮审查修复（v0.7.6 起）
+## 4. 架构拆分、图片生成与三轮审查修复（v0.7.6 起）
 
 这一版是 v0.7.5 之后的收口：控制台 UI 结构性拆分并全量转 ES module、加入图片生成与完整的密钥控制，
 外加三轮对抗性审查的修复；同时让 WS 客户端兼容不回应 PING 的 NapCat 协议端。
@@ -385,7 +420,7 @@
   新增配置键随默认值自动补齐，老配置无需手改；控制台新增「设置 → OneBot」的心跳/补课控件与若干密钥开关。
   NapCat 用户在默认配置下自愈（进程启动后最多断一次，之后不再发 ping）。
 
-## 4. 群游戏、语音回复多供应商、定时提醒与群日报（v0.7.5 起）
+## 5. 群游戏、语音回复多供应商、定时提醒与群日报（v0.7.5 起）
 
 - **群游戏：数字炸弹 / 谁是卧底 / 狼人杀**：`src/features/group-game.js`（新增管理器）、
   `src/features/games/{number-bomb,undercover,werewolf}.js`（新增三个插件）、`src/console/app.js`、
@@ -527,7 +562,7 @@
   窗口内有入站消息且出站超时才失败；窗口内没有入站（或库里根本没有入站记录）记为**静默期**（ok，明细写明各自时间）。
   三处新用例（有入站且超时必红 / 无入站记静默 / 从来没有入站记静默）+ 2 条变异验证（拆掉两个静默期分支，对应用例如期变红）。
 
-## 5. 思考控制与表情匹配（v0.7.4 起）
+## 6. 思考控制与表情匹配（v0.7.4 起）
 
 - **思考控制（按渠道翻译档位、每家独立、可按任务分设）**：`src/core/provider-presets.js`（新增）、
   `src/llm/llm.js`、`src/core/providers.js`、`src/console/app.js`、`ui/app.js`、`src/core/config-legacy.js`。
@@ -567,7 +602,7 @@
   `access_token` / `api_key` 这类带下划线前缀的参数名补进规则（旧规则只认 `?token=` / `?key=`，会漏掉本项目
   OneBot 实际写在查询串上的 `access_token`）。
 
-## 6. 引用、记忆与人设（v0.7.3 起）
+## 7. 引用、记忆与人设（v0.7.3 起）
 
 - **引用块带被引用那条的消息 id**：`src/core/util.js`（`formatQuoteRef` / `quotePrefixFor` / `textWithQuote`）、
   `src/onebot/onebot.js`、`src/llm/prompt.js`、`src/tools/tools-core.js`、`src/console/app.js`。
@@ -604,7 +639,7 @@
   收藏即落盘（`sticker-assets/`），清单标出来源与发送形态（〔QQ收藏表情〕/〔本地图库·发出去是图片〕），
   发送前探活、失效不发并给出可照做的提示；QQ 收藏夹上限 500（非会员）因此本地库保留。
 
-## 7. 语音转写与视频（v0.7.2 起）
+## 8. 语音转写与视频（v0.7.2 起）
 
 - **多供应商语音转写**：`src/llm/asr-openai.js`、`asr-local.js`（本机 whisper.cpp）、`src/llm/seed-asr.js`（火山 Seed-ASR）、
   `asr-dashscope.js`（阿里云百炼）、`asr-baidu.js`、`asr-tencent.js`（TC3 签名）、`asr-iflytek.js`（签名 WSS 分帧）+
@@ -622,14 +657,14 @@
   `src/tools/tools-core.js`（`get_message_images` 按 kind 分流）。失败模式：只采音轨时模型会回"视频只能听声音"
   （用户实测反馈），画面根本没进过模型的眼睛。
 
-## 8. 对话行为
+## 9. 对话行为
 
 - **分条发言（多气泡）**：`src/llm/prompt.js`。失败形态有两种：一是"把想说的全塞进一条长消息"，二是"用空格把两句连成一条"。补丁注释记录，v1 之前实测 90% 的情况只发一条；v2 在尾部加了"别把一轮压成一句点评"，并明确"一轮常见 2-3 条短句、单条多数 ≤30 字、别一口气刷 4 条以上"。配套的 `humanRhythm` / 主体性文本属于上游自带内容，未通过脚本改动。
 - **提示词调优**：`src/llm/prompt.js`、`src/llm/qzone-interaction-prompt.js`。把"被 @ 或直接提问时优先判断是否需要回应"改成"被 @、点名或直接提问时默认要回一句（可以短、可以敷衍、可以怼回去），只有明显与你无关、对方 @ 别人、或纯刷屏误 @ 时才不回"（v0.6.3 起把其中的"可以怼回去"进一步软化为"也可以就回一句不痛不痒的"）；同时统一了"图库可以自己攒"的用法说明。
 - **聊天关思考**：`src/llm/llm.js`、`src/core/orchestrator.js`。聊天主调用传 `purpose:'chat'`，不携带 thinking 字段；判断/写作类调用不传，走 `default:'on'`。配置 `api.thinking = {chat:'off', default:'on'}`；脚本幂等，写配置前才停服务。
 - **看图先读情绪**：`src/llm/prompt.js`、`src/tools/tools-core.js`。模型看表情包/图片时容易去"描述画面"；改成先定性情绪再回话，v2 进一步收紧并给出正反例。顺手修了一个缺失：看库内表情时只给了 `desc`，没给模型自己写的 `localNote`。
 
-## 9. 发送链路健壮性
+## 10. 发送链路健壮性
 
 - **消息 id 归一化**：`src/tools/tools-core.js`、`src/core/store.js`。模型常把提示词里的 `#123` 连 `#` 一起传回来，而 OneBot 只认纯数字 id。关键教训：`tools-core.js` 用到的 `normalizeMid` 必须在同一个文件里定义（`store.js` 里那份是模块私有、没有 export），早先只替换调用点没插 helper，结果每次 `send_message` / `send_sticker` / `send_face` 都抛 `normalizeMid is not defined`，机器人一个字都发不出去。所以脚本把"插 helper"和"替换调用点"绑在一起，并且在最后自检两者必须同时存在。
 - **发送网络级重试**：`src/onebot/sender.js`。协议端重启或连接被掐时会抛 `fetch failed`，原来直接丢消息（用户视角是"它没回我"）；网络层错误重试一次即可救回，限频/参数类错误不重试（重试也没用）。回归用例见 `test/local/test-sender-retry.mjs`。
@@ -637,7 +672,7 @@
 - **启动/重连补课**：`src/console/app.js`。服务重启或协议端断线期间，消息事件会丢——消息根本没进库，也就永远没人回。做法：连上 OneBot（含重连）后从协议端拉一次最近历史，把库里没有的消息按 mid 去重补进来；≤30 分钟的按新消息处理（会触发回应），更早的只补进记录、不吵人。
 - **自检与静态扫描**：`src/ops.js scan`（原为 `ops/check-undefined-calls.sh` + `ops/scan-undefined-calls.py`，现已并入项目代码）。上面那次"整夜发不出一个字"的事故表现像"静默/掉线"，很难查；于是加了一个只记日志、永远 `exit 0`、不阻断启动的自检，挂在服务启动链上，另配 `src/ops.js audit` 的补丁标记检查做部署验收。
 
-## 10. 贴纸（表情包）系统
+## 11. 贴纸（表情包）系统
 
 - **自动收藏**：`src/onebot/sticker-manager.js`、`src/onebot/stickers.js`、`src/console/app.js`、`src/core/config-legacy.js`。让模型看一眼别人发的图，自己判断值不值得收（值得就存并写备注）；入口改成异步判断，不阻塞消息处理。条目保留 `srcKey` 作为去重键。
 - **收藏判断健壮性**：`src/onebot/sticker-manager.js`。两个失败模式：模型有时把决定写成 `<tool_call>` 文本或裸 JSON（判断逻辑只认结构化 `tool_calls` → 决定丢失）；`max_tokens=200` 会被"思考"吃掉（实测思考 80-595 token），截断后一个字段都收不到 → 提到 600。另外内容过滤是概率性的（实测同图 20/20 通过、偶发被挡），把尝试次数 2 提到 3，并把"被服务商内容过滤"和"模型没提交"在日志里分开。
@@ -645,7 +680,7 @@
 - **查找与备注**：`src/onebot/stickers.js`、`src/tools/tools-core.js`、`src/onebot/sticker-manager.js`。线上连续出现 5 次"找不到表情 NNN"，编号其实来自来信里的 `[表情NNN]` 标签，模型却拿去当表情库 id 查。于是：来信把系统表情标成 `[QQ表情N 名字]`；找不到时把有效 id 回给模型；`findSticker` 增加"唯一命中"的模糊兜底，提示改为直接用备注名选图；备注上限 16 → 24 字（真图实测里 16 字会把一句话硬切）。
 - **标签与收录规则**：`src/console/app.js`、`src/llm/prompt.js`、`src/tools/tools-core.js`、`src/onebot/stickers.js`、`src/onebot/sticker-manager.js`。表情包消息显示 `[表情包]`（普通图仍是 `[图片]`）；收藏规则收紧到"只认真正的表情包"，生活照/随手拍/自拍不收；相关文案统一叫"表情包"。
 
-## 11. 主动发言与空间互动
+## 12. 主动发言与空间互动
 
 - **开话题节奏**：`src/core/orchestrator.js`。间隔定为 2.5-3.5 小时；"没有安静的群"这种空转不算消耗本轮（45 分钟后再看）。概率、冷场阈值属于部署方偏好，脚本不强制。
 - **间隔守卫**：`src/core/orchestrator.js`。tick 第一次在启动后 15 秒触发，所以每重启一次就会多一次开话题判定，与"几小时才概率开一次"的设定不符。改为把"上次判定时间"落盘，重启后不足一个间隔直接跳过（补丁标记 `minGapMs`、`writeProactiveLastAttempt`）。
@@ -655,7 +690,7 @@
 - **抓取容错与通知阈值**：`src/features/qzone-interactions.js`、`ui/app.js`。好友动态这条外呼在腾讯侧被限流时会回 `{code:-10001, message:"network busy"}`（协议端原样透传），而它此前是硬失败：一次限流就让整轮——包括评论检查和已积压的未读——全部不跑，还会立刻顶一条"错误"级异常通知。现在抓取失败先等 45 秒重试一次（中止信号可打断等待）；仍失败只记 `run.feedError`，本轮继续跑评论检查与积压，运行记录标为「好友动态未取到」并在控制台显示原因；失败计数与退避照旧（2→4→8→16→30 分钟），连续第 3 次才发异常通知；失败轮不算建立动态基线，免得把上线前的旧动态当成新内容。用例：`test/qzone-interactions.test.mjs`、`test/local/test-qzone-backoff.mjs`、`test/local/test-qzone-intervals.mjs`。
 - **每日说说容错**：`src/features/daily-moments.js`。空间列表读不到时跳过查重，不阻断发布。
 
-## 12. 运维与控制台
+## 13. 运维与控制台
 
 - **控制台端口探测**：`src/console/integrations.js`。上游把 SnowLuma / noVNC 地址写死为旧端口 15099 / 16081，而 Linux 全栈部署实际使用 5099 / 6081，导致"服务与访问控制"页误报"不可达"。改为按实际部署端口探测，并修正改 SnowLuma 密码时的地址兜底端口。
 - **控制台自动登录**：`ui/app.js`（地址栏带 `?token=` 时先自动登录，成功后清掉 URL 里的明文令牌再重载，避免留在浏览历史）、`src/console/app.js`（登录 cookie 加 `Max-Age`，避免关掉浏览器就要重新输令牌）。

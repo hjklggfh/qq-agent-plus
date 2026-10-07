@@ -75,6 +75,190 @@ const pluginApi = buildPluginApi({
 });
 const pluginReturned = await activate(pluginApi);
 
+// ── 取图链路的测试夹具（2026-10-08 那次真实故障的固化）────────────────────
+//
+// 现场：阿里云上一台实例取 `i.pixiv.re` 的原图，响应头 200 回来了，但响应体 13,080,814 字节
+// （12.5MB）在 118KB/s 的线路上要下约 108 秒，而工具上限是 60 秒 —— 于是每次都是"整 60 秒被
+// 宿主掐断"，看起来像插件坏了。而同一个作品的 `pixiv.re/{pid}.png`（压缩过）4.6 秒就拿到。
+//
+// 所以这里钉三件事：体积上限要**先看 Content-Length 再决定下不下**、读体要**边读边算**、
+// 时限要**覆盖响应体**（原先 doFetch 在响应头到达时就 clearTimeout，等于没有体时限）。
+
+/** 造一个只满足插件用到的那几个字段的假响应（不依赖 Response 对 content-length 的限制）。 */
+function fakeImageResponse({ status = 200, contentType = 'image/png', contentLength = null, body = null, onArrayBuffer = null } = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: {
+      get(name) {
+        const key = String(name).toLowerCase();
+        if (key === 'content-type') return contentType;
+        if (key === 'content-length') return contentLength === null ? null : String(contentLength);
+        return null;
+      }
+    },
+    body,
+    async arrayBuffer() { if (onArrayBuffer) onArrayBuffer(); return new ArrayBuffer(0); }
+  };
+}
+
+/** 依次吐出 chunks 的响应体。 */
+function chunkStream(chunks) {
+  let i = 0;
+  return new ReadableStream({
+    pull(controller) {
+      if (i >= chunks.length) { controller.close(); return; }
+      controller.enqueue(chunks[i]);
+      i += 1;
+    }
+  });
+}
+
+/** "响应头回来了、响应体永不回来"的响应体；靠 abort 信号让它报错（真实 fetch 的行为）。 */
+function stallingStream(signal) {
+  return new ReadableStream({
+    pull() { return new Promise(() => {}); },          // 永远不 resolve：模拟体不回来
+    start(controller) {
+      signal?.addEventListener('abort', () => {
+        try { controller.error(new Error('This operation was aborted')); } catch { /* 已经关掉 */ }
+      });
+    }
+  });
+}
+
+/** 临时换上全局 fetch 桩跑一段，跑完必恢复。 */
+async function withFetch(stub, run) {
+  const real = globalThis.fetch;
+  globalThis.fetch = stub;
+  try { return await run(); } finally { globalThis.fetch = real; }
+}
+
+test('取图：Content-Length 超过上限时一个字节都不下（12.5MB 原图 / 5MB 上限）', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-cap-')));
+  const tooBig = 13080814;
+  let touchedBody = false;
+  const error = await withFetch(
+    async () => fakeImageResponse({ contentLength: tooBig, onArrayBuffer: () => { touchedBody = true; } }),
+    async () => {
+      try { await internals.__downloadToTemp('https://i.pixiv.re/x_p0.png', 15000, 5 * 1024 * 1024); return null; }
+      catch (e) { return e; }
+    }
+  );
+  assert.ok(error, '超过上限应该抛错而不是成功');
+  assert.equal(error.tooBig, true);
+  assert.equal(error.bytes, tooBig);
+  assert.equal(touchedBody, false, '超过上限时连响应体都不该碰（否则等于先下完 12.5MB 再判大小）');
+});
+
+test('取图：没有 Content-Length 时边读边算，越界立刻中止（不会把整张下完）', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-stream-')));
+  const chunk = new Uint8Array(2 * 1024 * 1024);
+  const body = new ReadableStream({
+    pull(controller) { controller.enqueue(chunk); }   // 无限给：越界必须由插件自己中止
+  });
+  const error = await withFetch(
+    async () => fakeImageResponse({ body }),
+    async () => {
+      try { await internals.__downloadToTemp('https://i.pixiv.re/x_p0.png', 15000, 5 * 1024 * 1024); return null; }
+      catch (e) { return e; }
+    }
+  );
+  assert.ok(error?.tooBig, `应因超限失败，实际 ${error?.message}`);
+  // ⚠️ 不能用"流的 pull 被调了几次"来判断：ReadableStream 会预取一块填队列，那个数会多 1。
+  // 该钉的是**插件累计消费了多少**：2MB/块、上限 5MB → 读到第 3 块（6MB）就该中止。
+  assert.equal(error.bytes, 6 * 1024 * 1024, '中止时的累计字节数应是"刚好越界"的那一块');
+});
+
+test('取图：响应头回来但响应体不回来时，超时必须在时限内掐断（原始 bug 的哨兵）', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-stall-')));
+  const started = Date.now();
+  // 3000ms 是 downloadToTemp 的下限；这条用例要真等它一次。
+  // 看门狗是必须的：时限一旦失效，等待就是**无限**的 —— 没有它这条用例会挂住 CI 而不是判红。
+  const settled = await Promise.race([
+    withFetch(
+      async (url, options) => fakeImageResponse({ body: stallingStream(options?.signal) }),
+      async () => {
+        try { await internals.__downloadToTemp('https://i.pixiv.re/stall.png', 3000, 5 * 1024 * 1024); return { ok: true }; }
+        catch (e) { return { error: e }; }
+      }
+    ),
+    new Promise((resolve) => setTimeout(() => resolve({ hung: true }), 20000))
+  ]);
+  const spent = Date.now() - started;
+  assert.equal(settled.hung, undefined,
+    '响应体没有时限 → 一直挂着（这正是原始 bug：挂到宿主 60 秒上限才被掐断）');
+  const error = settled.error;
+  assert.ok(error, '应该失败，而不是一直挂着');
+  assert.ok(spent < 15000, `应在时限内掐断（实际 ${spent}ms）`);
+  // 体阶段的失败与"等响应头"阶段同一口径：可读文案 + netError（软失败，值得试下一个候选）
+  assert.equal(error.netError, true, '应被当作网络类失败包装');
+  assert.equal(error.hardNetError, false, '超时不是硬失败：该给下一个候选机会');
+  assert.match(error.message, /连接超时|超时|abort/i);
+});
+
+test('取图：第一个候选超限时自动改用 PID 简写形式（这次故障的修法）', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-fallback-')));
+  const item = { pid: '116977943', imageUrl: 'https://i.pixiv.re/img-original/img/2024/03/16/21/29/42/116977943_p0.png' };
+  const calls = [];
+  const got = await withFetch(
+    async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('i.pixiv.re')) return fakeImageResponse({ contentLength: 13080814 });   // 原图 → 秒退
+      return fakeImageResponse({ contentLength: 4, body: chunkStream([new Uint8Array([1, 2, 3, 4])]) });
+    },
+    () => internals.__fetchImage(item, { ...internals.DEFAULTS, timeoutMs: 3000 })
+  );
+  assert.equal(calls.length, 2, `应该试了两个候选，实际 ${JSON.stringify(calls)}`);
+  assert.ok(calls[0].includes('i.pixiv.re'), '第一候选仍是后端给的原图地址');
+  assert.ok(calls[1].endsWith('pixiv.re/116977943.png'), `第二候选应是 PID 简写形式，实际 ${calls[1]}`);
+  assert.equal(got.bytes, 4);
+  assert.ok(fs.existsSync(got.file), '取到的图要落成临时文件');
+});
+
+test('取图：第一候选是"软失败"（超时）时也要换下一个候选 —— 这条守住原来那个 break', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-soft-')));
+  const item = { pid: '116977943', imageUrl: 'https://i.pixiv.re/img-original/x_p0.png' };
+  const calls = [];
+  const got = await withFetch(
+    async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('i.pixiv.re')) {
+        // 等响应头就超时：这是"软失败"（netError 为真、hardNetError 为假）。
+        // 原代码 `if (error?.netError) break;` 会在这里放弃整张 —— 而同一作品的简写形式明明能用。
+        const e = new Error('fetch failed');
+        e.cause = { code: 'UND_ERR_HEADERS_TIMEOUT' };
+        throw e;
+      }
+      return fakeImageResponse({ contentLength: 4, body: chunkStream([new Uint8Array([9, 9, 9, 9])]) });
+    },
+    () => internals.__fetchImage(item, { ...internals.DEFAULTS, timeoutMs: 3000 })
+  );
+  assert.equal(calls.length, 2, `软失败也该试第二个候选，实际只试了 ${calls.length} 次`);
+  assert.ok(calls[1].endsWith('pixiv.re/116977943.png'));
+  assert.equal(got.bytes, 4);
+});
+
+test('取图：硬失败（DNS 解析不了）直接放弃整张，不白等第二个候选', async () => {
+  internals.__setStateDir(fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-hard-')));
+  const item = { pid: '1', imageUrl: 'https://i.pixiv.re/x_p0.png' };
+  let calls = 0;
+  const error = await withFetch(
+    async () => {
+      calls += 1;
+      const e = new Error('fetch failed');
+      e.cause = { code: 'ENOTFOUND' };
+      throw e;
+    },
+    async () => {
+      try { await internals.__fetchImage(item, { ...internals.DEFAULTS, timeoutMs: 3000 }); return null; }
+      catch (e) { return e; }
+    }
+  );
+  assert.ok(error, '应该抛错');
+  assert.equal(calls, 1, 'ENOTFOUND 换域名也一样连不上，不该再试第二个候选');
+});
+
+
 /** 一个尽量贴近宿主真实 ctx 的假上下文（含那些**不许**泄漏给插件的字段）。 */
 function fakeHostCtx(overrides = {}) {
   const images = [];

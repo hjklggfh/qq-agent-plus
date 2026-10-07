@@ -144,6 +144,16 @@ const DEFAULTS = {
   allowR18: false,
   stateCap: 2000,
   timeoutMs: 15000,
+  // 单张图的体积上限（字节）。超过就**不下载**，换下一个候选地址。
+  //
+  // 为什么必须有这一条（2026-10-08 实测，不是理论值）：这个插件在取图时优先用后端返回的
+  // **原图**完整路径。阿里云一台实例上实测那张原图 13,080,814 字节（12.5MB），
+  // 而到 `i.pixiv.re` 的速度约 118KB/s —— 下完要 **约 108 秒**，而工具上限只有 60 秒，
+  // 于是每次都是"整 60 秒被宿主掐断"，看起来像插件坏了。
+  // 同一个作品的 PID 简写形式（`pixiv.re/{pid}.png`）是**压缩过的**，4.6 秒就拿到。
+  // 何况群里发一张图也没必要 12.5MB —— 宿主还要把它 base64（膨胀 1.37 倍）塞进 OneBot 请求体。
+  // 想要原图就把它调大（例如 20 * 1024 * 1024），代价是慢和请求体大。
+  maxImageBytes: 5 * 1024 * 1024,
   // 一个关键词要多准备几张备选：作品被删/被限制访问时（实测 404）就自动换下一张。
   retryCandidates: 3,
   // 取不到图的作品拉黑多久（天）。搜索接口的索引是旧的，不拉黑就会永远挑到同一张死图。
@@ -876,6 +886,23 @@ function isNetError(error) {
     .test(String(error?.message ?? error));
 }
 
+/**
+ * 硬失败：换一个域名也一样连不上（DNS 解析不了 / 连接被拒 / 地址根本不合法）。
+ *
+ * 与之相对的是"软失败"——超时、连接被重置、socket hang up、以及"响应头回来了但响应体不回来"。
+ * 那些只说明**这个地址**在**这条线路**上不可用，而同一个作品的另一个候选地址（往往在另一个
+ * 域名上、而且是压缩过的）很可能能取到。
+ *
+ * ⚠️ 这条区分是 2026-10-08 加的，起因是一个真实故障：`i.pixiv.re` 的原图地址回到 200 响应头，
+ * 但响应体 12.5MB / 118KB/s 要下 108 秒。原先"网络类错误一律 break"的写法会让整张作品被放弃，
+ * 明明同一作品的 `pixiv.re/{pid}.png` 4.6 秒就能拿到。原作者那句"换域名也救不了断掉的线路"
+ * 在那种情形下不成立：线路是好的，坏的是那个域名/路径。
+ */
+function isHardNetError(error) {
+  const text = `${String(error?.message ?? '')} ${String(error?.cause?.code ?? '')} ${String(error?.cause?.message ?? '')}`;
+  return /ENOTFOUND|EAI_AGAIN|getaddrinfo|ECONNREFUSED|ERR_INVALID_URL/i.test(text);
+}
+
 // ── 网络 ──────────────────────────────────────────────────────────────────
 
 /**
@@ -935,13 +962,15 @@ function requestHeaders(s, accept, url, { minimal = false } = {}) {
  *    作品 pid，不接受模型给的任意 URL（模型能给的是 keyword / pid，pid 还要过
  *    extractPid 的纯数字校验）—— 见 README「关于 http 能力的如实说明」。
  */
-async function doFetch(url, accept, timeoutMs, { minimal = false } = {}) {
+async function doFetch(url, accept, timeoutMs, { minimal = false, controller = null } = {}) {
   const s = settings();
   const proxyUrl = resolveProxyUrl(s);
   const dispatcher = await dispatcherFor(proxyUrl);
   const ms = Math.max(3000, Number(timeoutMs) || 15000);
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), ms);
+  // controller 由调用方给时（取图那条路），**时限要活到响应体读完** —— 见 downloadToTemp 的注释。
+  // 不给就自己起一个、返回前清掉（搜索等"只读响应头就算完"的调用走这条）。
+  const ac = controller ?? new AbortController();
+  const timer = controller ? null : setTimeout(() => ac.abort(), ms);
   try {
     // 移植接口差异：原版是 `await api.fetch(url, {...})`（宿主门面）。
     return await fetch(url, {
@@ -954,6 +983,10 @@ async function doFetch(url, accept, timeoutMs, { minimal = false } = {}) {
       noteNetFailure();
       const wrapped = new Error(describeFetchError(error, ms, proxyUrl, url));
       wrapped.netError = true;
+      // 硬失败（DNS 解析不了 / 连接被拒）：换域名也一样连不上，取图那条路该直接放弃整张作品。
+      // 其余（超时 / 连接被重置 / socket hang up 等）只说明**这个地址**在这条线路上不可用，
+      // 值得给下一个候选一次机会 —— "头回来了、体不回来"就属于这一类。
+      wrapped.hardNetError = isHardNetError(error);
       throw wrapped;
     }
     throw error;
@@ -1083,38 +1116,121 @@ function sweepTemp(maxAgeMs = 15 * 60 * 1000) {
   } catch { /* 临时目录还不存在/不可读时什么都不做：清理失败不该影响发图 */ }
 }
 
-/** 下载图片到临时文件。必须带 Referer —— 这是本插件自己下载而不是交给协议端的原因。 */
-async function downloadToTemp(url, timeoutMs) {
-  const resp = await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', timeoutMs);
-  if (!resp.ok) {
-    const e = new Error(describeImageHttp(resp.status));
-    e.status = resp.status;      // 调用方靠它区分"作品没了"（404，可拉黑）与"线路问题"（超时，不能拉黑）
-    throw e;
+/**
+ * 边读边计数地读完响应体；超过上限就中止并抛错。
+ *
+ * ⚠️ 不能在 `await resp.arrayBuffer()` 之后再判大小 —— 那时 12.5MB 已经下完了，
+ * 等于没有上限（实测就是 30 秒只下到 3.6MB 那种情形）。所以必须边读边算、越界即 abort。
+ */
+async function readBodyCapped(resp, cap, controller) {
+  const tooBig = (bytes) => {
+    const e = new Error(`图片 ${(bytes / 1048576).toFixed(1)}MB 超过上限 ${(cap / 1048576).toFixed(1)}MB`);
+    e.tooBig = true;
+    e.bytes = bytes;
+    return e;
+  };
+  if (!resp.body || typeof resp.body.getReader !== 'function') {
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length > cap) throw tooBig(buf.length);
+    return buf;
   }
-  const buf = Buffer.from(await resp.arrayBuffer());
-  if (!buf.length) throw new Error('图片内容为空');
-  noteNetSuccess();
-  const mime = String(resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-  const ext = MIME_EXT[mime] || '.jpg';
-  const file = path.join(tempDir(), `pixiv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`);
-  fs.writeFileSync(file, buf);
-  return { file, bytes: buf.length };
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      try { controller.abort(); } catch { /* 已结束 */ }
+      try { await reader.cancel(); } catch { /* 取消失败无所谓：连接会被 abort 掉 */ }
+      throw tooBig(total);
+    }
+    chunks.push(Buffer.from(value));
+  }
+  if (!total) throw new Error('图片内容为空');
+  return Buffer.concat(chunks);
+}
+
+/**
+ * 下载图片到临时文件。必须带 Referer —— 这是本插件自己下载而不是交给协议端的原因。
+ *
+ * ⚠️ 这里的 `ac` + `timer` 是**由本函数持有**并交给 `doFetch` 的，因为时限要覆盖**响应体**，
+ * 不只是等响应头。"头回来了、体不回来"的图床（实测 `i.pixiv.re` 就是这样）会让
+ * `arrayBuffer()` 无限挂住 —— 原先 `doFetch` 在拿到响应头时就 `clearTimeout`，
+ * 于是 `timeoutMs` 形同虚设，一路挂到宿主的 60 秒工具上限才被掐断。
+ */
+async function downloadToTemp(url, timeoutMs, maxBytes) {
+  const ms = Math.max(3000, Number(timeoutMs) || 15000);
+  const cap = Math.max(64 * 1024, Number(maxBytes) || DEFAULTS.maxImageBytes);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    const resp = await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', ms, { controller: ac });
+    if (!resp.ok) {
+      const e = new Error(describeImageHttp(resp.status));
+      e.status = resp.status;      // 调用方靠它区分"作品没了"（404，可拉黑）与"线路问题"（超时，不能拉黑）
+      throw e;
+    }
+    // 有 Content-Length 就先看大小、**一个字节都不下**：给群发一张图没必要下 12.5MB 原图
+    const declared = Number(resp.headers.get('content-length')) || 0;
+    if (declared > cap) {
+      try { ac.abort(); } catch { /* 已结束 */ }
+      const e = new Error(`原图 ${(declared / 1048576).toFixed(1)}MB 超过上限 ${(cap / 1048576).toFixed(1)}MB`);
+      e.tooBig = true;
+      e.bytes = declared;
+      throw e;
+    }
+    let buf;
+    try {
+      buf = await readBodyCapped(resp, cap, ac);
+    } catch (error) {
+      if (error?.tooBig) throw error;
+      // 体阶段的失败（超时 abort / 连接中断）与"等响应头"阶段**同口径**包装：
+      // 可读文案 + netError/hardNetError 标记 —— 否则上层分不清"该换下一个候选"还是"放弃整张"，
+      // 而且日志里会只剩一句裸的 "This operation was aborted"。
+      if (isNetError(error)) {
+        noteNetFailure();
+        const wrapped = new Error(describeFetchError(error, ms, resolveProxyUrl(settings()), url));
+        wrapped.netError = true;
+        wrapped.hardNetError = isHardNetError(error);
+        throw wrapped;
+      }
+      throw error;
+    }
+    noteNetSuccess();
+    const mime = String(resp.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    const ext = MIME_EXT[mime] || '.jpg';
+    const file = path.join(tempDir(), `pixiv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+    fs.writeFileSync(file, buf);
+    return { file, bytes: buf.length };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
  * 取一张作品的图：先试后端给的原图地址，不行再试 PID 模板。
- * 404（作品没了）换下一个地址试；网络类错误（超时/拒绝）直接放弃这个作品 ——
- * 换域名也救不了断掉的线路，白等一整个超时没有意义。
+ *
+ * 404（作品没了）**换下一个地址**试；超时/太大这类"这个地址不可用"也换下一个地址试
+ * （见 isHardNetError 的说明：另一候选往往在另一个域名上，而且是压缩过的）。
+ * 只有硬失败（DNS 不了 / 连接被拒）才放弃整张 —— 那时换域名也一样连不上，白等一个超时没意义。
  */
 async function fetchImage(item, s) {
   const urls = imageCandidates(item, s.imageUrlTemplate);
   let last = null;
-  for (const url of urls) {
+  for (let i = 0; i < urls.length; i += 1) {
     try {
-      return await downloadToTemp(url, s.timeoutMs);
+      return await downloadToTemp(urls[i], s.timeoutMs, s.maxImageBytes);
     } catch (error) {
       last = error;
-      if (error?.netError) break;
+      if (error?.hardNetError) break;
+      // 换到下一个候选时说一声：这条日志是"图床在这个网络上部分不可用"的唯一现场证据，
+      // 没有它，用户看到的只是"取不到图"，而不知道插件已经退过一次了。
+      if (i + 1 < urls.length) {
+        const why = error?.tooBig ? error.message : String(error?.message ?? error).slice(0, 60);
+        try { api?.log?.info?.(`[pixiv-illust] 候选地址不可用（${why}），改试 PID 简写形式`); } catch { /* 日志失败不影响取图 */ }
+      }
     }
   }
   throw last || new Error('这张作品没有可用的图片地址');
