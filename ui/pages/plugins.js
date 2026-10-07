@@ -114,7 +114,7 @@ function renderPluginPage() {
       <button class="btn btn-small" data-plugin-action="reload">刷新</button>
     </div>
   </div>
-  <div class="hint">插件只给模型加工具。启用 / 确认能力 / 改设置都**只改配置**，
+  <div class="hint">插件只给模型加工具。启用 / 确认能力 / 改设置都<b>只改配置</b>，
   真正的装载发生在下一次启动 —— 所以改完要重启服务。<br>
   插件根：${(data.roots || []).map((root) => `<code>${esc(root)}</code>`).join('、') || '（无）'}</div>`;
 
