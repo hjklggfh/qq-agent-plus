@@ -276,6 +276,32 @@ await toolCtx.sendImage({ url: 'https://example.com/a.png' });
 - 留档文案是 `[图片:标签]`，与内置表情的 `[表情包:…]` **分开** —— 那张"我发过什么"的清单
   模型自己也会读到，把插画记成表情包会污染它的上下文。
 
+### 9.1 合并转发（`chat:send-forward`）
+
+多张图逐张发会把群聊刷屏。这个能力把它们打包成**一条**「聊天记录」卡片（点开才展开）：
+
+```js
+await toolCtx.sendForward({
+  items: [
+    { text: '这个作品有 3 页' },                          // 每个条目 = 卡片里的一个气泡
+    { path: path.join(toolCtx.dir, 'tmp', 'p0.jpg') },   // 形状与 sendImage 完全一致
+    { url: 'https://example.com/p1.jpg' }
+  ],
+  label: 'Pixiv 12345678 · 标题 · 作者'
+});
+// → { sent: true, messageId: 123, count: 3 }
+```
+
+- 条目形状与 `sendImage` **完全同一套**（`{ text }` / `{ path }` / `{ url }`）⇒ `{ path }` 的
+  路径守卫与体积上限逐字相同（同样为了挡住"把 `config.json` 发出去"）；`{ path }` 同样要 `storage`。
+- **node 的显示名与 QQ 号由宿主填死**（`selfNickname` / `selfId`）：插件不能借"聊天记录"
+  伪装成别人说话 —— 这是这类卡片最容易出问题的地方。
+- 上限：最多 10 条、图片合计 ≤12MB。留档文案 `[聊天记录:N 条]`。
+- 请求体可能很大（多张图 base64 塞一条），宿主会自动改走 WebSocket 通道（见
+  `HTTP_BODY_SAFE_MAX`），插件不用管。
+- **协议端不支持时**（`send_group_forward_msg` 不被认）宿主会**抛出可读错误** ——
+  插件应当**回落逐张发**，而不是让用户什么都收不到（pixiv 插件就是这么做的，且有用例盯着）。
+
 ## 10. `secrets`
 
 `plugins.settings.<id>` 下存凭据：

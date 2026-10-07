@@ -442,6 +442,50 @@ export class SendQueue {
     });
   }
 
+  /**
+   * 发一条「合并转发」（聊天记录卡片）：若干条内容折叠成一条消息，群里不再刷屏。
+   *
+   * 与 image() 逐条同口径：#deliver（禁言预检、限频、outbox 记账、"可确认未送达才重试"）
+   * + 同一道"上一次发送结果 unknown 就别再发"的防线 + **成功之后**才留档。
+   *
+   * `nodes` 是**已经拼好的** OneBot node 段（图片的 base64 就在里面），读文件/限体积/拼段
+   * 都由调用方（插件门面）负责 —— 发送队列不碰文件系统。
+   * ⚠️ payload 里**绝不能放 base64 本体**：它会被 beginSend 写进 outbox 表，几 MB 的图
+   * 直接把数据目录写胖。所以这里只记条数。
+   */
+  forward(chatKey, { nodes, label = '' } = {}, options = {}) {
+    const [kind, id] = String(chatKey).split(':');
+    const list = Array.isArray(nodes) ? nodes.filter(Boolean) : [];
+    const chain = this.#chain(chatKey);
+    return chain(async () => {
+      if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
+      if (!list.length) throw new Error('合并转发至少要有一条内容');
+      this.#checkRate(chatKey);
+      await sleep(randInt(600, 1500)); // 与发图同一条真人式停顿
+      const data = await this.#deliver(
+        chatKey,
+        options,
+        { type: 'forward', count: list.length },
+        () => this.onebot.sendForward(kind, id, list, { signal: options.signal })
+      );
+      const ts = Date.now();
+      let targetUserId = this.#replyTarget(chatKey, options);
+      if (!targetUserId && kind === 'private') targetUserId = String(id);
+      const text = `[聊天记录${label ? `:${String(label).slice(0, 40)}` : ''}（${list.length} 条）]`;
+      this.#afterSent(() => {
+        this.store.appendSelf(chatKey, {
+          text,
+          ts,
+          mid: data?.message_id ?? null,
+          targetUserId,
+          eventKind: 'message'
+        });
+        this.onSent?.({ chatKey, text, messageId: data?.message_id ?? null, forwardCount: list.length });
+      });
+      return { message_id: data?.message_id ?? null };
+    });
+  }
+
   /** 发送语音（本地合成的音频 → base64 record 段）。发送成功后留档，否则下次运行不知道自己发过语音。 */
   voice(chatKey, { file, seconds = 0, label = '' } = {}, options = {}) {
     const [kind, id] = String(chatKey).split(':');

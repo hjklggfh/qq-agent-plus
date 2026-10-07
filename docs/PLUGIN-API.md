@@ -172,7 +172,7 @@ id name version apiVersion capabilities log config registerTool kv stateDir secr
 **这是白名单，只有这六个**：
 
 <!-- plugin-api:capability-ids -->
-chat:send chat:read chat:send-image storage http secrets
+chat:send chat:read chat:send-image chat:send-forward storage http secrets
 <!-- /plugin-api:capability-ids -->
 
 | capability | 控制台显示 | 门面上多出 | 风险 | 一句话边界 |
@@ -180,12 +180,14 @@ chat:send chat:read chat:send-image storage http secrets
 | `chat:send` | 发送消息 | `send(messages, options?)` | 中 | 文本发言（≤5 条、每条 ≤3000 字）。`chatKey` 由宿主绑死，发不到别的会话；**不支持** `replyToMessageId` / `atUserId`（传了就报错） |
 | `chat:read` | 读取聊天记录 | `recent(limit?)` | 低 | 只读**当前会话**最近消息，默认 20 / 上限 100，返回 `{id, mid, at, senderId, senderName, self, text}` |
 | `chat:send-image` | 发送图片 | `sendImage(source, options?)` | 中 | `{ path }` 必须是**该插件状态目录内**的文件（要同时声明 `storage`）、单张 ≤12MB；或 `{ url }` 公网图片地址。见第 6 节 |
+| `chat:send-forward` | 发送合并转发（聊天记录） | `sendForward({ items, label? })` | 中 | 把 ≤10 条内容打包成**一条**「聊天记录」卡片（多张图不刷屏）。每条 `{ text }` / `{ path }`（状态目录内，要 `storage`）/ `{ url }`；图片合计 ≤12MB。**node 的显示名由宿主填死**，插件不能伪装成别人。见第 6 节 |
 | `storage` | 持久化存储 | `kv` `dir` | 低 | 自己的键值存储与状态目录。键 ≤64 字符，单值 ≤32KB，≤200 键，文件 ≤512KB |
 | `http` | 发起网络请求 | `fetch(url, options?)` | 中 | 只回**文本**（不是二进制）。GET/HEAD/POST/PUT/PATCH/DELETE，头 ≤24，请求体 ≤64KB，响应默认 256KB / 上限 1MB，超时默认 20s / 上限 30s，重定向 ≤5，**拒绝内网与本机地址** |
 | `secrets` | 读取自己的凭据 | `secret(name)` | 高 | 读本插件设置里的凭据。名字要过凭据判定（`token` 结尾、`apiKey`、`keys` 容器等） |
 
-`chat:send` 与 `chat:send-image` 是**两个**能力：管理员应当能分开决定给不给"往群里贴图"。
-声明了却不用不报错，但会让管理员多确认一项 —— 请只声明真的用到的。
+`chat:send`、`chat:send-image` 与 `chat:send-forward` 是**三个**能力：管理员应当能分开决定
+"说话""往群里贴图""把一组内容折叠成一条卡片"。声明了却不用不报错，但会让管理员多确认一项 ——
+请只声明真的用到的。
 
 ---
 
@@ -195,7 +197,7 @@ chat:send chat:read chat:send-image storage http secrets
 没有 `store`、没有 `sender`、没有 `session.sent`、没有 `emit`，这些是刻意不给的。
 
 <!-- plugin-api:toolctx-members -->
-pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNickname botName signal log session send recent sendImage kv dir fetch secret
+pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNickname botName signal log session send recent sendImage sendForward kv dir fetch secret
 <!-- /plugin-api:toolctx-members -->
 
 | 成员 | 何时存在 | 说明 |
@@ -209,6 +211,7 @@ pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNi
 | `send(messages, options?)` | `chat:send` | 结果 `{ sent, failed }`。成功会自动进会话留档 |
 | `recent(limit?)` | `chat:read` | 见第 5 节 |
 | `sendImage(source, options?)` | `chat:send-image` | 结果 `{ sent: true, messageId, bytes }`。见下 |
+| `sendForward({ items, label? })` | `chat:send-forward` | 结果 `{ sent: true, messageId, count }`。见下 |
 | `kv` `dir` | `storage` | `dir` = 状态目录绝对路径，`kv` 同步方法 `get/set/delete/list/all/sizeBytes/updatedAt` |
 | `fetch(url, options?)` | `http` | 见第 5 节 |
 | `secret(name)` | `secrets` | 见第 5 节 |
@@ -227,6 +230,28 @@ await toolCtx.sendImage({ url: 'https://example.com/a.png' });
 - `{ url }` 走内置表情发远程图的同一道守卫（拒内网/本机/非法协议）。
 - 留档文案是 `[图片:标签]`，与内置表情的 `[表情包:…]` 分开；记账（进 `session.sent`、
   广播 `session-update`）由门面做，**插件不要自己再记一遍**。
+
+**`sendForward` 的用法**（多张图不刷屏）：
+
+```js
+// 每个条目在卡片里是**一个气泡** —— 那才是"聊天记录"该有的样子
+await toolCtx.sendForward({
+  items: [
+    { text: '这个作品有 3 页' },
+    { path: path.join(toolCtx.dir, 'tmp', 'p0.jpg') },
+    { path: path.join(toolCtx.dir, 'tmp', 'p1.jpg') }
+  ],
+  label: 'Pixiv 12345678 · 标题 · 作者'
+});
+```
+
+- 条目形状与 `sendImage` **完全同一套**（`{ text }` / `{ path }` / `{ url }`），
+  所以 `{ path }` 的路径守卫与体积上限逐字相同 —— 同样是为了挡住"把 `config.json` 发出去"。
+- **node 的显示名与 QQ 号由宿主填死**（`selfNickname` / `selfId`）：插件不能借"聊天记录"
+  伪装成别人说话 —— 这是这类卡片最容易出问题的地方。
+- 最多 10 条，图片合计 ≤12MB；留档文案是 `[聊天记录:N 条]`。
+- 转发动作本身**不接受** `replyToMessageId` / `atUserId`（传了就报错）。
+- 请求体可能很大（多张图 base64 塞一条），宿主会自动改走 WebSocket 通道 —— 插件不用管。
 
 ---
 

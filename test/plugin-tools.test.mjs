@@ -68,6 +68,7 @@ async function loadFixture(ids, extra = {}) {
 function fakeHostCtx(overrides = {}) {
   const sends = [];
   const images = [];
+  const forwards = [];
   const emitted = [];
   const session = { id: 'sess-1', leaseId: 'lease-1', rounds: 3, sent: [], triggerText: '在吗' };
   const ctx = {
@@ -86,6 +87,10 @@ function fakeHostCtx(overrides = {}) {
       async image(chatKey, payload, options) {
         images.push({ chatKey, payload, options });
         return { message_id: 4242 };
+      },
+      async forward(chatKey, payload, options) {
+        forwards.push({ chatKey, payload, options });
+        return { message_id: 4343 };
       }
     },
     store: { recent: () => [{ id: 1, mid: 10, ts: 1700000000000, senderId: '7', senderName: '阿花', self: false, text: '在吗' }] },
@@ -99,7 +104,7 @@ function fakeHostCtx(overrides = {}) {
     session,
     ...overrides
   };
-  return { ctx, sends, images, emitted, session };
+  return { ctx, sends, images, forwards, emitted, session };
 }
 
 test.after(async () => {
@@ -437,4 +442,90 @@ test('sendImage：体积上限、缺参数、引用/@ 都要有明确的可读�
     /暂不支持 replyToMessageId\/atUserId/);
   await assert.rejects(() => api.sendImage({ path: path.join(dir, 'missing.png') }), /图片文件不存在/);
   assert.equal(fs.existsSync(path.join(dir, 'state.json')) || true, true);
+});
+
+// ── chat:send-forward 能力面（合并转发：多张图不刷屏）──────────────────────
+
+test('没声明 chat:send-forward 时，门面上根本没有 sendForward', () => {
+  assert.equal('sendForward' in facade(['storage', 'chat:send-image'], fakeHostCtx().ctx), false);
+  assert.equal(typeof facade(['chat:send-forward'], fakeHostCtx().ctx).sendForward, 'function');
+});
+
+test('sendForward：每条内容各成一个 node，显示名由**宿主**填死，并记账进 session.sent', async () => {
+  const dir = stateDir();
+  const file = path.join(dir, 'p0.png');
+  fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  const { ctx, forwards, emitted, session } = fakeHostCtx();
+
+  const result = await facade(['storage', 'chat:send-forward'], ctx)
+    .sendForward({ items: [{ text: '这个作品有 2 页' }, { path: file }], label: 'Pixiv 1 · 标题' });
+
+  assert.equal(result.sent, true);
+  assert.equal(result.count, 2);
+  assert.equal(result.messageId, 4343);
+  assert.equal(forwards.length, 1);
+  assert.equal(forwards[0].chatKey, 'group:12345', 'chatKey 必须由宿主绑死');
+  assert.equal(forwards[0].options.runId, 'lease-1', '要带 runId，否则 outbox 记账挂不上这次运行');
+  const nodes = forwards[0].payload.nodes;
+  assert.equal(nodes.length, 2, '每个条目一个 node —— 那才是"聊天记录"的样子');
+  // 显示名/QQ 号由宿主填，插件不能伪装成别人说话
+  assert.equal(nodes[0].data.name, '小鲸鱼');
+  assert.equal(nodes[0].data.uin, '999');
+  assert.deepEqual(nodes[0].data.content, [{ type: 'text', data: { text: '这个作品有 2 页' } }]);
+  assert.equal(nodes[1].data.content[0].type, 'image');
+  assert.equal(nodes[1].data.content[0].data.file,
+    `base64://${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64')}`);
+  // 与内置工具同一套记账
+  assert.equal(session.sent.length, 1);
+  assert.match(session.sent[0].text, /^\[聊天记录:2 条\]$/);
+  assert.deepEqual(emitted, [['session-update', 'sess-1']]);
+});
+
+test('sendForward：**状态目录之外的文件一律拒绝**（同 sendImage 的路径守卫）', async () => {
+  const dir = stateDir();
+  const secret = path.join(dataDir, 'config.json');
+  fs.writeFileSync(secret, JSON.stringify({ apiKey: 'sk-should-never-be-sent' }));
+  const api = facade(['storage', 'chat:send-forward'], fakeHostCtx().ctx);
+
+  await assert.rejects(() => api.sendForward({ items: [{ path: secret }] }),
+    /只接受插件自己状态目录里的文件/);
+  await assert.rejects(() => api.sendForward({ items: [{ path: path.join(dir, '..', '..', 'config.json') }] }),
+    /只接受插件自己状态目录里的文件/);
+});
+
+test('sendForward：只声明 chat:send-forward 而没声明 storage 时，用 path 会明确报错', async () => {
+  const dir = stateDir();
+  const file = path.join(dir, 'a.png');
+  fs.writeFileSync(file, Buffer.from([1]));
+  await assert.rejects(() => facade(['chat:send-forward'], fakeHostCtx().ctx).sendForward({ items: [{ path: file }] }),
+    /需要同时声明 storage/);
+});
+
+test('sendForward：体积/条数上限、缺参数、非法 URL、引用/@ 都要有明确的可读错误', async () => {
+  const dir = stateDir();
+  const big = path.join(dir, 'big.png');
+  fs.writeFileSync(big, Buffer.alloc(MAX_IMAGE_BYTES + 1, 1));
+  const api = facade(['storage', 'chat:send-forward'], fakeHostCtx().ctx);
+
+  await assert.rejects(() => api.sendForward({ items: [] }), /至少要有一条内容/);
+  await assert.rejects(() => api.sendForward({}), /至少要有一条内容/);
+  await assert.rejects(() => api.sendForward({ items: ['nope'] }), /都要是对象/);
+  await assert.rejects(() => api.sendForward({ items: [{}] }), /需要 \{ text \}/);
+  await assert.rejects(() => api.sendForward({ items: [{ path: big }] }), /超过 \d+ 字节上限/);
+  await assert.rejects(
+    () => api.sendForward({ items: Array.from({ length: 11 }, () => ({ text: 'x' })) }),
+    /最多 10 条/
+  );
+  await assert.rejects(() => api.sendForward({ items: [{ url: 'http://127.0.0.1/a.png' }] }),
+    /内网|本机|只允许|仅允许|不合法|URL/);
+  await assert.rejects(() => api.sendForward({ items: [{ text: 'x' }], atUserId: '7' }),
+    /不支持 replyToMessageId\/atUserId/);
+});
+
+test('sendForward：宿主没有 forward（旧版本）时给出可读错误，而不是静默失败', async () => {
+  const host = fakeHostCtx();
+  delete host.ctx.sender.forward;                 // 模拟旧宿主
+  const api = facade(['storage', 'chat:send-forward'], host.ctx);
+  await assert.rejects(() => api.sendForward({ items: [{ text: 'x' }] }),
+    /还不支持合并转发/);
 });

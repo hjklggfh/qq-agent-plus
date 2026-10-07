@@ -498,6 +498,30 @@ export class OneBotClient {
     return this.sendSegments(kind, id, segments, signal, { timeoutMs: MEDIA_TIMEOUT_MS });
   }
 
+  /**
+   * 发一条「合并转发」（聊天记录卡片）。多张图打包成一条消息，群里不再刷屏。
+   *
+   * `nodes` 是 OneBot 的 node 段数组，每段形如
+   * `{ type: 'node', data: { name, uin, content: [段…] } }`（自定义节点，不需要先有一条真消息）。
+   *
+   * 群聊与私聊是**两个** action、参数名也不同（`send_group_forward_msg` 用 group_id、
+   * `send_forward_msg` 用 user_id）—— 分开写，别指望一个能兼容另一个。
+   *
+   * 走 `call()` 而不是自己拼 HTTP：这样请求体过大时会自动落到 WebSocket 通道
+   * （多张图的 base64 塞在一条转发里，很容易超过协议端 2MiB 的 HTTP body 上限）。
+   */
+  async sendForward(kind, id, nodes, { signal } = {}) {
+    const messages = Array.isArray(nodes) ? nodes.filter(Boolean) : [];
+    if (!messages.length) {
+      throw new OneBotActionError('合并转发至少要有一条内容', { outcome: 'failed' });
+    }
+    const action = kind === 'private' ? 'send_forward_msg' : 'send_group_forward_msg';
+    const params = kind === 'private'
+      ? { user_id: Number(id), messages }
+      : { group_id: Number(id), messages };
+    return this.call(action, params, MEDIA_TIMEOUT_MS, signal);
+  }
+
   async sendFace(kind, id, faceId, { replyToMessageId = null, atUserId = null, text = null, signal } = {}) {
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {

@@ -29,6 +29,10 @@ export const MAX_SEND_TEXT_LENGTH = 3000;
 export const MAX_RESULT_BYTES = 64 * 1024;
 /** 插件能发的单张图片上限。与内置链路读图的量级一致（safeFetchBinary 默认 12MB）。 */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+/** 一条合并转发里最多几"条"（每个条目在卡片里是一个气泡）。 */
+export const MAX_FORWARD_ITEMS = 10;
+/** 合并转发里图片的**合计**上限：一条转发里的图会一起进同一个请求体，逐张各 12MB 会失控。 */
+export const MAX_FORWARD_BYTES = 12 * 1024 * 1024;
 export const SECRET_NAME_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/;
 
 /** 审计用的凭据容器名（与 secret-keys.js 的 SECRET_CONTAINER 同口径）。 */
@@ -334,6 +338,104 @@ export function buildPluginToolContext({
         at: new Date().toLocaleTimeString('zh-CN', { hour12: false })
       });
       return { sent: true, messageId: result?.message_id ?? null, bytes };
+    };
+  }
+
+  if (capabilities.includes('chat:send-forward')) {
+    const sender = hostCtx.sender;
+    const session = hostCtx.session;
+    const chatKey = String(hostCtx.chatKey ?? '');
+    const ownDir = pluginStateDir(dataDir, manifest.id);
+    let realDir = '';
+    /**
+     * 把若干条内容打包成**一条**「聊天记录」发出去 —— 群聊里多张图不再刷屏。
+     *
+     * 条目形状与 sendImage 完全同一套：`{ text }` / `{ path }` / `{ url }`。
+     * 每个条目在卡片里是**一个气泡**（所以每条一个 node，而不是全塞进一个 node）——
+     * 那才是"聊天记录"该有的样子；全塞一个 node 的话只有一个气泡里堆四张图。
+     *
+     * ⚠️ `{ path }` 沿用与 sendImage **逐字相同**的路径守卫（realpath 后判包含）：不设这条，
+     * 插件就能把 data/config.json（含明文凭据）当"聊天记录里的一张图"发到群里。
+     * ⚠️ node 的显示名/QQ 号由**宿主**填死，插件不能借这个能力伪装成别人说话。
+     */
+    toolCtx.sendForward = async (options = {}) => {
+      if (!sender || typeof sender.forward !== 'function') {
+        throw new Error('这个宿主版本还不支持合并转发（发送队列里没有 forward）');
+      }
+      if (!isPlainObject(options)) throw new Error('sendForward 需要 { items: [...] }');
+      // 与 sendImage 同一口径：转发动作本身不接受引用/@，明确报错而不是静默忽略。
+      if (options.replyToMessageId !== undefined || options.atUserId !== undefined) {
+        throw new Error('插件的 sendForward() 不支持 replyToMessageId/atUserId；需要引用/@ 时请改用内置工具');
+      }
+      const items = Array.isArray(options.items) ? options.items : [];
+      if (!items.length) throw new Error('sendForward 至少要有一条内容');
+      if (items.length > MAX_FORWARD_ITEMS) {
+        throw new Error(`合并转发最多 ${MAX_FORWARD_ITEMS} 条（实际 ${items.length}）`);
+      }
+      const nodes = [];
+      let bytes = 0;
+      for (const item of items) {
+        if (!isPlainObject(item)) {
+          throw new Error('sendForward 的每条内容都要是对象：{ text } / { path } / { url }');
+        }
+        let segment = null;
+        if (typeof item.text === 'string' && item.text.trim()) {
+          segment = { type: 'text', data: { text: String(item.text).slice(0, MAX_SEND_TEXT_LENGTH) } };
+        } else if (typeof item.path === 'string' && item.path.trim()) {
+          if (!capabilities.includes('storage')) {
+            throw new Error('用 { path } 发图需要同时声明 storage 能力（图片必须放在插件自己的状态目录里）');
+          }
+          if (!realDir) {
+            try { realDir = fs.realpathSync(ownDir); } catch { throw new Error(`插件状态目录还不存在：${ownDir}`); }
+          }
+          const abs = path.resolve(String(item.path).trim());
+          let real = '';
+          try { real = fs.realpathSync(abs); } catch { throw new Error(`图片文件不存在：${abs}`); }
+          const rel = path.relative(realDir, real);
+          if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+            throw new Error(`sendForward 只接受插件自己状态目录里的文件：${abs} 不在 ${realDir} 之内`);
+          }
+          const stat = fs.statSync(real);
+          if (!stat.isFile()) throw new Error(`不是普通文件：${real}`);
+          if (stat.size > MAX_IMAGE_BYTES) {
+            throw new Error(`图片超过 ${MAX_IMAGE_BYTES} 字节上限（实际 ${stat.size}）`);
+          }
+          bytes += stat.size;
+          if (bytes > MAX_FORWARD_BYTES) {
+            throw new Error(`合并转发里的图片合计超过 ${MAX_FORWARD_BYTES} 字节上限`);
+          }
+          segment = { type: 'image', data: { file: `base64://${fs.readFileSync(real).toString('base64')}` } };
+        } else if (typeof item.url === 'string' && item.url.trim()) {
+          const raw = String(item.url).trim();
+          // 与内置表情发远程图同一道守卫：只收公网 http(s)，拒绝内网/本机与非法协议。
+          await validateImageUrl(raw);
+          segment = { type: 'image', data: { file: raw } };
+        } else {
+          throw new Error('sendForward 的每条内容需要 { text }、{ path }（状态目录内的文件）或 { url }（公网图片地址）');
+        }
+        nodes.push({
+          type: 'node',
+          data: {
+            // 显示名统一由宿主填：插件无法伪装成别人（这是"聊天记录"这类卡片最容易出问题的地方）
+            name: String(hostCtx.selfNickname || hostCtx.botName || '机器人').slice(0, 40),
+            uin: String(hostCtx.selfId ?? ''),
+            content: [segment]
+          }
+        });
+      }
+      const result = await sender.forward(chatKey, {
+        nodes,
+        label: String(options.label ?? '')
+      }, {
+        runId: session?.leaseId,
+        signal: toolCtx.signal
+      });
+      afterDelivered(hostCtx, session, {
+        type: 'forward',
+        text: `[聊天记录:${nodes.length} 条]`,
+        at: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+      });
+      return { sent: true, messageId: result?.message_id ?? null, count: nodes.length };
     };
   }
 

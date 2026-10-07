@@ -49,6 +49,19 @@ export const PLUGIN_CAPABILITIES = Object.freeze([
       + '「可确认未送达才重试」与异常捕获全部继承。'
   },
   {
+    id: 'chat:send-forward',
+    label: '发送合并转发（聊天记录）',
+    risk: 'medium',
+    summary: '把若干条内容打包成一条「聊天记录」卡片发到当前会话，点开才展开。',
+    detail: '与 chat:send / chat:send-image 是**三个**能力：它既不是"说一句话"也不是"贴一张图"，'
+      + '而是"把一组内容折叠成一条消息"（群聊里多张图不再刷屏）。管理员应当能单独决定给不给。'
+      + '条目来源与 chat:send-image 同一套：`{ text }`、`{ path }`（必须是该插件自己状态目录内的'
+      + '文件，需要同时声明 storage，宿主读出来拼 base64，有体积上限）、`{ url }`（公网地址，'
+      + '拒绝内网/本机/非法协议）。**node 的显示名由宿主统一填**（插件不能伪装成别人说话）。'
+      + 'chatKey 同样由宿主绑死。发送走既有发送队列：禁言预检、限频、outbox 记账、'
+      + '「可确认未送达才重试」与异常捕获全部继承；outbox payload 只记条数，不留 base64。'
+  },
+  {
     id: 'storage',
     label: '持久化存储',
     risk: 'low',
