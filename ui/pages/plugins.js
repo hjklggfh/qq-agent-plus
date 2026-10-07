@@ -19,6 +19,7 @@ import { state } from '../core/state.js';
 const LIST_BOX = '#plugin-page';
 const SETTINGS_BOX = '#plugin-settings-box';
 const NOTE_BOX = '#plugin-note';
+const ROOTS_BOX = '#plugin-roots-box';
 
 /** 每个状态的展示口径（标签 + 修饰类）。键与服务端 PLUGIN_STATUS 一一对应。 */
 const STATUS_META = {
@@ -39,9 +40,15 @@ function statusMeta(status) {
 
 function pageData() {
   if (!state.pluginPage || typeof state.pluginPage !== 'object') {
-    state.pluginPage = { plugins: [], capabilities: [], roots: [], enabled: [], editing: '', note: '' };
+    state.pluginPage = {
+      plugins: [], capabilities: [], roots: [], rootInfo: [], enabled: [],
+      maxRoots: 5, editing: '', rootsEditing: false, note: ''
+    };
   }
-  return state.pluginPage;
+  const data = state.pluginPage;
+  if (!Array.isArray(data.rootInfo)) data.rootInfo = [];
+  if (typeof data.maxRoots !== 'number') data.maxRoots = 5;
+  return data;
 }
 
 function note(text, kind = '') {
@@ -56,6 +63,34 @@ function capabilityChip(cap, catalog) {
   const risk = RISK_LABEL[meta.risk] || '?';
   const title = meta.summary ? `${meta.summary}（风险：${risk}）` : `风险：${risk}`;
   return `<span class="chip plugin-cap" title="${esc(title)}">${esc(meta.label || cap)}</span>`;
+}
+
+/**
+ * 插件来源徽标。
+ *
+ * 这个标记不是装饰：`随版本发布` 的那个根由 `deploy.sh` 同步，升级时会覆盖或合并同名文件；
+ * 而"自建根"完全不经过 rsync —— "加/删插件不必发版本"这条路走的正是后者。只显示路径不足以
+ * 让人分辨这两者，所以服务端算了 `bundled` 下发（见 plugins/console-routes.js 的 isBundledRoot）。
+ */
+function sourceBadge(item) {
+  if (!item?.root) return '';
+  return item.bundled
+    ? '<span class="chip plugin-src is-bundled" title="随版本发布：这个目录由 deploy.sh 同步，升级时会覆盖或合并同名文件">随版本发布</span>'
+    : '<span class="chip plugin-src is-own" title="自建根：deploy.sh 不碰这里，所以加/删插件都不必发版本">自建</span>';
+}
+
+/** 插件根清单（带"随版本发布 / 自建 / 目录不存在"标记）。 */
+function rootListHtml() {
+  const data = pageData();
+  const info = Array.isArray(data.rootInfo) ? data.rootInfo : [];
+  if (!info.length) return '（还没有插件根）';
+  return info.map((entry) => {
+    const bundled = entry.bundled
+      ? '<span class="chip plugin-src is-bundled">随版本发布</span>'
+      : '<span class="chip plugin-src is-own">自建</span>';
+    const missing = entry.exists ? '' : '<span class="chip plugin-src is-bad">目录不存在</span>';
+    return `<div class="plugin-root-row">${bundled}${missing}<code>${esc(entry.path)}</code></div>`;
+  }).join('');
 }
 
 function pluginRow(item, catalog) {
@@ -76,7 +111,18 @@ function pluginRow(item, catalog) {
   if (item.status === 'pending-approval') {
     actions.push(`<button class="btn btn-small" data-plugin-action="approve" data-plugin-id="${esc(item.id)}">确认这份能力</button>`);
   }
-  actions.push(`<button class="btn btn-small" data-plugin-action="settings" data-plugin-id="${esc(item.id)}">设置</button>`);
+  // 盘上没有这个 id 时"设置"必然失败（服务端找不到它），所以那种行只留「移除」。
+  if (item.status !== 'missing') {
+    actions.push(`<button class="btn btn-small" data-plugin-action="settings" data-plugin-id="${esc(item.id)}">设置</button>`);
+  }
+  // 「移除」= 清掉 启用/确认/设置 三处记录，**不删插件目录**（目录路径就显示在上面，
+  // 可能在随版本发布的那个根里，删了下次部署又回来 —— 与其做一个会被自己撤销的动作，
+  // 不如告诉你确切路径）。
+  actions.push(`<button class="btn btn-small" data-plugin-action="remove" data-plugin-id="${esc(item.id)}">移除</button>`);
+  // 不可逆的那个动作只在真有状态目录时才给（服务端算的 stateDirExists）。
+  if (item.stateDirExists) {
+    actions.push(`<button class="btn btn-small btn-danger" data-plugin-action="remove" data-plugin-id="${esc(item.id)}" data-plugin-purge="true">移除并删数据</button>`);
+  }
 
   const restart = item.needsRestart
     ? '<div class="hint">配置已就绪，<b>重启服务后生效</b></div>'
@@ -87,7 +133,7 @@ function pluginRow(item, catalog) {
 
   return `<tr>
     <td>
-      <div class="plugin-id"><code>${esc(item.id)}</code> <span class="hint">${esc(item.version || '')}</span></div>
+      <div class="plugin-id"><code>${esc(item.id)}</code> <span class="hint">${esc(item.version || '')}</span>${sourceBadge(item)}</div>
       <div class="plugin-name">${esc(item.name || '')}</div>
       ${item.description ? `<div class="hint">${esc(item.description)}</div>` : ''}
       ${item.dir ? `<div class="plugin-dir" title="${esc(item.dir)}">${esc(item.dir)}</div>` : ''}
@@ -114,14 +160,18 @@ function renderPluginPage() {
       <button class="btn btn-small" data-plugin-action="reload">刷新</button>
     </div>
   </div>
-  <div class="hint">插件只给模型加工具。启用 / 确认能力 / 改设置都<b>只改配置</b>，
-  真正的装载发生在下一次启动 —— 所以改完要重启服务。<br>
-  插件根：${(data.roots || []).map((root) => `<code>${esc(root)}</code>`).join('、') || '（无）'}</div>`;
+  <div class="hint">
+    <b>加插件：</b>把插件目录放进任一插件根（<b>目录名必须等于 plugin.json 里的 id</b>）
+    → 点「刷新」→ 启用 → 确认这份能力 → 重启服务。<br>
+    <b>删插件：</b>点「移除」清掉配置记录（<b>不删插件目录</b>，路径写在每行下面），
+    目录请自行删除；数据目录默认保留，要一起删就点「移除并删数据」。<br>
+    启用 / 确认 / 改设置 / 改插件根都<b>只改配置</b>，装载发生在下一次启动 —— 所以都要重启才生效。
+  </div>`;
 
   if (!items.length) {
     return setHtmlIfChanged(box, `${head}<div class="empty-hint">还没有插件。
-      把插件目录放进上面的插件根里（一个插件 = 一个目录，含 plugin.json 与入口文件），
-      然后点「刷新」。写法见 docs/PLUGINS.md。</div>`, { force: true });
+      把插件目录放进下面的插件根里（一个插件 = 一个目录，含 plugin.json 与入口文件，
+      目录名要等于 plugin.json 里的 id），然后点「刷新」。写法见 docs/PLUGINS.md 与 docs/PLUGIN-API.md。</div>`, { force: true });
   }
 
   const rows = items.map((item) => pluginRow(item, data.capabilities || [])).join('');
@@ -168,14 +218,64 @@ function renderSettingsEditor(payload) {
   </div>`;
 }
 
+/**
+ * 插件根编辑器（在**自动刷新容器之外**，与设置编辑器同一个理由：别把正在输入的内容冲掉）。
+ *
+ * 渲染时机刻意**不放在 refresh() 里** —— 它只在进页面、点「编辑插件根」、保存/取消之后重画。
+ * 否则用户正在输入一个新路径时后台一刷新，输入就没了（这个控制台踩过好几次的那个坑）。
+ */
+function renderRootsEditor() {
+  const box = $(ROOTS_BOX);
+  if (!box) return;
+  const data = pageData();
+  if (data.rootsEditing !== true) {
+    box.innerHTML = `<div class="plugin-roots">
+      <div class="asset-toolbar">
+        <div class="asset-search"><b>插件根</b>
+          <span class="hint">${(data.roots || []).length} / ${data.maxRoots} 个</span></div>
+        <div class="asset-toolbar-actions">
+          <button class="btn btn-small" data-plugin-action="roots-edit">编辑插件根</button>
+        </div>
+      </div>
+      <div class="hint">放进这些目录的插件不会被 deploy.sh 碰到（标「自建」的那些更是一点都不碰），
+      所以加/删插件都不必发版本。重启服务后新根里的插件才会被装载。</div>
+      ${rootListHtml()}
+    </div>`;
+    return;
+  }
+  box.innerHTML = `<div class="plugin-roots">
+    <div class="asset-toolbar">
+      <div class="asset-search"><b>编辑插件根</b></div>
+      <div class="asset-toolbar-actions">
+        <button class="btn btn-small" data-plugin-action="roots-save">保存</button>
+        <button class="btn btn-small" data-plugin-action="roots-cancel">取消</button>
+      </div>
+    </div>
+    <textarea id="plugin-roots-text" spellcheck="false" rows="5"
+      aria-label="插件根，一行一个">${esc((data.roots || []).join('\n'))}</textarea>
+    <div class="hint">一行一个，最多 ${data.maxRoots} 个。绝对路径按原样用；
+    相对路径是相对数据目录解析的（例如写 <code>my-plugins</code> 等于数据目录下的 my-plugins）。
+    安装目录里的那个 plugins 根<b>自动包含</b>，不用写进来，也删不掉它。</div>
+    ${rootListHtml()}
+  </div>`;
+}
+
+/** 把服务端下发的整份快照写进 state。`GET /api/plugins` 与各写入路由的响应是同一个形状。 */
+function applyPayload(payload) {
+  const data = pageData();
+  data.plugins = Array.isArray(payload?.plugins) ? payload.plugins : [];
+  data.capabilities = Array.isArray(payload?.capabilities) ? payload.capabilities : [];
+  data.roots = Array.isArray(payload?.roots) ? payload.roots : [];
+  data.rootInfo = Array.isArray(payload?.rootInfo) ? payload.rootInfo : [];
+  data.enabled = Array.isArray(payload?.enabled) ? payload.enabled : [];
+  if (typeof payload?.maxRoots === 'number') data.maxRoots = payload.maxRoots;
+  return data;
+}
+
 async function refresh() {
   try {
     const payload = await api('/api/plugins');
-    const data = pageData();
-    data.plugins = Array.isArray(payload?.plugins) ? payload.plugins : [];
-    data.capabilities = Array.isArray(payload?.capabilities) ? payload.capabilities : [];
-    data.roots = Array.isArray(payload?.roots) ? payload.roots : [];
-    data.enabled = Array.isArray(payload?.enabled) ? payload.enabled : [];
+    const data = applyPayload(payload);
     // 正在编辑的插件没了（被删/改名）就把编辑器收起来，免得停在一个不存在的 id 上。
     if (data.editing && !data.plugins.some((item) => item.id === data.editing)) {
       data.editing = '';
@@ -217,6 +317,50 @@ async function handleAction(action, id, el) {
     const caps = (result?.approved?.capabilities || []).join('、') || '（无能力）';
     const tools = (result?.approved?.tools || []).join('、') || '（无工具）';
     note(`已确认 ${id}@${result?.approved?.version ?? '?'}：能力 ${caps}；工具 ${tools}。重启服务后生效。`, 'success');
+    await refresh();
+    return;
+  }
+  if (action === 'remove') {
+    const purge = el?.dataset?.pluginPurge === 'true';
+    const message = purge
+      ? `移除插件 ${id} 并删除它的数据？\n\n会清掉它的「启用 / 能力确认 / 设置」三处配置记录；插件目录不会删。\n在 plugin-state 下的数据会被永久删除，不可恢复。`
+      : `移除插件 ${id} 的配置记录？\n\n会清掉它的「启用 / 能力确认 / 设置」三处记录；插件目录不会删，数据目录也会保留。`;
+    // askForConfirmation 返回 Promise，必须 await（不 await 等于"从来不问就删"）。
+    if (!await askForConfirmation(message)) return;
+    const result = await post('/api/plugins/remove', { id, purgeState: purge });
+    data.editing = data.editing === id ? '' : data.editing;
+    renderSettingsEditor(null);
+    const removed = result?.removed || {};
+    const tail = removed.purgeError
+      ? `，但数据目录没删掉：${removed.purgeError}`
+      : (removed.purged ? '，数据已删除' : '，数据目录保留');
+    note(`${id} 的配置记录已移除${tail}。${result?.restartRequired ? '重启服务后它的工具会真的消失。' : ''}`, 'success');
+    await refresh();
+    return;
+  }
+  if (action === 'roots-edit') {
+    data.rootsEditing = true;
+    renderRootsEditor();
+    return;
+  }
+  if (action === 'roots-cancel') {
+    data.rootsEditing = false;
+    renderRootsEditor();
+    return;
+  }
+  if (action === 'roots-save') {
+    const area = $('#plugin-roots-text');
+    if (!area) return;
+    const roots = String(area.value || '').split('\n').map((line) => line.trim()).filter(Boolean);
+    if (roots.length > data.maxRoots) {
+      note(`最多 ${data.maxRoots} 个插件根（现在是 ${roots.length} 个）。`, 'error');
+      return;
+    }
+    const result = await post('/api/plugins/roots', { roots });
+    applyPayload(result);
+    data.rootsEditing = false;
+    renderRootsEditor();
+    note(`插件根已保存（${(result?.roots || []).length} 个）。新根里的插件会立刻出现在列表里，但要重启服务才会装载。`, 'success');
     await refresh();
     return;
   }
@@ -271,6 +415,9 @@ async function loadPluginPage() {
   } catch (error) {
     setBoxError($(LIST_BOX), `<div class="empty-hint">插件页渲染失败：${esc(error?.message ?? error)}</div>`);
   }
+  // 插件根编辑器**不在 refresh() 里重画**（否则正在输入的路径会被后台刷新冲掉），
+  // 所以在这里单独画一次：拉取失败也要能编辑根（那正是"我加的根怎么没生效"时要看的地方）。
+  renderRootsEditor();
 }
 
 /** 事件委托只挂一次。绑在 `.view` 容器上，这样列表重画不需要重新绑定。 */

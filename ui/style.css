@@ -3225,6 +3225,41 @@ dialog { margin: auto; max-height: 88vh; }
 .plugin-status.is-bad { color: var(--red, #ff6b6b); border-color: currentColor; background: transparent; }
 .plugin-cap { font-size: 11px; }
 .plugin-cap[title*="高风险"], .plugin-cap[title*="风险：高"] { color: var(--red, #ff6b6b); }
+
+/* 来源徽标：随版本发布 / 自建 / 目录不存在。这是"加插件不必发版"这条路上最要紧的一个区分。 */
+.plugin-src { font-size: 10.5px; margin-left: 6px; padding: 1px 6px; }
+.plugin-src.is-own { color: var(--green, #2fd07a); border-color: currentColor; background: transparent; }
+.plugin-src.is-bundled { color: var(--muted, #8b949e); }
+.plugin-src.is-bad { color: var(--red, #ff6b6b); border-color: currentColor; background: transparent; }
+
+#plugin-roots-box:empty { display: none; }
+.plugin-roots {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.plugin-roots textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  margin-bottom: 8px;
+}
+.plugin-root-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 11.5px;
+}
+.plugin-root-row .plugin-src { margin-left: 0; }
+.plugin-root-row code { word-break: break-all; }
+
 #plugin-settings-box:empty { display: none; }
 .plugin-settings {
   margin-top: 16px;

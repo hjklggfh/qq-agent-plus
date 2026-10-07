@@ -50,6 +50,14 @@ function approve(id) {
   }));
 }
 
+/** 仓库自带插件的审批指纹（它们不在 fixtures 里，`approve()` 只认 fixtures）。 */
+function approveRepo(id) {
+  const dir = path.join(REPO_ROOT, 'plugins', id);
+  return manifestFingerprint(normalizeManifest(readManifest(dir), {
+    pluginDir: dir, expectedId: id, capabilityNames: PLUGIN_CAPABILITY_IDS
+  }));
+}
+
 /** 每例从一个干净配置开始，避免互相污染（getConfig 是进程级缓存）。 */
 function resetConfig(plugins = {}) {
   setRuntimeConfig({
@@ -430,4 +438,132 @@ test('错误路径都留了审计（写失败也不影响响应）', async () =>
   const { app, call } = setup();
   await call('POST', '/api/plugins/toggle', { body: { id: 'no-such-plugin', enabled: true } });
   assert.ok(app.audits.some((item) => item.payload?.ok === false));
+});
+
+// ── 插件根（"自行添加插件"的落点，2026-10-08 三期）─────────────────────────
+//
+// 这一组钉的是"加/删插件不必发版本"这条路：插件放安装目录之外的根 → rsync 不碰它 →
+// 只改配置 + 重启即可。所以"根的写入"必须干净（trim、丢空行、上限、拒绝控制字符），
+// 而"谁能被加到根里"必须能被页面看出来（rootInfo.bundled）。
+
+test('POST /api/plugins/roots：写入前 trim、丢空行，并回带 rootInfo（含 bundled 与 exists）', async () => {
+  const { call } = setup();
+  const { res, json } = await call('POST', '/api/plugins/roots', {
+    body: { roots: ['  /srv/qq/plugins  ', '', '   ', '/srv/qq/extra'] }
+  });
+  assert.equal(res.statusCode, 200);
+  // json.roots 是**生效的**全部根（额外根 + 随版本发布的那个），配置里只存额外根。
+  // 注意 `pluginRoots()` 会对绝对路径做 path.normalize —— Windows 下 `/srv/x` 会变成 `\srv\x`，
+  // 所以要拿 path.normalize 过一遍再比，否则这条断言只有 Linux 上过得去。
+  const norm = (value) => path.normalize(value);
+  assert.deepEqual(json.roots, [norm('/srv/qq/plugins'), norm('/srv/qq/extra'), path.join(REPO_ROOT, 'plugins')]);
+  assert.deepEqual(getConfig().plugins.roots, ['/srv/qq/plugins', '/srv/qq/extra'], '配置里只该存额外根，且是干净的两条');
+  // 随版本发布的那一个根永远在（且排在最后），页面靠 bundled/exists 分辨"哪个根是 deploy 管的"
+  const bundled = json.rootInfo.filter((item) => item.bundled);
+  assert.equal(bundled.length, 1, `应恰好一个随版本发布的根，实际 ${JSON.stringify(json.rootInfo)}`);
+  assert.equal(bundled[0].path, path.join(REPO_ROOT, 'plugins'));
+  assert.equal(bundled[0].exists, true);
+  assert.equal(json.rootInfo.find((item) => item.path === norm('/srv/qq/plugins')).bundled, false);
+  assert.equal(json.rootInfo.find((item) => item.path === norm('/srv/qq/plugins')).exists, false, '不存在的根要如实标出来');
+  assert.equal(json.maxRoots, 5, '上限由服务端下发，界面不该抄一份');
+});
+
+test('POST /api/plugins/roots：超上限 / 非数组 / 控制字符都拒绝，且一个字都不写进配置', async () => {
+  const { call } = setup({ roots: ['/keep'] });
+  const tooMany = await call('POST', '/api/plugins/roots', {
+    body: { roots: ['/a', '/b', '/c', '/d', '/e', '/f'] }
+  });
+  assert.equal(tooMany.res.statusCode, 400);
+  assert.match(tooMany.json.error, /最多 5 个插件根/);
+
+  const notArray = await call('POST', '/api/plugins/roots', { body: { roots: '/srv/qq' } });
+  assert.equal(notArray.res.statusCode, 400);
+  assert.match(notArray.json.error, /必须是数组/);
+
+  const control = await call('POST', '/api/plugins/roots', { body: { roots: ['/srv/qq\nrm -rf'] } });
+  assert.equal(control.res.statusCode, 400);
+  assert.match(control.json.error, /控制字符/);
+
+  assert.deepEqual(getConfig().plugins.roots, ['/keep'], '被拒的请求不该改动配置');
+});
+
+test('POST /api/plugins/roots：传空数组等于"只用随版本发布的那个根"', async () => {
+  const { call } = setup({ roots: ['/srv/qq/plugins'] });
+  const { res, json } = await call('POST', '/api/plugins/roots', { body: { roots: [] } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json.roots, [path.join(REPO_ROOT, 'plugins')]);
+  assert.deepEqual(getConfig().plugins.roots, []);
+});
+
+// ── 移除（把三处记录一起清掉）─────────────────────────────────────────────
+
+test('POST /api/plugins/remove：清掉 enabled/approved/settings，且不碰别的插件、不删目录', async () => {
+  const { call } = setup({
+    enabled: ['hello', 'pixiv-illust'],
+    approved: { hello: approveRepo('hello'), 'pixiv-illust': approveRepo('pixiv-illust') },
+    settings: { hello: { keep: 1 }, 'pixiv-illust': { ownerIds: '123' } }
+  });
+  const { res, json } = await call('POST', '/api/plugins/remove', { body: { id: 'hello' } });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(json.removed.wasEnabled, true);
+  assert.deepEqual(json.removed.hadApproval, true);
+  assert.deepEqual(json.removed.hadSettings, true);
+  assert.equal(json.removed.purged, false, '没要求就别删数据');
+
+  const plugins = getConfig().plugins;
+  assert.deepEqual(plugins.enabled, ['pixiv-illust'], '只摘掉这一个 id');
+  assert.equal(plugins.approved.hello, undefined, '确认记录要删掉（否则残留一份没人看的快照）');
+  assert.equal(plugins.settings.hello, undefined, '设置记录要删掉');
+  assert.ok(plugins.approved['pixiv-illust'], '别的插件的确认记录不许被牵连');
+  assert.ok(plugins.settings['pixiv-illust'], '别的插件的设置不许被牵连');
+  // 插件目录本身不删：它可能在随版本发布的那个根里，删了下次部署又回来
+  assert.ok(fs.existsSync(path.join(REPO_ROOT, 'plugins', 'hello')));
+});
+
+test('POST /api/plugins/remove：只有显式 purgeState 才删状态目录，删不掉也如实报出来', async () => {
+  const stateDir = path.join(dataDir, 'plugin-state', 'hello');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'kv.json'), '{"count":1}');
+
+  const plain = setup({ enabled: ['hello'] });
+  const before = await plain.call('POST', '/api/plugins/remove', { body: { id: 'hello' } });
+  assert.equal(before.json.removed.purged, false);
+  assert.ok(fs.existsSync(stateDir), '不勾"删数据"时数据必须留着（重装还能接上）');
+
+  const purging = setup({ enabled: ['hello'] });
+  const after = await purging.call('POST', '/api/plugins/remove', { body: { id: 'hello', purgeState: true } });
+  assert.equal(after.json.removed.purged, true);
+  assert.equal(after.json.removed.purgeError, '');
+  assert.equal(fs.existsSync(stateDir), false, '勾了就该真的删掉');
+});
+
+test('POST /api/plugins/remove：盘上找不到的 id 也认（清残留），完全没记录的 id 才拒绝', async () => {
+  // "配置里写着启用、盘上没有"是最该能被清掉的一种残留 —— 页面显示成「找不到」，
+  // 而除了移除它没有别的出口。
+  const { call } = setup({ enabled: ['ghost-plugin'] });
+  const { res, json } = await call('POST', '/api/plugins/remove', { body: { id: 'ghost-plugin' } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json.removed.wasEnabled, true);
+  assert.deepEqual(getConfig().plugins.enabled, []);
+
+  const unknown = await call('POST', '/api/plugins/remove', { body: { id: 'never-existed' } });
+  assert.equal(unknown.res.statusCode, 400);
+  assert.match(unknown.json.error, /找不到插件 never-existed/);
+});
+
+test('GET /api/plugins：每个插件报出来源根与"有没有状态目录"，missing 行也能带出 enabled', async () => {
+  fs.mkdirSync(path.join(dataDir, 'plugin-state', 'hello'), { recursive: true });
+  const { call } = setup({ enabled: ['hello', 'ghost-plugin'] });
+  const { json } = await call('GET', '/api/plugins');
+
+  const hello = json.plugins.find((item) => item.id === 'hello');
+  assert.equal(hello.bundled, true);
+  assert.equal(hello.root, path.join(REPO_ROOT, 'plugins'));
+  assert.equal(hello.stateDirExists, true);
+
+  const ghost = json.plugins.find((item) => item.id === 'ghost-plugin');
+  assert.equal(ghost.status, 'missing');
+  assert.equal(ghost.bundled, false);
+  assert.equal(ghost.root, '');
+  assert.equal(ghost.enabled, true, 'missing 行也要能看出它"配置里是启用的"');
 });

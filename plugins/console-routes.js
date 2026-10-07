@@ -10,16 +10,21 @@
 //
 // 本模块放在 `plugins/` 顶层（与 loader.js 平级）而不是 `_host/` 下：它是这个子系统的
 // 第二个入口。装载器只把子**目录**当插件，所以这个文件不会被当成插件。
-import { DATA_DIR, getConfig, updateConfig } from '../src/core/config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA_DIR, MAX_PLUGIN_ROOTS, getConfig, updateConfig } from '../src/core/config.js';
 import { PLUGIN_ID_PATTERN, fingerprintMatches, manifestFingerprint, normalizeManifest, readManifest } from './_host/manifest.js';
 import { PLUGIN_CAPABILITY_IDS, capabilitySummary } from './_host/capabilities.js';
 import { pluginSecretFieldNames, readPluginSettings } from './_host/context.js';
 import { pluginRuntimeStatuses } from './_host/registry.js';
-import { enabledPluginIds, listPluginDirs, pluginRoots } from './loader.js';
+import { pluginStateDir } from './_host/storage.js';
+import { BUNDLED_PLUGIN_ROOT, enabledPluginIds, listPluginDirs, pluginRoots } from './loader.js';
 
 /** 设置对象序列化后的体积上限。插件设置是给人写的扁平配置，64KB 已经非常宽裕。 */
 export const MAX_SETTINGS_BYTES = 64 * 1024;
 export const MAX_REQUEST_BYTES = 256 * 1024;
+/** 单个插件根路径的长度上限。路径由人填，给个上限免得 config.json 被写成垃圾场。 */
+export const MAX_ROOT_LENGTH = 512;
 
 /** 状态取值与 loader 的 PLUGIN_STATUS 一致，另加一个只在这里出现的 `missing`。 */
 const STATUS = Object.freeze({
@@ -34,6 +39,17 @@ const STATUS = Object.freeze({
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * 这个根是不是"随版本发布的那一个"（`<安装目录>/plugins`）。
+ *
+ * 页面上必须能分辨它和用户自己加的根：前者会被 `deploy.sh` 的 rsync 覆盖/合并
+ * （同名 id 会把两边文件混在一起），后者 rsync 根本不碰 —— 而"加插件不必发版"这条路
+ * 走的正是后者。只显示路径不足以让人分辨，所以这个判断要在服务端做。
+ */
+function isBundledRoot(root) {
+  return path.normalize(String(root ?? '')) === path.normalize(BUNDLED_PLUGIN_ROOT);
 }
 
 function errorText(error) {
@@ -110,6 +126,8 @@ export function describePlugins({
       out.push(describeOne({
         id: item.id,
         dir: item.dir,
+        root,
+        dataDir,
         config,
         enabledSet,
         reserved,
@@ -129,6 +147,9 @@ export function describePlugins({
       apiVersion: null,
       description: '',
       dir: '',
+      root: '',
+      bundled: false,
+      stateDirExists: fs.existsSync(pluginStateDir(dataDir, id)),
       capabilities: [],
       tools: [],
       status: STATUS.MISSING,
@@ -144,10 +165,17 @@ export function describePlugins({
   }
 
   out.sort((a, b) => a.id.localeCompare(b.id));
-  return { roots, plugins: out };
+  // 每个根自己也要带上"是不是随版本发布的那个"与"目录到底存不存在"：路径写错了却看不出
+  // 原因（"我加了根，怎么一个插件都没有"）是这套东西最容易卡住人的一处。
+  const rootInfo = roots.map((item) => ({
+    path: item,
+    bundled: isBundledRoot(item),
+    exists: fs.existsSync(item)
+  }));
+  return { roots, rootInfo, plugins: out };
 }
 
-function describeOne({ id, dir, config, enabledSet, reserved, runtime }) {
+function describeOne({ id, dir, root, dataDir, config, enabledSet, reserved, runtime }) {
   const base = {
     id,
     name: id,
@@ -155,6 +183,9 @@ function describeOne({ id, dir, config, enabledSet, reserved, runtime }) {
     apiVersion: null,
     description: '',
     dir,
+    // 这个插件是从哪个根扫到的、那个根是不是随版本发布的那一个（见 isBundledRoot）。
+    root: String(root ?? ''),
+    bundled: isBundledRoot(root),
     capabilities: [],
     tools: [],
     status: STATUS.INVALID,
@@ -164,6 +195,9 @@ function describeOne({ id, dir, config, enabledSet, reserved, runtime }) {
     needsRestart: false,
     loadedInProcess: Boolean(runtime && runtime.status === STATUS.LOADED),
     enabled: enabledSet.has(id),
+    // 「移除并删除数据」这个不可逆的动作只在真的有状态目录时才该出现（页面靠它决定）。
+    // 顺带：它也是"这个插件到底跑没跑过"的一个诚实指标。
+    stateDirExists: fs.existsSync(pluginStateDir(dataDir, id)),
     settings: readPluginSettings(config, id),
     secretFields: pluginSecretFieldNames(config, id)
   };
@@ -275,16 +309,114 @@ export function installPluginRoutes(app, options = {}) {
     json(res, status, { error: errorText(error) });
   }
 
-  // ── 列表 ──
-  app.addRoute('GET', '/api/plugins', (req, res) => {
-    const config = getConfig();
-    const { roots, plugins } = snapshot(config);
-    json(res, 200, {
+  /**
+   * 插件页要的全部内容（`GET /api/plugins` 与各写入路由的响应共用同一份形状）。
+   *
+   * 写入之后直接把最新快照回给界面，而不是让界面再发一次 GET：少一次往返，
+   * 也避开"保存成功但列表还是旧的"那种一闪而过的中间态。
+   */
+  function pluginsPayload(config) {
+    const { roots, rootInfo, plugins } = snapshot(config);
+    return {
       roots,
+      rootInfo,
+      // 上限由服务端下发：界面不该抄一份常量（抄了就会两边漂移）。
+      maxRoots: MAX_PLUGIN_ROOTS,
       enabled: enabledPluginIds(config),
       capabilities: capabilitySummary(),
       plugins
-    });
+    };
+  }
+
+  // ── 列表 ──
+  app.addRoute('GET', '/api/plugins', (req, res) => {
+    json(res, 200, pluginsPayload(getConfig()));
+  });
+
+  // ── 插件根（"自行添加插件"的落点）──
+  // 放在安装目录之外的根完全不经过 deploy.sh 的 rsync，所以"加插件不必发版本"靠它最稳。
+  // 只写配置：新增的根会立刻被扫到并显示出来，但要等重启才会真的装载（装载只在启动时做一次）。
+  app.addRoute('POST', '/api/plugins/roots', async (req, res) => {
+    try {
+      const body = await readJsonBody(req);
+      if (!Array.isArray(body.roots)) throw new Error('roots 必须是数组（可以是空数组）');
+      if (body.roots.length > MAX_PLUGIN_ROOTS) {
+        throw new Error(`最多 ${MAX_PLUGIN_ROOTS} 个插件根（收到 ${body.roots.length} 个）`);
+      }
+      const roots = [];
+      for (const item of body.roots) {
+        const text = String(item ?? '').trim();
+        if (!text) continue;
+        if (text.length > MAX_ROOT_LENGTH) {
+          throw new Error(`插件根路径超过 ${MAX_ROOT_LENGTH} 字符：${text.slice(0, 60)}…`);
+        }
+        if (/[\u0000-\u001f]/.test(text)) {
+          throw new Error('插件根路径里不能有控制字符（换行、制表符等）');
+        }
+        roots.push(text);
+      }
+      writePluginConfig({ roots });
+      app.emit?.('plugin-update', { id: '', action: 'roots' });
+      app.auditWrite?.('plugin.roots', '', { req, after: { roots } });
+      json(res, 200, { ok: true, ...pluginsPayload(getConfig()) });
+    } catch (error) {
+      fail(res, 'roots', '', 400, error);
+    }
+  });
+
+  // ── 移除（把三处记录一起清掉）──
+  // 刻意**不删插件目录**：目录可能在随版本发布的那一个根里，删了下次部署又会回来 ——
+  // 与其做一个会被自己撤销的动作，不如把确切路径告诉使用者、让人自己删。
+  // 状态目录默认保留（重装时数据还在），只有显式要求才清。
+  app.addRoute('POST', '/api/plugins/remove', async (req, res) => {
+    let id = '';
+    try {
+      const body = await readJsonBody(req);
+      id = requirePluginId(body.id);
+      const purgeState = body.purgeState === true;
+      const config = getConfig();
+      const { plugins } = snapshot(config);
+      const target = plugins.find((item) => item.id === id);
+      if (!target) throw new Error(`找不到插件 ${id}（它既不在任何插件根里，也没有启用记录）`);
+
+      const wasEnabled = enabledPluginIds(config).includes(id);
+      const hadApproval = isPlainObject(config?.plugins?.approved?.[id]);
+      const hadSettings = isPlainObject(config?.plugins?.settings?.[id]);
+      // 设成 null 会被 config-legacy 的 plugins 归一化删掉（approved / settings 各有一段清理），
+      // 所以这就是"删掉一个键"的正规写法，不用另造 __replace__ 之类的通道。
+      writePluginConfig({
+        enabled: enabledPluginIds(config).filter((item) => item !== id),
+        approved: { [id]: null },
+        settings: { [id]: null }
+      });
+
+      let purged = false;
+      let purgeError = '';
+      if (purgeState) {
+        try {
+          fs.rmSync(pluginStateDir(DATA_DIR, id), { recursive: true, force: true });
+          purged = true;
+        } catch (error) {
+          // 数据没删掉不该让整个移除失败：配置那三处已经清了，如实报出来让人自己去看。
+          purgeError = errorText(error);
+        }
+      }
+
+      app.emit?.('plugin-update', { id, action: 'remove' });
+      app.auditWrite?.('plugin.remove', id, {
+        req,
+        after: { wasEnabled, hadApproval, hadSettings, purged }
+      });
+      json(res, 200, {
+        ok: true,
+        removed: { id, wasEnabled, hadApproval, hadSettings, purged, purgeError, dir: target.dir },
+        // 它可能还在当前进程里跑着（装载只在启动时发生一次），那种情况要重启才真的摘掉工具。
+        restartRequired: target.loadedInProcess === true,
+        ...pluginsPayload(getConfig())
+      });
+    } catch (error) {
+      fail(res, 'remove', id, 400, error);
+    }
   });
 
   // ── 启用 / 停用 ──

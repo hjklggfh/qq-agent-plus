@@ -383,8 +383,11 @@ function buildPluginToolDef({ manifest, toolName, entry, dataDir, log }) {
         timeoutMs: entry.timeoutMs,
         hostCtx,
         args,
-        // 每次调用现读配置：插件的设置（plugins.settings）改完不需要重启就能生效，
-        // 这与内置工具读 getConfig() 的口径一致。
+        // 每次调用现读配置。⚠️ 但要分清**热的是哪一半**：这里读到的 config 只喂给
+        // `readPluginSecret`，所以 `toolCtx.secret(name)` 是现读的（改了凭据立刻生效）；
+        // 而插件的**设置**只能通过 `api.config` 拿，那是 activate 时的非凭据快照 ——
+        // 改 `plugins.settings.<id>` 必须重启才生效。别把这条写成"设置也不用重启"
+        //（2026-10-08 修正：原注释就是这么写的，与实现不符）。
         config: getConfig(),
         dataDir,
         log

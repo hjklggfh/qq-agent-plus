@@ -332,7 +332,7 @@ async execute(toolCtx, args) {
 
 ## 13. 启用、停用与"重新确认"
 
-### 12.1 在控制台里做（推荐）
+### 13.1 在控制台里做（推荐）
 
 控制台底部导航的 **插件** 页把这三件事都搬上来了，不用手抄 JSON：
 
@@ -343,7 +343,14 @@ async execute(toolCtx, args) {
   签下"只有 storage"的确认）；
 - **设置** 按钮 —— 编辑 `plugins.settings.<id>`（JSON），**整体替换**语义：
   界面里没写的键（包括凭据）会被清空，编辑器上方会把这个后果写出来。
-  页面从来拿不到凭据明文（`GET /api/plugins` 只给字段名），所以凭据要重填。
+- **移除** 按钮 —— 把「启用 / 能力确认 / 设置」三处记录一起清掉。**不删插件目录**
+  （路径就显示在每行下面；它可能在随版本发布的那个根里，删了下次部署又回来），
+  也**不删数据目录**（重装时状态还在）。要连数据一起删就点旁边的「移除并删数据」——
+  那个按钮只在真有 `plugin-state/<id>/` 时才出现，且不可逆。
+  「移除」对 `missing`（配置里写着启用、盘上却没有）尤其有用：那是清残留的唯一出口。
+- **插件根** 编辑器 —— 见 13.4。
+
+页面从来拿不到凭据明文（`GET /api/plugins` 只给字段名），所以凭据要重填。
 
 页面上的状态取值与下表一致，另多一个 `missing`：**已启用但盘上找不到这个 id** ——
 这是最容易犯的错（拼错一个字母，重启后什么都没有），所以单独列出来点名，而不是让它凭空消失。
@@ -352,13 +359,15 @@ async execute(toolCtx, args) {
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
-| GET | `/api/plugins` | 现状：根目录、启用清单、能力目录、每个插件的状态 |
+| GET | `/api/plugins` | 现状：插件根（含"是不是随版本发布的那个"与"目录存不存在"）、启用清单、能力目录、每个插件的状态、来源根、有没有数据目录 |
 | POST | `/api/plugins/toggle` | `{ id, enabled }` → 写 `plugins.enabled`，回 `restartRequired` |
 | POST | `/api/plugins/approve` | `{ id }` → 从盘上现算指纹写进 `plugins.approved` |
+| POST | `/api/plugins/roots` | `{ roots: string[] }` → 写 `plugins.roots`（trim、丢空、最多 5 个、拒控制字符） |
+| POST | `/api/plugins/remove` | `{ id, purgeState? }` → 清掉那个插件的三处记录；`purgeState` 才删数据目录 |
 | GET | `/api/plugins/settings?id=` | 读某个插件的设置（非凭据视图 + 凭据字段名） |
 | POST | `/api/plugins/settings` | `{ id, settings }` → 整体替换那个插件的设置 |
 
-### 12.2 直接改 `config.json`
+### 13.2 直接改 `config.json`
 
 ```json
 {
@@ -376,13 +385,40 @@ async execute(toolCtx, args) {
 `capabilities` 与 `tools` 必须**排序后逐字一致**（宿主就是这么比的）。不想手抄就先只写
 `enabled: ["weather"]`，重启后启动日志或控制台的插件页会给出待确认清单，照抄即可。
 
-### 12.3 口径
+### 13.3 口径
 
-- 改 `enabled` 需要**重启**才生效（装载发生在 `createApp()` 之前，运行期不能热插拔）。
+- 改 `enabled` / `roots` 需要**重启**才生效（装载发生在 `createApp()` 之前，运行期不能热插拔）。
 - **能力快照是 fail-closed 的**：插件的 `version`、`capabilities` 或 `tools` 有一处变化，
   它就会退回 `pending-approval` 并**不加载**，直到重新确认。
   少了这条，插件换个版本号就能悄悄多拿一个 `chat:send`、或给模型多塞一个工具。
 - 停用（从 `enabled` 里去掉）不会删数据：`plugin-state/<id>/` 原样保留。
+- 「移除」清的是配置记录，不是目录；数据目录要显式要求才删。
+- **冷热要说清**：插件的**凭据**（`toolCtx.secret`）是每次工具调用现读的，改完立刻生效；
+  插件的**设置**（`api.config`）是激活时的非凭据快照，改完必须重启。
+
+### 13.4 插件根：怎样"自行增删插件而不必发版本"
+
+插件根有两类，页面上用徽标区分：
+
+| 徽标 | 是谁的 | `deploy.sh` 会不会碰 |
+| --- | --- | --- |
+| 随版本发布 | 安装目录里的 `plugins/`（仓库那一份） | **会**：升级时 rsync 覆盖/合并同名文件 |
+| 自建 | `plugins.roots` 里你自己加的根 | **不会**：它在安装目录之外，rsync 完全不看那里 |
+
+所以"加一个插件不必发版本"的完整流程是：
+
+1. 把插件目录放进一个**自建根**（目录名必须等于 `plugin.json` 的 `id`）。没有自建根就先在
+   控制台的插件页加一个 —— 建议与 `app/`、`data/` 平级，例如 `/mnt/data/qq-agent/plugins`。
+   路径语义：**绝对路径按原样用；相对路径是相对数据目录解析的**（写 `my-plugins` 等于
+   `<数据目录>/my-plugins`），安装目录里的那个根永远自动包含、也删不掉。
+2. 回到插件页点「刷新」—— 控制台**每次打开都重新扫盘**，所以不需要重启就能看到它。
+3. 点「启用」→「确认这份能力」。
+4. 重启服务（`systemctl --user restart qq-agent-linux`）。
+
+只有**改宿主代码**（`src/`、`plugins/loader.js`、`plugins/_host/`、`ui/`）才必须发版本。
+插件要用一个**还不存在的能力**（消息钩子、定时器、提示词注入、发语音…）也算改宿主 ——
+那要在 `plugins/_host/capabilities.js` 里加一项并接好门面，因此必须发一次版本。
+2026-10-08 的 `chat:send-image` 就是这么加出来的（一个 Pixiv 取图插件要发图）。
 
 插件状态取值：
 
