@@ -4,6 +4,9 @@ import path from 'node:path';
 import { createApp } from './console/app.js';
 import { installManualFriendReviewRoute } from './console/manual-friend-review-route.js';
 import { installExperimentalMultimodalContextPilot } from './pilots/experimental-multimodal-context.js';
+import { initPlugins } from '../plugins/loader.js';
+import { installPluginRoutes } from '../plugins/console-routes.js';
+import { buildToolDefs as buildBuiltinToolDefs } from './tools/tools-core.js';
 import { DATA_DIR } from './core/config.js';
 import { assertSqliteAvailable } from './core/sqlite.js';
 import { createLogger } from './core/logger.js';
@@ -88,8 +91,29 @@ assertSqliteAvailable();
 // 仅安装一次薄包装；开关关闭时 multimodal-context commit 原样委托旧实现。
 installExperimentalMultimodalContextPilot();
 
+// 第三方插件必须在 createApp() **之前**装载：Orchestrator 在构造时就抓一次工具表
+// （orchestrator.js 的 `this.toolDefs = buildToolDefs()`），插件工具得在那之前进注册表。
+// 插件是代码，住在仓库根的 plugins/（与 src/ 平级、进版本库）；自装的第三方插件用
+// config.plugins.roots 指到安装目录之外，那条路完全不经过 deploy.sh 的 rsync。
+//
+// initPlugins 对单个插件永不抛（坏插件只标成失败，见 plugins/loader.js）；这里的 try 兜的是
+// "参数/扫描层面"的异常（例如内置工具名拿不到 = 无法做重名预检）。那种情况也绝不能拦住机器人启动。
+//
+// 内置工具名从 tools-core 直接取（不是 tools.js）：tools.js 的列表里已经会带上
+// 上一次装载的插件工具，用它做"保留名"会把自己的插件判成重名。
+// 同一份清单还要给控制台的插件页 —— 它要能报出"这个插件的工具名和内置的撞了"。
+const builtinToolNames = buildBuiltinToolDefs().map((def) => String(def.name));
+try {
+  await initPlugins({ dataDir: DATA_DIR, log, builtinToolNames });
+} catch (error) {
+  log.error('[插件] 装载失败，按「没有插件」继续启动：', error?.message ?? error);
+}
+
 app = createApp();
 installManualFriendReviewRoute(app);
+// 插件管理页的 API（列表 / 启停 / 确认能力 / 改设置）。走 app.addRoute，因此鉴权、405 与
+// 未命中 404 全部继承路由表；它只改配置，真正的装载仍然只发生在下一次启动。
+installPluginRoutes(app, { dataDir: DATA_DIR, builtinToolNames });
 app.start().then(reportInterruptedDeploy).catch((error) => {
   log.error('[启动失败]', error);
   process.exit(1);

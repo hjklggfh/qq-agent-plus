@@ -46,7 +46,89 @@
 | 运维工具集 | `src/ops.js`（单入口）、`docs/OPS.md` | 主机/服务自检、备份、进程看门狗、发送/登录线上验证、表情名导出、非交互部署、SSH 隧道、systemd 定时器安装 | 本仓库新增 |
 | 本地回归测试 | `test/local/` | 定点验证发送重试、退避、内联兜底、贴纸查找 | 本仓库新增 |
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
-| 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试上报（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
+| 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
+
+## 00. 工具插件系统（未发布版起）
+
+这一版加了插件系统：**给模型加新工具而不用改主仓代码**。插件的产物只有一样 —— 工具；
+它不能加控制台页面、不能挂消息钩子、不能注册定时器。
+
+- **插件布局与宿主代码**：`plugins/loader.js`（装载器）、`plugins/_host/*.js`（manifest 校验、
+  能力门面、存储、受限网络、工具注册表）、`plugins/<id>/{plugin.json,index.js}`（插件本体），
+  与 `src/` 平级、进版本库。`_host/` 与 `loader.js` 不会被当成插件（装载器只认子目录，
+  且跳过 `.`/`_` 开头的名字）。相关文件：`plugins/**`、`src/server.js`、`src/tools/tools.js`、
+  `src/core/config-legacy.js`、`src/core/secret-keys.js`、`deploy.sh`、`eslint.config.mjs`、
+  `.github/workflows/ci.yml`、`test/layout.test.mjs`、`docs/PLUGINS.md`。
+  失败模式：此前"给模型加一个工具"要同时改 `tools-core.js` 的巨型数组、`orchestrator.js` 的名字
+  过滤链、`prompt.js` 的教学文案、实验调度器的分类集合与若干用例，且**没有**插件式注册口，
+  第三方无法扩展。现行做法：插件工具只加在 `src/tools/tools.js` 这个既有的薄包装层
+  （**不进** `tools-core.js` —— 那里有"零个 unclassified 工具"的断言），装载发生在
+  `createApp()` 之前，因此 `Orchestrator` 构造时工具表已就位，运行期不需要热插拔，
+  也就不必碰 `app.start()/stop()` 与 `POST /api/config` 那两处最硬的启停链。
+- **声明式能力清单**：`chat:send` / `chat:read` / `storage` / `http` / `secrets`。
+  失败模式：把宿主给内置工具的 ctx（含 `sender`/`store`/`memory`/`onebot`）直接交给第三方，
+  等于把整条消息链路与全部凭据一并交出，而且"插件拿了什么"在代码里看不出来。
+  现行做法：宿主按 manifest 现拼一份**收窄门面**，**没声明的能力连属性都不存在**；
+  `send()` 的 chatKey 由宿主绑死、`fetch()` 复用 `web_fetch` 的 SSRF 核心（DNS 级拒内网、
+  请求发往已校验 IP、跨源跳转摘凭据）、`secret()` 只读自己那段且要求字段名是"凭据样"的。
+- **能力快照与重新确认（fail-closed）**：`plugins.approved[<id>] = {version, capabilities, tools}`。
+  失败模式：没有这条，插件换个版本号就能悄悄多拿一个 `chat:send`、或给模型多塞一个工具。
+  现行做法：指纹（版本 + 能力 + 工具名，排序后比对）与审批记录不一致就退回 `pending-approval`
+  并**不加载**、一个工具都不注入。指纹函数必须**幂等** —— 控制台存的就是指纹本身。
+- **失败隔离**：manifest 坏 / 入口 import 抛错 / `activate` 抛错 / 工具集与声明不符 /
+  工具名与内置或别的插件重名 → 只把这一个插件标成失败，其余插件与主链路照常。
+- **部署**：`deploy.sh` 对 `plugins/` 加 `--filter='protect /plugins/***'`（**不能**用
+  `--exclude`：那会连传输一起挡掉，仓库自带的插件从此收不到更新）。失败模式：`rsync -a --delete`
+  会删掉"安装目录里有、源码里没有"的文件，把用户自装的插件在每次更新时静默删除。
+  protect 只作用于 `--delete` 阶段，因此自带插件照常更新、自装插件不被删。
+  另推荐把自装插件放到安装目录之外，用 `config.plugins.roots` 指过去（零语义依赖）。
+- **控制台插件页**：`plugins/console-routes.js`（新增）、`src/server.js`、`ui/pages/plugins.js`（新增）、
+  `ui/index.html`、`ui/app.js`、`ui/style.css`、`src/console/app.js`（构建戳）、
+  `test/plugin-console-api.test.mjs`（新增）。
+  失败模式：一期只能手改 `config.json` 再重启，而且要自己从磁盘上的 manifest 抄那份
+  `approved` 快照（抄错一个字母就停在 `pending-approval`，页面上还看不见为什么）。
+  现行做法：底部导航新增「插件」页 —— 列出每个插件的状态/原因/能力（带风险等级）/工具/目录，
+  可就地**启用、停用、确认能力、改设置**。三条硬约束：
+  ① 页面**永远拿不到凭据明文**（`GET /api/plugins` 只给字段名，`test/plugin-console-api.test.mjs`
+  直接断言整份响应里搜不到那个密钥串）；
+  ② 确认能力的指纹由服务端**从盘上的 manifest 现算**，不采信请求体（否则一个被篡改的请求就能
+  替一个要 `http` + `secrets` 的插件签下"只有 storage"的确认）；
+  ③ 启停/确认/改设置都**只写配置**，响应回 `restartRequired`、页面把"重启后生效"写出来 ——
+  装载只在启动时发生一次，不做半可逆的热插拔。
+  设置是**整体替换**（`__replace__`）而不是深合并：界面编辑的是"这一个插件的完整设置"，
+  深合并会让"删掉的键"永远删不掉。页面结构上把可编辑控件放在**自动刷新容器之外**，
+  从根上避开"整块重画把正在输入的内容冲掉"那套坑（`test/ui-preserve-editable.test.mjs` 的 5 条用例全是它）。
+- **顺手修掉的两处既有缺陷**：
+  ① `SECRET_KEY_PATTERN` 原先只认 `^token$` / `accesstoken` / `access_token`，
+  **`apiToken` / `webhookToken` / `botToken` 这类驼峰名一个都不匹配** —— 它们会明文下发到
+  控制台并明文写进审计日志（与 2026-09-30 补 `authorization`/`cookie` 是同一类）。
+  现补后缀 `token$`；锚成"以 token 结尾"而不是"含 token"，是为了避开
+  `maxRunTokens` / `contextWindowTokens` / `tokenSaver` 这批**非**凭据字段
+  （放宽成包含匹配会把它们从下发的配置里删掉，设置页直接丢字段）。
+  ② `test/layout.test.mjs` 的相对 import 扫描原先匹配**任意**相对路径字符串，
+  于是插件夹具里 manifest 的 `entry: '../outside.mjs'`（数据，不是 import）被判红。
+  现收紧成只认 `from '…'` / 裸 `import '…'` / `import('…')` / `new URL('…', import.meta.url)`，
+  并把新的 `plugins/` 纳入扫描范围（它装着宿主代码，之前完全没被覆盖）。
+  ③ `deepMerge` 会把请求体里**自有**的 `__proto__` 键当普通键赋值（`JSON.parse` 能造出这种键，
+  `out[key] = …` 走的正是 `Object.prototype.__proto__` 那个 setter），等于让请求体改写配置段的
+  原型。它是**所有**配置写入路径的必经口（`POST /api/config` 也收任意 patch），在唯一的关口挡掉
+  （`__proto__` / `constructor` / `prototype` 三个键一律跳过）。
+- **门禁同步**：`eslint.config.mjs` 纳入 `plugins/**`（并把故意写坏的 `test/fixtures/**` 排除）、
+  CI 的 `node --check` 纳入 `plugins`、`ops scan --strict` 追加扫 `plugins/`
+  （原先只扫 `src/`，等于"靠没被扫到而干净"）、`ops audit` 的语法与未定义调用两节也覆盖它。
+- **验证方法**：`test/plugin-{manifest,loader,tools,storage,http,console-api}.test.mjs` 共 164 例；
+  另建 HEAD 基线 worktree 对 36 个既有用例文件（含全部 `ui-*` 与脱敏相关用例）做失败集合差集，
+  确认**零回归**（两棵树各 36 条失败，逐条一致，全部是沙箱 `spawnSync` EPERM 的环境性失败）。
+- **已知限制（刻意）**：插件不能加控制台页面（控制台是零构建 + 静态清单双向校验 + 写死
+  `ui/` 的静态分发）、不能挂消息钩子、不能注册定时器；`chat:send` 暂不支持引用 / @
+  （内置的目标校验是模块私有的，抄一份就会出现第二份口径）。插件与宿主**同进程、无沙箱**。
+  控制台的启停/确认/改设置只写配置，要重启才生效。
+- **未能在这里验证的一项**：`rsync --filter='protect /plugins/***'` 的语义（开发机没有 rsync）。
+  按 rsync 文档实现，并用两个方向的用例钉住"必须是 protect、不能退化成 exclude"，
+  真正的验证要在 Linux 上跑一次部署。
+- **升级影响**：**无需迁移**，默认 `plugins.enabled` 为空 = 与升级前逐字一致
+  （`buildToolDefs()` 在注册表为空时返回的数组与 `tools-core` 完全相同，有用例钉住）。
+  新的 `plugins` 配置段由 `DEFAULT_CONFIG` + `deepMerge` 自动补齐。
 
 ## 0. 切换服务预设时 API Key 跟随切换与四轮发布前审查修复（v0.7.8 起）
 

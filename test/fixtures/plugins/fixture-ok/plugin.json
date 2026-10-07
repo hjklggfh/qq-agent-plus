@@ -1,0 +1,13 @@
+{
+  "id": "fixture-ok",
+  "name": "Fixture OK",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "description": "Healthy fixture used by the plugin loader tests.",
+  "capabilities": ["chat:read", "storage"],
+  "tools": [
+    { "name": "fixture_ok_echo", "timeoutMs": 5000 },
+    { "name": "fixture_ok_kv" }
+  ]
+}

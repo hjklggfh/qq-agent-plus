@@ -67,6 +67,38 @@ In particular:
   前四个是"剥掉 import/export 按 classic 跑"的 vm 沙箱，`ui-real-modules` 才是真模块语义
   （求值顺序、TDZ 只有它看得见），别把两层的用途混了。
 
+## 插件（plugins/）约定
+
+插件是**只贡献工具**的扩展点（写法与能力清单见 [`docs/PLUGINS.md`](docs/PLUGINS.md)）。动它时守五条：
+
+- **宿主代码在 `plugins/loader.js` 与 `plugins/_host/`，插件本体是 `plugins/<id>/`。**
+  两者同处一个目录，所以新增**子目录**等于新增一个插件 —— 宿主侧的支撑目录必须以 `_`（或 `.`）
+  开头才会被跳过，这条由 `test/plugin-loader.test.mjs` 钉住。
+- **插件工具只加在 `src/tools/tools.js` 这个薄包装层，不许进 `tools-core.js`**：
+  `test/experimental-tool-scheduler.test.mjs` 对 `tools-core` 的**全部**工具断言零个
+  `unclassified`，插件工具无法预先分类，加进去就会红。
+- **不给插件原始 ctx。** 一切宿主能力都要经过 `plugins/_host/context.js` 的收窄门面，且
+  必须存在 `plugins/_host/capabilities.js` 的白名单里；没声明的能力**连属性都不许有**。
+  新增能力 = 清单加一项 + 门面接一个字段 + `docs/PLUGINS.md` 补一节。
+- **能力指纹必须幂等**：`manifestFingerprint(manifestFingerprint(m))` 要等于
+  `manifestFingerprint(m)`（控制台存的就是指纹本身，装载器拿它比对）。改指纹口径时
+  先想这条，否则所有已装插件会集体停在 `pending-approval`。
+- **别把插件放进 `data/`**：那里是记忆与聊天记录（整个目录被 gitignore）。`deploy.sh` 对
+  `plugins/` 用的是 `--filter='protect /plugins/***'` 而**不是** `--exclude` ——
+  换成 exclude 会让随版本分发的插件再也收不到更新，有一个用例专门盯这两个方向。
+- **控制台侧的入口是 `plugins/console-routes.js`**（`installPluginRoutes(app)`，由 `src/server.js`
+  调用）。它只走 `app.addRoute`（**不要**传 `auth:false`，免鉴权只允许 `/healthz` 与 `/api/login`），
+  写入一律经 `app.updateConfig`。三条不能破的口径：页面拿不到凭据明文、
+  `approve` 的指纹**从盘上现算**（不采信请求体）、启停/确认/改设置都只写配置并回 `restartRequired`
+  （装载只在启动时发生一次，整个系统不做热插拔）。
+  前端页面在 `ui/pages/plugins.js`：可编辑控件放在**自动刷新容器之外**（列表用
+  `setHtmlIfChanged` 重画，编辑器是独立一块），这是为了绕开"整块重画冲掉正在输入的内容"那套坑。
+
+宿主侧代码在 `plugins/` 下，所以 `eslint`、CI 的 `node --check`、`ops scan --strict`
+（要跑两次：`src` 与 `plugins`）以及 `test/layout.test.mjs` 的 import 扫描都已把该目录纳入。
+另外 `ops.js` 的未定义调用扫描器**不认识解构参数**，会把 `handler(...)` 报成可疑调用让 CI 判红 ——
+被调用的回调要从 `options` 显式取别名（`plugins/_host/context.js` 与 `manifest.js` 各有一处）。
+
 ## 发布节奏
 
 - **影响使用的紧急问题**（部署失败、消息发不出/收不到、数据或安全问题）：修完测完即发补丁版。

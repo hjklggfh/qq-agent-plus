@@ -1,0 +1,9 @@
+{
+  "id": "fixture-escape-entry",
+  "name": "Escape Entry",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "../outside.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "escape_tool" }]
+}

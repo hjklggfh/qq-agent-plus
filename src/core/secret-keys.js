@@ -12,7 +12,16 @@ import { redactSecretValue } from './redact.js';
 // 原来不含这些词的模式会漏过、把明文密钥写进审计文件（审计会把整份配置落盘）。
 // 仍**故意不含**裸 `key`：普通业务字段大量叫 xxxKey（sortKey、sortkey、clientKey…），
 // 加了会把无关字段整片抹成 [redacted]（`*From` 的排除也拦不住这些）。
-export const SECRET_KEY_PATTERN = /(^token$|apikey|api_key|accesstoken|access_token|secret|password|privatekey|private_key|authorization|^auth$|x-api-key|x_api_key|^cookie$|^bearer$)/i;
+//
+// 2026-10-08（插件系统）再补一个后缀 `token$`：原先 token 只认 `^token$` 与
+// `accesstoken`/`access_token` 三种形态，于是 **apiToken / webhookToken / botToken /
+// refreshToken 这类驼峰名一个都不匹配** —— 它们会被明文下发到控制台、明文写进审计，
+// 而插件设置（plugins.settings.<id>）恰好最容易出现这种命名。
+// 锚成"以 token 结尾"而不是"含 token"，是为了避开一批**非**凭据的业务字段：
+// maxRunTokens / contextWindowTokens / lifecycleRolloverInputTokens（复数结尾）、
+// tokenSaver（token 在词首）—— 放宽成包含匹配就会把它们从下发的配置里删掉，
+// 设置页会直接丢字段。
+export const SECRET_KEY_PATTERN = /(^token$|token$|apikey|api_key|accesstoken|access_token|secret|password|privatekey|private_key|authorization|^auth$|x-api-key|x_api_key|^cookie$|^bearer$)/i;
 // 形如 apiKeyFrom 的字段存的是"密钥来源标识"（如 manual），不是密钥本身，不要脱敏
 export const SECRET_KEY_EXCLUDE = /from$/i;
 

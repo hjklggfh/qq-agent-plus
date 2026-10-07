@@ -1,0 +1,9 @@
+{
+  "id": "fixture-send",
+  "name": "Fixture Send",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": ["chat:send", "chat:read"],
+  "tools": [{ "name": "send_greeting" }]
+}

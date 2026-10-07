@@ -1,0 +1,9 @@
+{
+  "id": "fixture-deactivate",
+  "name": "Fixture Deactivate",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": ["storage"],
+  "tools": [{ "name": "deactivate_tool" }]
+}

@@ -34,6 +34,7 @@ import {
 } from './pages/features.js';
 import { loadMemoryView, renderMemoryList } from './pages/memory.js';
 import { renderExperimentalSettingsSectionImpl } from './pages/moments.js';
+import { loadPluginPage } from './pages/plugins.js';
 import { loadSessionDetail, loadSessions } from './pages/sessions.js';
 import {
   renderSettingsImpl, resolveTheme, startListPoller, syncPriceDialogBilling
@@ -156,6 +157,7 @@ function switchTab(name) {
   if (name === 'incidents') loadIncidentFeaturePage();
   if (name === 'assets') loadAssetObservatory();
   if (name === 'usage') loadUsageView({ force: true });
+  if (name === 'plugins') loadPluginPage();
   if (name === 'settings') loadSettings();
 }
 
@@ -769,6 +771,11 @@ function connectSSE() {
   });
   es.addEventListener('onebot-status', () => {
     refreshStatus();
+  });
+  es.addEventListener('plugin-update', () => {
+    // 只有正停在这一页才重拉。插件页的启停/确认/保存都是"只改配置、重启后生效"，
+    // 别的页面开着时没有任何东西需要变（工具表要下次启动才动）。
+    if (state.tab === 'plugins') loadPluginPage();
   });
   es.addEventListener('asset-update', (event) => {
     if (state.tab !== 'assets') return;

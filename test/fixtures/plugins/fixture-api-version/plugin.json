@@ -1,0 +1,9 @@
+{
+  "id": "fixture-api-version",
+  "name": "Future API",
+  "version": "1.0.0",
+  "apiVersion": 99,
+  "entry": "index.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "future_tool" }]
+}

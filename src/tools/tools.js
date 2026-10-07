@@ -1,5 +1,7 @@
 // 原工具实现完整保存在 tools-core.js。
-// 本文件只提供“实验工具调度器”的薄包装：关闭时直接委托原实现，保持现有行为。
+// 本文件是两层薄包装，关闭时都直接委托原实现，保持现有行为：
+//   ① 「实验工具调度器」：关闭时逐个 await 旧实现；
+//   ② 第三方插件工具：注册表默认为空，没跑过 initPlugins() 时结果与升级前逐字一致。
 import { getConfig } from '../core/config.js';
 import {
   recordMultimodalToolResult
@@ -10,6 +12,7 @@ import {
   experimentalToolSchedulerConfig,
   ExperimentalToolBatch
 } from '../pilots/experimental-tool-scheduler.js';
+import { pluginToolDefs } from '../../plugins/_host/registry.js';
 import {
   buildToolDefs as coreBuildToolDefs,
   executeTool as coreExecuteTool,
@@ -19,7 +22,18 @@ import {
 export * from './tools-core.js';
 
 // 显式导出覆盖 export * 中同名项；关闭实验时仍原样调用旧实现。
-export const buildToolDefs = coreBuildToolDefs;
+//
+// 插件工具**只加在这一层**，不进 tools-core.js。原因有两条：
+//   ① test/experimental-tool-scheduler.test.mjs 对 tools-core 的 buildToolDefs() 全部工具
+//      断言零个 unclassified —— 插件工具无法预先分类，加进去就会红；
+//   ② tools-core 是"内置能力的清单"，让它去 import 插件注册表会把依赖方向倒过来。
+// 插件工具在这里表现为"未分类工具"，调度器对未分类工具按保守串行处理
+// （experimentalToolEffect 返回 'ordered'），不会并发预启动 —— 对第三方代码正是想要的。
+export function buildToolDefs() {
+  const core = coreBuildToolDefs();
+  const plugins = pluginToolDefs();
+  return plugins.length ? [...core, ...plugins] : core;
+}
 
 export function toOpenAiTools(defs) {
   const tools = coreToOpenAiTools(defs);

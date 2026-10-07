@@ -1,7 +1,7 @@
 // ESLint flat config（改进方案 C1–C3；devDependencies 实际版本见 package.json，当前 ^10）。
-// 作用域：src/scripts = node ESM；test = node ESM（node:test 是 import 不是全局）；
+// 作用域：src/scripts/plugins = node ESM；test = node ESM（node:test 是 import 不是全局）；
 // ui = 浏览器 ES module（2026-10-01 起跨文件引用靠 import，所以 sourceType 是 module）。
-// tools/ 与 data/ 是本地未跟踪目录，不进 lint。
+// tools/ 与 data/ 是本地未跟踪目录，不进 lint；test/fixtures 是**故意写坏**的测试数据，也不进。
 import globals from 'globals';
 
 // 全部规则 error（no-unused-vars 也已在 2026-09-30 的清零批次里清到 0 ——
@@ -31,10 +31,22 @@ const nodeScope = {
 // 有意留在 window 上的只剩两个显式赋值：core/registry.js 的 QARegistry、i18n/zh-CN.js 的 QAText。
 
 export default [
-  { ignores: ['node_modules/**', 'data/**', 'tools/**', '_staging/**'] },
+  {
+    ignores: [
+      'node_modules/**', 'data/**', 'tools/**', '_staging/**',
+      // 插件夹具里有一批**故意**坏掉的插件（manifest 非法、入口抛错、注册未声明的工具……），
+      // 它们是"坏插件不许进来"这条契约的测试数据，不是源码。让 lint 去"修好"它们等于把
+      // 用例的前提删掉。
+      'test/fixtures/**'
+    ]
+  },
   { files: ['src/**/*.js'], ...nodeScope },
   { files: ['scripts/**/*.mjs'], ...nodeScope },
   { files: ['test/**/*.mjs'], ...nodeScope },
+  // 插件子系统（plugins/loader.js 与 plugins/_host/*.js）是宿主代码，按 src/ 同一套规则。
+  // 随版本分发的插件本体（plugins/<id>/index.js）也在内：它们会被大量复制成第三方插件的
+  // 起点，no-undef 能当场抓出"抄漏/拼错一个宿主 API 名"。
+  { files: ['plugins/**/*.js', 'plugins/**/*.mjs'], ...nodeScope },
   {
     files: ['ui/**/*.js'],
     languageOptions: {

@@ -1,0 +1,9 @@
+{
+  "id": "fixture-second",
+  "name": "Fixture Second",
+  "version": "2.0.0",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "capabilities": [],
+  "tools": [{ "name": "second_ping" }]
+}

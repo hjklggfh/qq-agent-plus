@@ -1,0 +1,9 @@
+{
+  "id": "fixture-throwing",
+  "name": "Throwing",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "throwing_tool" }]
+}

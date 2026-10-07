@@ -3188,3 +3188,58 @@ dialog { margin: auto; max-height: 88vh; }
   font-weight: 600;
   box-shadow: 0 1px 3px rgba(0, 0, 0, .22);
 }
+
+/* ── 插件页 ──────────────────────────────────────────────────────────────
+   列表用 .asset-table 复用既有表格样式，这里只补插件特有的几块：
+   状态徽标、目录路径、设置编辑器。类名统一 plugin- 前缀，别处不要再写同名规则。 */
+.plugin-table td { vertical-align: top; }
+.plugin-id { display: flex; align-items: baseline; gap: 6px; }
+.plugin-name { font-size: 12.5px; margin-top: 2px; }
+.plugin-dir {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--faint);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.plugin-tools { font-size: 11.5px; }
+.plugin-tools code { margin-right: 4px; }
+.plugin-actions { white-space: nowrap; }
+.plugin-actions .btn { margin: 0 4px 4px 0; }
+.plugin-status {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  color: var(--muted);
+  cursor: help;
+}
+.plugin-status.is-loaded { color: var(--green, #2fd07a); border-color: currentColor; background: transparent; }
+.plugin-status.is-pending { color: var(--orange, #e8a33d); border-color: currentColor; background: transparent; }
+.plugin-status.is-bad { color: var(--red, #ff6b6b); border-color: currentColor; background: transparent; }
+.plugin-cap { font-size: 11px; }
+.plugin-cap[title*="高风险"], .plugin-cap[title*="风险：高"] { color: var(--red, #ff6b6b); }
+#plugin-settings-box:empty { display: none; }
+.plugin-settings {
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-2);
+}
+.plugin-settings textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+}
+#plugin-note:empty { display: none; }
+#plugin-note { margin-top: 10px; }

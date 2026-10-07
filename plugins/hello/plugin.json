@@ -1,0 +1,17 @@
+{
+  "id": "hello",
+  "name": "示例插件（Hello）",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.js",
+  "description": "官方示例：演示 manifest、能力声明、存储、发消息与读取聊天记录。默认不加载，只用于阅读与手工验证。",
+  "capabilities": [
+    "chat:send",
+    "chat:read",
+    "storage"
+  ],
+  "tools": [
+    { "name": "hello_count", "timeoutMs": 10000 },
+    { "name": "hello_recent", "timeoutMs": 10000 }
+  ]
+}

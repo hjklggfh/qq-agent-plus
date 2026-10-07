@@ -13,6 +13,9 @@ import {
 import { DEFAULT_TIME_CONTROL, normalizeTimeControl } from './time-control.js';
 import { normalizeTokenSaverMode } from './token-saver.js';   // 零依赖模块，避免循环依赖
 import { normalizeMomentWindows } from '../features/moment-schedule.js';
+// 插件 id 的规则只有一处定义（plugins/_host/manifest.js 是零依赖的叶子模块，不会引回 core/）。
+// 在配置里重抄一份正则，就会埋下"配置认为合法、装载器认为不合法"的两套口径。
+import { PLUGIN_ID_PATTERN } from '../../plugins/_host/manifest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 本文件在 src/core/ 下：仓库根要多退一层（挪目录时最容易漏的就是这里）
@@ -20,6 +23,11 @@ export const ROOT = path.resolve(__dirname, '..', '..');
 // 测试/便携场景可重定向数据目录
 export const DATA_DIR = process.env.QQ_AGENT_DATA_DIR || path.join(ROOT, 'data');
 export const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
+
+// 插件配置的上限。定成"归一化时截断"而不是"抛错"：这两个字段是运维手写配置的常见入口，
+// 写多了应该能用（用到上限的那些），而不是让整个 /api/config 保存失败。
+export const MAX_PLUGINS_ENABLED = 50;
+export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
   // OpenAI 兼容 API（必填才能跑）
@@ -573,6 +581,24 @@ export const DEFAULT_CONFIG = {
     theme: 'dark',
     showVision: true,         // 模型目录显示图片输入能力徽标
     refreshMs: 15000          // 界面轮询间隔
+  },
+  // 第三方插件（只贡献"给模型的工具"，见 plugins/loader.js 与 docs/PLUGINS.md）
+  plugins: {
+    // 启用的插件 id。改完需要**重启**才生效：装载发生在 createApp() 之前
+    // （Orchestrator 构造时就抓一次工具表），所以运行期不能热插拔。
+    enabled: [],
+    // 额外的插件根目录（相对路径按数据目录解析）。固定的那一个根是 <仓库根>/plugins
+    // （插件是代码，与 src/ 平级、进版本库；见 plugins/loader.js 的说明）。
+    // 这个字段的用途是"插件代码放别处"—— 例如安装目录之外的挂载盘，
+    // 那条路完全不经过 deploy.sh 的 rsync，升级最稳。
+    roots: [],
+    // 能力确认快照：{ "<id>": { version, capabilities: [...], tools: [...] } }。
+    // 插件版本或能力/工具清单变了就得重新确认，否则**不加载** —— 这条是 fail-closed 的关键：
+    // 少了它，插件换个版本号就能悄悄多拿一个 chat:send 或给模型多塞一个工具。
+    approved: {},
+    // 每个插件自己的设置（凭据也放这里）。字段名命中密钥模式的值不会出现在 /api/config
+    // 响应里，也不会明文进审计（走的是 core/secret-keys.js 同一份模式表）。
+    settings: {}
   }
 };
 
@@ -993,6 +1019,56 @@ function migrateConfig(parsed) {
       }
     }
   }
+  // ── 第三方插件（plugins）──
+  // 形态归一 + 派生位剥离。plugins 的派生位比别处**深一层**：settings.<插件 id> 里的
+  // 凭据字段会被 sanitizeConfigSecrets 加上 hasXxx，客户端"整份配置展开回传"时就会把它
+  // 一起送回来 —— 不剥的话保存一次就落盘，往后每份配置都带着上一版算出来的结论
+  // （与 api/webSearch/tts/asr 那几段是同一个坑，只是这里多一层嵌套）。
+  if (!isPlainObject(out.plugins)) out.plugins = {};
+  const pluginSection = out.plugins;
+  if (Array.isArray(pluginSection.enabled)) {
+    // 保持数组形态；去重 + 丢掉不合法的 id（插件 id 与目录名同规则，见 plugins/_host/manifest.js）。
+    // 用同一个正则而不是在这里重抄一份：两处漂移会让"配置里写着启用、装载器却当它不合法"。
+    pluginSection.enabled = [...new Set(pluginSection.enabled
+      .map((id) => String(id ?? '').trim())
+      .filter((id) => PLUGIN_ID_PATTERN.test(id)))]
+      .slice(0, MAX_PLUGINS_ENABLED);
+  } else if (isPlainObject(pluginSection.enabled)) {
+    // 手写成 `{"foo": true}` 也认，归一成数组。
+    pluginSection.enabled = [...new Set(Object.keys(pluginSection.enabled)
+      .filter((id) => pluginSection.enabled[id] === true && PLUGIN_ID_PATTERN.test(id)))]
+      .slice(0, MAX_PLUGINS_ENABLED);
+  } else {
+    pluginSection.enabled = [];
+  }
+  if (Array.isArray(pluginSection.roots)) {
+    pluginSection.roots = [...new Set(pluginSection.roots
+      .map((item) => String(item ?? '').trim())
+      .filter(Boolean))]
+      .slice(0, MAX_PLUGIN_ROOTS);
+  } else {
+    pluginSection.roots = [];
+  }
+  if (!isPlainObject(pluginSection.approved)) pluginSection.approved = {};
+  for (const id of Object.keys(pluginSection.approved)) {
+    const entry = pluginSection.approved[id];
+    // 快照形态不对就当"没确认过"：装载器会把它判成 pending-approval 并要求重新确认，
+    // 比留着半个坏快照去和 manifest 比对更安全（后者可能因为"两边都畸形"而误判通过）。
+    if (!PLUGIN_ID_PATTERN.test(id) || !isPlainObject(entry)
+      || typeof entry.version !== 'string'
+      || !Array.isArray(entry.capabilities) || !Array.isArray(entry.tools)) {
+      delete pluginSection.approved[id];
+    }
+  }
+  if (!isPlainObject(pluginSection.settings)) pluginSection.settings = {};
+  for (const id of Object.keys(pluginSection.settings)) {
+    const entry = pluginSection.settings[id];
+    if (!PLUGIN_ID_PATTERN.test(id) || !isPlainObject(entry)) {
+      delete pluginSection.settings[id];
+      continue;
+    }
+    stripDerivedFlags(entry);
+  }
   // ── 语音合成（tts）──
   if (isPlainObject(out.tts)) {
     // 派生位不落盘：hasApiKey 是 sanitize 生成的、keyServices/currentService 是 GET 下发的，
@@ -1186,11 +1262,39 @@ export function imageGenKeyHosts(imageGen) {
 /** 真对象判定（排除 null / 数组 / 标量）——人设段这类"必须是对象"的字段用它兜底。 */
 const isPlainObject = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
+/**
+ * 递归剥掉 sanitizeConfigSecrets 生成的 has[A-Z] 派生位。
+ *
+ * 为什么要递归而不是像别的段那样逐键点名：plugins.settings 下面那一层是**插件 id**，
+ * 事先不可能列出来。深度限 6 层 —— 插件设置是给人写的扁平配置，超过这个深度只可能是
+ * 畸形数据，继续走下去只是在浪费一次启动时间。
+ */
+function stripDerivedFlags(node, depth = 0) {
+  if (depth > 6) return;
+  if (Array.isArray(node)) {
+    for (const item of node) stripDerivedFlags(item, depth + 1);
+    return;
+  }
+  if (!isPlainObject(node)) return;
+  for (const key of Object.keys(node)) {
+    if (/^has[A-Z]/.test(key)) { delete node[key]; continue; }
+    const value = node[key];
+    if (value && typeof value === 'object') stripDerivedFlags(value, depth + 1);
+  }
+}
+
 function deepMerge(base, override) {
   if (override === null || override === undefined) return structuredClone(base);
   if (typeof base !== 'object' || base === null || Array.isArray(base)) return structuredClone(override);
   const out = Array.isArray(base) ? [...base] : { ...base };
   for (const [key, value] of Object.entries(override)) {
+    // 原型污染守卫：`JSON.parse('{"__proto__":{"x":1}}')` 会造出一个**自有**的 `__proto__` 键，
+    // `Object.entries` 能枚举到它，而 `out[key] = …` 走的正是 `Object.prototype.__proto__`
+    // 那个 setter —— 于是 out 的原型被换成请求体里给的对象（`out.polluted` 变成可读，
+    // 且会随配置一路带下去）。`constructor` / `prototype` 是同一族的写法，一起挡。
+    // 请求体来自控制台（已鉴权），影响面有限，但这是**所有**配置写入路径的必经口
+    //（POST /api/config 也收任意 patch），在唯一的关口挡掉最省事，也不用指望每个调用点自觉。
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     // 整体替换约定：{ __replace__: X } → 该键直接用 X，不做递归合并。
     // 用于映射型字段（如 api.modelPrices）需要"删掉旧键"的场景 ——
     // 普通深合并传 {} 是删不掉已有键的。

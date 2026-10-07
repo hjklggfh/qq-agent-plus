@@ -317,6 +317,12 @@ RSYNC_PRESERVE=(
   # 更新器跑测试时会在 checkout 根建这两个目录（runner 会在 rsync 前删掉，这里再兜一层：
   # rsync 是 `-a --delete` 从 checkout 根同步的，根目录多什么就会被部署什么）
   --exclude='/.auto-update-test-*/'
+  # 插件：**不能用 --exclude**。exclude 会连传输一起挡掉，仓库自带的插件就再也更新不了了。
+  # protect 只作用于 --delete 阶段：发送端里有的文件照常传输更新（自带插件跟版本走），
+  # 接收端独有的文件不删（服务器上自装的第三方插件因此能活过每一次更新）。
+  # 注意副作用：以后从仓库里删掉某个自带插件时，安装目录里那份会留下来（不会自动清理）；
+  # 没在 plugins.enabled 里启用就不生效。
+  --filter='protect /plugins/***'
 )
 if [[ "$DATA_DIR" == "$INSTALL_DIR/"* ]]; then
   DATA_REL="${DATA_DIR#"$INSTALL_DIR"/}"

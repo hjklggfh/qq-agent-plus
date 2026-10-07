@@ -862,8 +862,15 @@ async function auditServer(args) {
   }
 
   section('3. 源码语法（全部 js）');
-  const jsFiles = [...findJsFiles(path.join(cfg.appDir, 'src')), ...findJsFiles(path.join(cfg.appDir, 'ui'))];
-  if (jsFiles.length === 0) skipLine(`没有找到 js 源码（${cfg.appDir}/src、${cfg.appDir}/ui）`);
+  // plugins/ 也在内：那里放着宿主侧的插件装载器（plugins/loader.js、plugins/_host/*.js），
+  // 是货真价实的源码。不加的话"源码语法全通过"会漏掉它，而它恰恰是最容易在挪文件时改坏路径的
+  // 那一块（跨目录 import 到 src/）。
+  const jsFiles = [
+    ...findJsFiles(path.join(cfg.appDir, 'src')),
+    ...findJsFiles(path.join(cfg.appDir, 'plugins')),
+    ...findJsFiles(path.join(cfg.appDir, 'ui'))
+  ];
+  if (jsFiles.length === 0) skipLine(`没有找到 js 源码（${cfg.appDir}/src、${cfg.appDir}/plugins、${cfg.appDir}/ui）`);
   else {
     const nodeBin = cfg.node || findRuntimeNode(cfg.appDir) || process.execPath;
     const nodeProbe = run(nodeBin, ['--version']);
@@ -884,13 +891,17 @@ async function auditServer(args) {
   }
 
   section('4. 未定义调用扫描');
-  const scanDir = path.join(cfg.appDir, 'src');
+  // 扫 src/ 与 plugins/ 两棵源码树。CLI 的 `ops scan [目录]` 一次只收一个位置参数，
+  // 所以这里直接扫两处而不是靠参数。CI 门禁为了覆盖 plugins/ 会跑两次（见 ci.yml）。
+  const scanDirs = [path.join(cfg.appDir, 'src'), path.join(cfg.appDir, 'plugins')].filter((dir) => exists(dir));
   let scanTotal = 0;
-  if (!exists(scanDir)) skipLine(`未找到 ${scanDir}`);
+  if (scanDirs.length === 0) skipLine(`未找到 ${path.join(cfg.appDir, 'src')}`);
   else {
-    const report = scanDirectory(scanDir, scanIgnore);
-    scanTotal = report.total;
-    for (const line of report.lines) noteLine(line);
+    for (const scanDir of scanDirs) {
+      const report = scanDirectory(scanDir, scanIgnore);
+      scanTotal += report.total;
+      for (const line of report.lines) noteLine(line);
+    }
     noteLine(`可疑未定义调用点: ${scanTotal}`);
     if (scanTotal === 0) okLine('未发现可疑未定义调用');
     else noteLine(`（仅记录，不阻断；已知误报可用 --ignore 过滤）`);

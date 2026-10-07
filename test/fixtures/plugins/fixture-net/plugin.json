@@ -1,0 +1,9 @@
+{
+  "id": "fixture-net",
+  "name": "Fixture Net",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": ["http", "secrets"],
+  "tools": [{ "name": "net_probe" }]
+}

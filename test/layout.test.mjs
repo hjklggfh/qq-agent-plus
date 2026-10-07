@@ -28,6 +28,8 @@ test('仓库根的关键文件/目录都在', () => {
     'src/ops.js',
     'src/auto-update.js',
     'scripts/auto-update.mjs',
+    'plugins/loader.js',
+    'plugins/hello/plugin.json',
     'ui/index.html',
     'ui/app.js',
     'roles/xiaojingyu.md',
@@ -40,27 +42,40 @@ test('仓库根的关键文件/目录都在', () => {
   }
 });
 
-test('src/ 下所有相对 import 都能解析到真实文件', () => {
+test('所有相对 import 都能解析到真实文件', () => {
   const walk = (dir, out = []) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules') continue;
+      if (entry.name === 'node_modules' || entry.name === '.baseline-qq') continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) walk(full, out);
       else if (/\.(js|mjs)$/.test(entry.name)) out.push(full);
     }
     return out;
   };
+  // 只认"真的在按路径找模块"的两种写法，不再把任意相对路径字符串都当 import：
+  //   ① 静态 `from '...'`、裸 `import '...'`、动态 `import('...')`
+  //   ② `new URL('...', import.meta.url)` —— 本仓库里唯一另一种按相对路径定位模块的写法
+  // 为什么要收紧：插件夹具里 manifest 的 `entry: '../outside.mjs'` 是**数据**不是 import，
+  // 旧的全量字符串匹配会把它当 import 报红（2026-10-08 加插件系统时踩到）。收紧之后
+  // 真正的 import 一条都不会漏，且 `checked > 100` 这条防"glob 写错扫了空气"的护栏照旧。
+  const patterns = [
+    /(?:\bfrom\s*|\bimport\s*\(?\s*)['"]((?:\.\.?\/)[^'"]*\.(?:js|mjs))['"]/g,
+    /new\s+URL\(\s*['"]((?:\.\.?\/)[^'"]*\.(?:js|mjs))['"]\s*,\s*import\.meta\.url/g
+  ];
   const missing = [];
   let checked = 0;
-  for (const dir of ['src', 'scripts', 'test', 'ui']) {
+  // plugins/ 也在内：它放着宿主侧的插件装载器（plugins/loader.js、plugins/_host/*.js），
+  // 是货真价实的源码，挪动同样会漏改路径。
+  for (const dir of ['src', 'scripts', 'test', 'ui', 'plugins']) {
     for (const file of walk(path.join(repoRoot, dir))) {
       const from = path.dirname(file);
-      // 也要认 .mjs（新增相对 .mjs import 时不能被静默跳过）；
-      // 必须是 ./ 或 ../ 开头的真相对路径 —— 免得把 '.test.mjs' 这种文件名过滤串当 import
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(/['"]((?:\.\.?\/)[^'"]*\.(?:js|mjs))['"]/g)) {
-        checked += 1;
-        const target = path.resolve(from, match[1]);
-        if (!fs.existsSync(target)) missing.push(`${path.relative(repoRoot, file)} → ${match[1]}`);
+      const source = fs.readFileSync(file, 'utf8');
+      for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
+          checked += 1;
+          const target = path.resolve(from, match[1]);
+          if (!fs.existsSync(target)) missing.push(`${path.relative(repoRoot, file)} → ${match[1]}`);
+        }
       }
     }
   }

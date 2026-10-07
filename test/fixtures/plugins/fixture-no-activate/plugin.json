@@ -1,0 +1,9 @@
+{
+  "id": "fixture-no-activate",
+  "name": "No Activate",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "noactivate_tool" }]
+}

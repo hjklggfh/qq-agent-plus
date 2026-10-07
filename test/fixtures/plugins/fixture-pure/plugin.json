@@ -1,0 +1,9 @@
+{
+  "id": "fixture-pure",
+  "name": "Fixture Pure",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "pure_add", "timeoutMs": 2000 }]
+}

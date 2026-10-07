@@ -31,6 +31,7 @@ Qzone moments, Qzone interactions and optional identity indexing.
 | Durable state | `src/core/store.js` | Message deduplication, leases, outbox, lifecycle transcripts and checkpoints |
 | Agent control | `src/core/orchestrator.js` | Debounce, trigger policy, concurrency, model/tool loop and recovery |
 | Prompt and tools | `src/llm/prompt.js`, `src/tools/` | Persona context and tools restricted to the current chat |
+| Plugins | `plugins/loader.js`, `plugins/_host/`, `plugins/<id>/` | Third-party tool plugins: manifest validation, declarative capability facade, per-plugin storage, guarded HTTP |
 | Delivery | `src/onebot/sender.js` | Per-chat serialization, rate limits, message splitting and outbox completion |
 | Model access | `src/llm/llm.js`, `src/core/providers.js`, `src/core/provider-presets.js` | Chat Completions, retries, provider credentials, usage and per-channel thinking presets |
 | Sticker system | `src/onebot/sticker-manager.js`, `src/onebot/stickers.js` | QQ favourites sync, notes, tiered lookup, auto-collect and local asset storage |
@@ -43,6 +44,36 @@ Qzone moments, Qzone interactions and optional identity indexing.
 `app.js` is the composition root. The protocol, persistence and orchestration
 classes are separate, but they run in one process and share the configured data
 directory.
+
+## Plugin Boundary
+
+Tool plugins live in `plugins/` (sibling of `src/`, version-controlled) and are
+loaded by `plugins/loader.js` from `src/server.js` **before** `createApp()`,
+because the Orchestrator captures the tool table once at construction time.
+
+A plugin declares its capabilities in `plugin.json`. The host then builds a
+**narrowed facade** instead of handing over the orchestrator context: a
+capability that was not declared has no property at all, so a plugin cannot
+reach `sender`, `store`, `memory` or the raw session object. Outbound sends are
+bound to the current `chatKey`; HTTP goes through the same SSRF core as
+`web_fetch` (DNS-level private-address rejection, requests pinned to the
+validated IP, credentials dropped on cross-origin redirects); credentials are
+readable only from the plugin's own settings section and only under names that
+the shared redaction pattern treats as secrets.
+
+The approval snapshot (`plugins.approved`) records version, capabilities and tool
+names. Any change to those requires re-approval, otherwise the plugin stays
+`pending-approval` and injects no tools at all. A plugin that fails to load is
+isolated: only that plugin is marked failed.
+
+Plugins are **not** sandboxed — they are trusted code in the same process. The
+capability manifest makes influence declarative, visible and re-confirmable; it
+does not confine. See `docs/PLUGINS.md`.
+
+Two plugin roots are scanned, in priority order: `config.plugins.roots` (extra
+roots, typically outside the install directory so `deploy.sh` can never touch
+them) and `<repo>/plugins`. `data/` deliberately holds no plugin code — it is
+runtime state (memory, transcripts, credentials).
 
 ## Message State Machine
 

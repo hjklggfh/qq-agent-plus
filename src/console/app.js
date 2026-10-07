@@ -80,8 +80,13 @@ const UI_DIR = path.resolve(__dirname, '..', '..', 'ui');
 // 前端构建戳：进程启动时按 ui/ 关键文件的体积+修改时间算一次。
 // 用途：/api/status 带上它，前端轮询发现戳变了就提示"控制台已更新，点此刷新"
 // —— 控制台是单页应用，部署不会自动替换已打开的页面，此前只能靠人记得按 F5。
+// 清单按"改了会不会让已打开的页面行为不一致"来定，不是"全部 ui 文件"：
+// 这里是手写枚举（有意的），新增**独立页面**时把它加进来 —— 加了才有刷新提示。
 function uiBuildStamp() {
-  return ['index.html', 'app.js', 'style.css', 'stable-features.js', 'status-refresh.js', 'auto-update-network.js']
+  return [
+    'index.html', 'app.js', 'style.css', 'stable-features.js', 'status-refresh.js',
+    'auto-update-network.js', 'pages/plugins.js'
+  ]
     .map((name) => {
       try {
         const s = fs.statSync(path.join(UI_DIR, name));

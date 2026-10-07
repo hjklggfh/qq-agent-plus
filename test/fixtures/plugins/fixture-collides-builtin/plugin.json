@@ -1,0 +1,9 @@
+{
+  "id": "fixture-collides-builtin",
+  "name": "Collides Builtin",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "index.mjs",
+  "capabilities": [],
+  "tools": [{ "name": "send_message" }]
+}
