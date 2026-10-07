@@ -131,6 +131,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 同一个 tag 重推（比如发现漏了改动、需要把 tag 移到新提交）时，上一次跑出来的
+          # 草稿还在 —— 直接 `gh release create` 会以 "already exists" 失败，于是每次都得
+          # 有人去网页上手动删一次草稿。这里先把该 tag 的既有 Release 删掉再建，
+          # 让重推 tag 变成一个自洽的动作。
+          # ⚠️ 不要加 --cleanup-tag：那会连 tag 一起删掉，把重推的语义搞乱。
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "已存在 ${GITHUB_REF_NAME} 的 Release（多半是重推 tag 留下的草稿），先删掉它"
+            gh release delete "${GITHUB_REF_NAME}" --yes
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             --draft \
             --title "${GITHUB_REF_NAME}" \
