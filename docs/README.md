@@ -31,6 +31,7 @@
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构总览：模块划分、消息流、存储与外部依赖 |
 | [PLUGINS.md](PLUGINS.md) | 工具插件系统：目录布局、manifest、能力清单、enable/审批/重新确认与排查 |
+| [PLUGIN-API.md](PLUGIN-API.md) | 插件接口速查：字段与成员清单、能力边界、返回契约，外加「从别的接口迁过来」对照表与 11 个真实的坑（清单与示例由 `test/plugin-api-doc.test.mjs` 钉住） |
 | [CHANGES.md](CHANGES.md) | 本分支相对上游的改动清单，每条附「失败模式 → 现行做法」 |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | 当前已知但未修复的问题，以及历史上的基线失败记录 |
 | [PERSONAS.md](PERSONAS.md) | 内置角色卡清单、选择与保存、语气档位（原版群友 / 自然可靠）与生效范围 |

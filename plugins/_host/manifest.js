@@ -38,6 +38,19 @@ export const MAX_MANIFEST_BYTES = 64 * 1024;
 export const MAX_NAME_LENGTH = 60;
 export const MAX_DESCRIPTION_LENGTH = 600;
 
+/**
+ * manifest 里本宿主认识的键。
+ *
+ * 提到模块级并导出，是为了让三处共用同一个事实源：这里的"未知键告警"、
+ * `docs/PLUGIN-API.md` 的字段表、以及 `test/plugin-api-doc.test.mjs` 的"文档不许漂移"断言。
+ * 以前这个集合藏在 `normalizeManifest` 的闭包里，文档只能靠人抄 —— 抄错就是
+ * 「作者按文档写、宿主却当未知键忽略」那类最难查的偏差。
+ */
+export const MANIFEST_KNOWN_KEYS = Object.freeze([
+  'id', 'name', 'version', 'apiVersion', 'entry',
+  'capabilities', 'tools', 'description'
+]);
+
 /** 入口文件的扩展名。仓库源码用 .js，插件是独立产物，也允许 .mjs。 */
 const ENTRY_EXTENSIONS = new Set(['.mjs', '.js']);
 
@@ -262,10 +275,7 @@ export function normalizeManifest(raw, options = {}) {
   }
 
   if (typeof warn === 'function') {
-    const known = new Set([
-      'id', 'name', 'version', 'apiVersion', 'entry',
-      'capabilities', 'tools', 'description'
-    ]);
+    const known = new Set(MANIFEST_KNOWN_KEYS);
     const unknown = Object.keys(raw).filter((key) => !known.has(key));
     if (unknown.length) warn(`manifest 里有本宿主不认识的键（已忽略）：${unknown.join(', ')}`);
   }
