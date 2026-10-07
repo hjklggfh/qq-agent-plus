@@ -48,8 +48,42 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
-## 000. 插件取图：响应体时限、体积上限与候选回退（v0.7.11 起）
+## 000. 大请求改走 WebSocket、异常落库解 cause 链、插件取图修复与 pixiv 插件搬家（v0.7.11 起）
 
+- **大请求体自动改走 WebSocket：修掉"大图必挂、小图偶尔成"的根因**（上游 Issue #21，本项目复现并移植）：
+  `src/onebot/onebot.js`、`src/onebot/sender.js`、`test/onebot-ws-oversize.test.mjs`（新增）。
+  **失败模式（自有服务器实测）**：生成贴纸与插件发的图"时好时坏"—— 小图能出去、大图必挂，
+  异常面板里只有一句 `fetch failed`，没有任何可定位的信息。
+  **根因**：协议端（SnowLuma）的 OneBot **HTTP** 端点对请求体有 ≈2MiB 硬上限 —— 逐档实测：
+  0.5 / 1 / 1.5MB 正常，**2MB 起直接断连**（`UND_ERR_SOCKET`；服务端连错误响应都不回，
+  所以客户端侧只剩 undici 那句恒定的 `fetch failed`，真因埋在 `error.cause` 里被丢掉了）。
+  而图片是整张 base64 塞进消息段的：1024×1024 的图 base64 后 2~3MB+，正好压线 ⇒ "小图偶尔成、
+  大图必挂"。**这条不只影响插件**：`src/llm/image-gen.js` 生成 8MB 以内的图走的是同一条路，
+  症状一模一样（此前一直被当成"网络抖动"）。
+  **现行做法**：`call()` 序列化后超过 `HTTP_BODY_SAFE_MAX`（1.5MiB）且 WS 已 OPEN 时，自动改走
+  **事件常驻的 WebSocket 通道**（上游生产实测 1–14MB 帧全部正常应答，覆盖图片链路的理论最大值
+  ≈10.7MiB = 8MiB 原始图 × 4/3）；其余流量保持原 HTTP 路线不动；WS 未连接时回落 HTTP 并留一条告警。
+  **结算口径与 HTTP 通道逐字一致**（这一条比"能发出去"更要紧）：
+  - 协议端**明确拒绝**（status/retcode 判失败）、send 回调报错（帧确定没写进 socket）、WS 未连接
+    ⇒ `failed` —— 确定没投递，可以自动重试；
+  - 应答超时、断线、`close()`、`reconnect()` ⇒ `unknown` —— 不知道对方收没收到，**绝不自动重试**，
+    升级为人工核对；`wsPending` 在断线/重连时立即结清，不挂着等超时；
+  - abort ⇒ 按 `signal.reason` 结清，**不带 outcome**（既不重试也不升级）。
+
+  这样才不会把"没把握的失败"降级成静默重发，也不会把"确定没投递"压成人工核对。
+  顺带把 WS 侧的失败证据（`WebSocket is not open` / `WS 发送失败` / `socket was closed while data
+  was being …`）加进 `sender.classifyTransportFailure` 的 definite 档 —— 漏掉它们会把可重试的失败
+  判成未知。
+  **验证**：新增 15 条用例（阈值边界、载荷完整、HTTP 零请求、失败口径四态、并发 echo 不串扰、
+  事件与应答不互吞、预中止不留残骸、`sendSticker` 端到端落到 WS），并做**四个变异**确认不是空跑：
+  ① 阈值判成 `>=`；② 按字符数而非 **UTF-8 字节**判（`bodyJson.length`）；③ send 回调报错改判
+  `unknown`；④ `close()` 不再结清在途调用 —— 各被对应用例抓住。②尤其重要：中文正文按字符数判会
+  **低估**体积，于是又会走回 HTTP 那条死路。
+- **异常落库解出 `error.cause` 链**：`src/pilots/incident-pilot.js`。
+  上面那条根因之所以查了好几轮，一半原因是**看不到真因**：undici 的外层 message 恒为
+  `fetch failed`，而落库只存外层。现行做法：`classifyError` 经 `errorMessageWithCauses` 最多解
+  3 层 cause 拼进消息（逐层 `redactText` 脱敏、总长 2000），面板上会直接显示
+  「真因: ECONNRESET other side closed」。没有 cause 的错误保持原样，不会拼出空的"真因"。
 - **Pixiv 插件取图：给响应体加时限、加体积上限、软失败退到下一个候选**：
   （改动落在**自建插件仓库**的 `my-plugins/pixiv-illust/index.js` 与 `README.md` 上 —— 见本节最后一条：
   这个插件在本版里同时从主仓库搬了出去）

@@ -22,12 +22,16 @@ const DEFAULT_MAX_PER_HOUR = DEFAULT_CONFIG.send.maxPerHour;
  * undici 的外层 message 恒为 "fetch failed"，真因在 cause 上，所以以 cause 为准 ——
  * 拿外层 message 当依据会把"连接被拒"误判成"结果未知"，于是该重试的永远不重试、
  * 还会被记成 critical 未知写入挂在"待处理"里（人工只能 resolveHeld 丢掉它）。
+ *
+ * 后三条（WebSocket is not open / WS 发送失败 / socket was closed while data was being …）
+ * 是超大请求体改走 WS 通道之后新增的证据：它们的含义都是"帧确定没写进这条连接"，
+ * 与 ECONNREFUSED 同类 —— 可以安全重试。漏掉它们会把可重试的失败压成 unknown 人工核对。
  */
 export function classifyTransportFailure(error) {
   const message = String(error?.message ?? error);
   const causeText = String(error?.cause?.code || error?.cause?.message || '');
   const evidence = causeText || message;
-  const definite = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH/i.test(evidence);
+  const definite = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|WebSocket is not open|WS 发送失败|socket was closed while data was being (compressed|read)/i.test(evidence);
   const uncertain = !definite
     && /timeout|timed out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|fetch failed|network|HTTP 5\d\d|Unexpected status code: 5\d\d/i.test(evidence);
   return { evidence, definite, uncertain };

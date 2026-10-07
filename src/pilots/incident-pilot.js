@@ -84,8 +84,31 @@ function normalizedSeverity(value) {
   return Object.hasOwn(SEVERITY_ORDER, value) ? value : 'error';
 }
 
+/**
+ * 错误消息 + cause 链。undici 一类网络库的外层 message 恒为 "fetch failed"，真因嵌在
+ * error.cause 里 —— 落库只存外层的话，面板上永远只剩一句无法定位的 "fetch failed"
+ *（2026-10-08 实测：报告者能看到异常却看不到 ECONNRESET，排查被卡死在第一步。
+ *  上游 Issue #21 也是同一个坑，所以这条与上游同口径）。
+ * 这里最多解 3 层 cause 拼在后面，每层与外层走同一套 redactText 脱敏。
+ */
+function errorMessageWithCauses(error) {
+  const base = cleanText(error?.message ?? error ?? '未知异常');
+  const causes = [];
+  let cursor = error && typeof error === 'object' ? error.cause : null;
+  for (let hop = 0; cursor != null && hop < 3; hop += 1) {
+    const text = cleanText(
+      String(cursor?.code ? `${cursor.code} ${cursor.message ?? ''}` : (cursor?.message ?? cursor))
+    ).trim();
+    if (text && text !== base && !causes.includes(text)) causes.push(text);
+    cursor = cursor && typeof cursor === 'object' ? cursor.cause : null;
+  }
+  return causes.length
+    ? `${base}（真因: ${causes.join(' ← ')}）`.slice(0, 2000)
+    : base;
+}
+
 function classifyError(error, context = {}) {
-  const message = cleanText(error?.message ?? error ?? '未知异常');
+  const message = errorMessageWithCauses(error);
   const outcome = String(context.outcome || error?.outcome || '');
   let severity = normalizedSeverity(context.severity);
   let category = cleanText(context.category || 'internal', 80);
