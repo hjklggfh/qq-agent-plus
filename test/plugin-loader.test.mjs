@@ -276,8 +276,9 @@ test('同一个插件 id 出现在两个根里只加载一次', async () => {
 
   assert.equal(result.statuses.filter((item) => item.id === 'fixture-ok').length, 1);
   assert.equal(result.toolDefs.length, 2);
-  assert.equal(warnings.includes(true), false);
-  assert.equal(warnings.filter((line) => /多个根目录/.test(line)).length, 1);
+  // 只该有"重复 id"这一条警告；没有别的理由去打扰日志
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /多个根目录/);
 });
 
 test('拒绝加载后不残留上一轮的注册表（下一次 load 会整体替换）', async () => {

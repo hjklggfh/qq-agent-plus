@@ -38,18 +38,18 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           ffmpeg -version | head -n 1
-      - name: 语法检查（src / scripts / test / ui，递归）
+      - name: 语法检查（src / plugins / scripts / test / ui，递归）
         run: |
           set -e
           # 与 ci.yml 同一步：tag push 不会触发 CI，所以这里必须自己跑一遍 ——
-          # 而 ops scan 只扫 src 下的 .js，scripts/test/ui 的语法门禁全在这一步。
+          # 而 ops scan 只扫 src 与 plugins 下的 .js，scripts/test/ui 的语法门禁全在这一步。
           # mapfile + 非空断言：`for f in $(find ...)` 吃掉 find 的退出码，find 失败时
           # 会打印"通过（0 个文件）"并成功退出，等于门禁空转。
-          # 四个目录也要先确认存在：find 对"目录不存在"只报错，少检一个目录同样是静默通过。
-          for d in src scripts test ui; do
+          # 五个目录也要先确认存在：find 对"目录不存在"只报错，少检一个目录同样是静默通过。
+          for d in src plugins scripts test ui; do
             [ -d "$d" ] || { echo "缺少目录：$d"; exit 1; }
           done
-          mapfile -t files < <(find src scripts test ui -type f \( -name '*.js' -o -name '*.mjs' \) | sort)
+          mapfile -t files < <(find src plugins scripts test ui -type f \( -name '*.js' -o -name '*.mjs' \) | sort)
           [[ ${#files[@]} -gt 0 ]] || { echo "没有找到任何待检查文件"; exit 1; }
           for f in "${files[@]}"; do node --check "$f"; done
           echo "语法检查通过（${#files[@]} 个文件）"
@@ -74,7 +74,13 @@ jobs:
           [[ ${#shells[@]} -gt 0 ]] || { echo "没有找到任何 .sh"; exit 1; }
           for f in "${shells[@]}"; do bash -n "$f"; done
           echo "Shell 语法检查通过（${#shells[@]} 个）"
-      - run: node src/ops.js scan --strict
+      - name: 未定义调用扫描（严格模式）
+        run: |
+          set -e
+          # 与 ci.yml 同口径：两棵源码树各扫一次（`ops scan [目录]` 一次只收一个位置参数，
+          # 默认只扫 src/）。plugins/ 是宿主侧的插件装载器所在地，不扫它等于"靠没被扫到而干净"。
+          node src/ops.js scan --strict
+          node src/ops.js scan plugins --strict
       - run: npm run test:unit
       - run: npm run test:local
       - name: 提示词 / 渲染 / 滚动 / 用量端到端回归
