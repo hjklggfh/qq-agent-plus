@@ -498,10 +498,14 @@ test('POST /api/plugins/roots：传空数组等于"只用随版本发布的那�
 // ── 移除（把三处记录一起清掉）─────────────────────────────────────────────
 
 test('POST /api/plugins/remove：清掉 enabled/approved/settings，且不碰别的插件、不删目录', async () => {
+  // 「另一个插件」用夹具而不是仓库自带的那个：2026-10-08 把 pixiv-illust 挪到自建插件仓库之后，
+  // 仓库里只剩 hello 一个（再拿它当"另一个"就没意义了）。
+  const otherRoot = stageRoot(['fixture-ok']);
   const { call } = setup({
-    enabled: ['hello', 'pixiv-illust'],
-    approved: { hello: approveRepo('hello'), 'pixiv-illust': approveRepo('pixiv-illust') },
-    settings: { hello: { keep: 1 }, 'pixiv-illust': { ownerIds: '123' } }
+    roots: [otherRoot],
+    enabled: ['hello', 'fixture-ok'],
+    approved: { hello: approveRepo('hello'), 'fixture-ok': approve('fixture-ok') },
+    settings: { hello: { keep: 1 }, 'fixture-ok': { ownerIds: '123' } }
   });
   const { res, json } = await call('POST', '/api/plugins/remove', { body: { id: 'hello' } });
   assert.equal(res.statusCode, 200);
@@ -511,11 +515,11 @@ test('POST /api/plugins/remove：清掉 enabled/approved/settings，且不碰别
   assert.equal(json.removed.purged, false, '没要求就别删数据');
 
   const plugins = getConfig().plugins;
-  assert.deepEqual(plugins.enabled, ['pixiv-illust'], '只摘掉这一个 id');
+  assert.deepEqual(plugins.enabled, ['fixture-ok'], '只摘掉这一个 id');
   assert.equal(plugins.approved.hello, undefined, '确认记录要删掉（否则残留一份没人看的快照）');
   assert.equal(plugins.settings.hello, undefined, '设置记录要删掉');
-  assert.ok(plugins.approved['pixiv-illust'], '别的插件的确认记录不许被牵连');
-  assert.ok(plugins.settings['pixiv-illust'], '别的插件的设置不许被牵连');
+  assert.ok(plugins.approved['fixture-ok'], '别的插件的确认记录不许被牵连');
+  assert.ok(plugins.settings['fixture-ok'], '别的插件的设置不许被牵连');
   // 插件目录本身不删：它可能在随版本发布的那个根里，删了下次部署又回来
   assert.ok(fs.existsSync(path.join(REPO_ROOT, 'plugins', 'hello')));
 });

@@ -50,8 +50,9 @@
 
 ## 000. 插件取图：响应体时限、体积上限与候选回退（v0.7.11 起）
 
-- **Pixiv 插件取图：给响应体加时限、加体积上限、软失败退到下一个候选**：`plugins/pixiv-illust/index.js`、
-  `plugins/pixiv-illust/README.md`、`test/pixiv-illust-plugin.test.mjs`。
+- **Pixiv 插件取图：给响应体加时限、加体积上限、软失败退到下一个候选**：
+  （改动落在**自建插件仓库**的 `my-plugins/pixiv-illust/index.js` 与 `README.md` 上 —— 见本节最后一条：
+  这个插件在本版里同时从主仓库搬了出去）
   **失败模式（现场实测，不是理论）**：部署后群里要图，日志每次都是
   `pixiv_image 出错：插件工具 pixiv_image 执行超时（60000ms），已放弃等待。` —— 看起来像插件坏了。
   逐层量下来是这样的：搜索 `api.lolicon.app` 一切正常（1 秒返回 15 张、分级筛完），卡在**取图**。
@@ -82,6 +83,24 @@
   （**带看门狗** —— 时限一旦失效，等待是无限的，没有看门狗这条用例会挂住 CI 而不是判红）。
   并做**三种变异**确认它们不是空跑：收回体时限、`break` 改回 `netError`、去掉 `Content-Length`
   预检 —— 各自被对应用例抓到，还原后全绿。
+- **Pixiv 插件从主仓库搬到自建插件仓库**：删掉 `plugins/pixiv-illust/` 与
+  `test/pixiv-illust-plugin.test.mjs`、`test/plugin-console-api.test.mjs`（它的"另一个插件"
+  原来用 pixiv-illust，改成夹具）。
+  **动机**：这个插件是需要按网络实际情况反复调的那一类（图床、超时、体积上限、代理），
+  而它住在"随版本发布"的 `plugins/` 里 —— 每改一次都得 bump 版本 + 打 tag + 发 Release。
+  搬进自建插件仓库之后，改它就是本地 `git push` + 服务器 `bash sync-plugins.sh`，**不再有版本**。
+  **代价**：它从此不在 CI 的覆盖里（`test/*.test.mjs` 扫不到它），所以它的 26 条用例改成
+  `my-plugins/pixiv-illust/test.mjs` 这种"插件自带、靠 `QQ_AGENT_HOME` 指宿主"的形式，
+  要手动跑（`QQ_AGENT_HOME=/mnt/data/qq-agent/app node --test …/test.mjs`）。
+  另外要把仓库里那份**删掉**：同一个 id 同时出现在两个根里时，自建根那份会赢（`pluginRoots()`
+  把额外根排在前面），仓库那份就成了"永远不生效、还每次启动告警"的死代码。
+  **刻意不动插件的 `version`**：能力和工具都没变 → 能力指纹不变 → 线上更新后它**照常装载**，
+  不需要重新确认。这也顺带说明了一件事：`version` 在指纹里，描述的是"影响力"，
+  不是"代码改过没有"。
+  **验证**：搬过去的 26 条用例在 `QQ_AGENT_HOME` 指向 checkout 时全绿；指到不存在的目录时
+  **26 条全 SKIP、0 红**（这条约定是刻意的：自建插件仓库可能被单独 clone 出来跑，
+  那时找不到宿主不该误报一片红。为此把顶层那几行用宿主模块的代码挪进了 `if (hostReady)` ——
+  留在顶层的话文件会当场 `TypeError`，连一条 SKIP 都输出不了）。
 
 ## 0. 插件：发图能力、Pixiv 移植、接口速查与"自行增删插件"（v0.7.10 起）
 
