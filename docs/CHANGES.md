@@ -48,7 +48,29 @@
 | 省 Token 模式 | `src/core/token-saver.js`（新增）、`src/core/config-legacy.js`、`src/llm/prompt.js`、`src/core/orchestrator.js`、`src/memory/memory-global.js`、`src/features/daily-moments.js`、`src/features/qzone-interactions.js`、`ui/app.js`、`src/console/app.js` | 「设置 -> 省 Token」三档，只给上下文档位条数、单次运行轮数与预算、交接/印象注入字符数、表情清单条数**夹上限**，不改写用户设置；关掉即恢复原样 | 本仓库新增 |
 | 关闭上游调试探针 | `src/*.js`、`ui/*.js` | 上游作者留在源码里的调试回复（指向其开发机私网地址）全部关掉 | `apply-disable-upstream-debug.sh` |
 
-## 000. 大请求改走 WebSocket、异常落库解 cause 链、插件取图修复与 pixiv 插件搬家（v0.7.11 起）
+## 000. 大请求改走 WebSocket、异常落库解 cause 链、合并转发、插件取图修复与 pixiv 插件搬家（v0.7.11 与 v0.7.12 起）
+
+> ⚠️ 版本边界（写清楚，免得以后看混）：本节的「插件取图修复」与「pixiv 插件搬家」随 **v0.7.11** 发布；
+> 而「大请求改走 WebSocket」「异常落库解 cause 链」「合并转发」这三条是 v0.7.11 发布**之后**才做的，
+> 随 **v0.7.12** 发布（0.7.11 的部署里没有它们 —— 当时只修了插件侧取图）。
+
+- **合并转发能力（`chat:send-forward`）：多张图打包成一条「聊天记录」**：`plugins/_host/capabilities.js`、
+  `plugins/_host/context.js`、`src/onebot/onebot.js`、`src/onebot/sender.js`、`test/plugin-tools.test.mjs`。
+  **动机**：pixiv 插件一个作品往往是多图的，逐张发会把群聊刷屏（一个 4 页作品刷 4 条）。
+  **现行做法**：新增第 7 项能力 `chat:send-forward` —— 它是**第三个**外发能力，因为"说话""往群里贴图"
+  "把一组内容折叠成一条"是三件不同的事，管理员应当能分开决定给不给。门面 `sendForward({ items, label? })`，
+  条目形状与 `sendImage` **完全同一套**（`{ text }` / `{ path }` / `{ url }`）⇒ `{ path }` 的路径守卫与
+  体积上限**逐字相同**（同样是为了挡住"把 data/config.json 当卡片里的一张图发出去"）；
+  **node 的显示名与 QQ 号由宿主填死** —— 插件不能借"聊天记录"伪装成别人说话，这是这类卡片最容易出问题的地方。
+  传输走既有的 `call()`（群聊 `send_group_forward_msg` / 私聊 `send_forward_msg`），所以多张图 base64 造成的
+  大 body **自动落到上面那条 WebSocket 通道** ✓；`sender.forward()` 与 `image()` 逐条同口径
+  （`#deliver` 的禁言预检/限频/outbox/「可确认未送达才重试」+ 同一道 unknown 防线 + 送达后才留档），
+  **outbox payload 只记条数**、不留 base64 ✓。
+  插件侧：多页时打包成一条卡片；**单页不套卡片**（一张图不值得多一层）；宿主没这个能力（旧宿主）
+  或协议端不认那个 action 时**回落逐张发**，一张都不丢 ✓。
+  **验证**：`plugin-tools` +7（含**路径守卫的变异验证**：去掉守卫即判红）、插件 +3；两个变异各被对应
+  用例抓住（去掉"转发失败就回落"、单页也硬走转发 —— 后者是第一遍写漏、靠变异测试补上的用例）。
+  ⚠️ 能力清单变了 ⇒ **能力指纹变了** ⇒ 已装实例会停在 `pending-approval`，必须重新确认一次。
 
 - **大请求体自动改走 WebSocket：修掉"大图必挂、小图偶尔成"的根因**（上游 Issue #21，本项目复现并移植）：
   `src/onebot/onebot.js`、`src/onebot/sender.js`、`test/onebot-ws-oversize.test.mjs`（新增）。
