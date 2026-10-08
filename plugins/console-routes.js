@@ -26,6 +26,12 @@ export const MAX_REQUEST_BYTES = 256 * 1024;
 /** 单个插件根路径的长度上限。路径由人填，给个上限免得 config.json 被写成垃圾场。 */
 export const MAX_ROOT_LENGTH = 512;
 
+const PIXIV_PLUGIN_ID = 'pixiv-illust';
+const PIXIV_CHAT_RATINGS_FILE = 'chat-ratings.json';
+const CHAT_RATING_KEY = /^(?:group|private):[0-9]+$/;
+const CHAT_RATING_TOKENS = new Set(['safe', 'r18', 'r18g']);
+const MAX_CHAT_RATING_ENTRIES = 512;
+
 /** 状态取值与 loader 的 PLUGIN_STATUS 一致，另加一个只在这里出现的 `missing`。 */
 const STATUS = Object.freeze({
   LOADED: 'loaded',
@@ -39,6 +45,71 @@ const STATUS = Object.freeze({
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function pixivChatRatingsPath(dataDir) {
+  return path.join(pluginStateDir(dataDir, PIXIV_PLUGIN_ID), PIXIV_CHAT_RATINGS_FILE);
+}
+
+function normalizePixivChatRatings(value) {
+  if (!isPlainObject(value)) throw new Error('chatRatings 必须是 JSON 对象');
+  const entries = Object.entries(value);
+  if (entries.length > MAX_CHAT_RATING_ENTRIES) {
+    throw new Error(`chatRatings 最多 ${MAX_CHAT_RATING_ENTRIES} 个会话`);
+  }
+  const out = {};
+  for (const [key, rawTokens] of entries) {
+    if (!CHAT_RATING_KEY.test(key)) {
+      throw new Error(`chatRatings 会话标识不合法：${JSON.stringify(key)}（应为 group:群号 或 private:QQ号）`);
+    }
+    if (!Array.isArray(rawTokens) || rawTokens.length === 0) {
+      throw new Error(`chatRatings.${key} 必须是至少包含一项的数组`);
+    }
+    const tokens = [...new Set(rawTokens.map((token) => String(token).trim().toLowerCase()))];
+    if (tokens.some((token) => !CHAT_RATING_TOKENS.has(token))) {
+      throw new Error(`chatRatings.${key} 只能使用 safe / r18 / r18g`);
+    }
+    out[key] = tokens;
+  }
+  return out;
+}
+
+function readPixivChatRatings(dataDir) {
+  const file = pixivChatRatingsPath(dataDir);
+  try {
+    return normalizePixivChatRatings(JSON.parse(fs.readFileSync(file, 'utf8')));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error(`读取 Pixiv 会话分级失败：${errorText(error)}`);
+  }
+}
+
+function writePixivChatRatings(dataDir, value) {
+  const normalized = normalizePixivChatRatings(value);
+  const file = pixivChatRatingsPath(dataDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(normalized, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } finally {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* ignore cleanup failure */ }
+  }
+  return normalized;
+}
+
+function pluginSettingsView(config, id, dataDir) {
+  const settings = readPluginSettings(config, id);
+  if (id === PIXIV_PLUGIN_ID) {
+    // 早期版本曾把 group:/private: 键误写进 config.json。它们现在由独立的
+    // chat-ratings.json 管理，隐藏旧字段避免用户继续编辑错误位置；下次保存
+    // 时整体替换设置也会把这些字段清掉。
+    for (const key of Object.keys(settings)) {
+      if (CHAT_RATING_KEY.test(key)) delete settings[key];
+    }
+    settings.chatRatings = readPixivChatRatings(dataDir);
+  }
+  return settings;
 }
 
 /**
@@ -198,7 +269,7 @@ function describeOne({ id, dir, root, dataDir, config, enabledSet, reserved, run
     // 「移除并删除数据」这个不可逆的动作只在真的有状态目录时才该出现（页面靠它决定）。
     // 顺带：它也是"这个插件到底跑没跑过"的一个诚实指标。
     stateDirExists: fs.existsSync(pluginStateDir(dataDir, id)),
-    settings: readPluginSettings(config, id),
+    settings: pluginSettingsView(config, id, dataDir),
     secretFields: pluginSecretFieldNames(config, id)
   };
 
@@ -503,7 +574,7 @@ export function installPluginRoutes(app, options = {}) {
       const config = getConfig();
       json(res, 200, {
         id,
-        settings: readPluginSettings(config, id),
+        settings: pluginSettingsView(config, id, dataDir),
         secretFields: pluginSecretFieldNames(config, id),
         signature: String(config?.plugins?.approved?.[id]?.version ?? '')
       });
@@ -531,13 +602,26 @@ export function installPluginRoutes(app, options = {}) {
       // 注意客户端拿到的本来就是**剥掉凭据**的视图，所以它提交时不会带上真实密钥；
       // 用 __replace__ 会把没提交的凭据一起清掉 —— 这正是这里要的语义（"按我看到的这份为准"），
       // 而界面必须在保存前把"已配置的凭据会被清空"讲清楚（见 ui/pages/plugins.js）。
-      writePluginConfig({ settings: { [id]: { __replace__: body.settings } } });
+      const nextSettings = { ...body.settings };
+      let chatRatings;
+      if (id === PIXIV_PLUGIN_ID && Object.prototype.hasOwnProperty.call(nextSettings, 'chatRatings')) {
+        chatRatings = normalizePixivChatRatings(nextSettings.chatRatings);
+        delete nextSettings.chatRatings;
+      }
+      if (id === PIXIV_PLUGIN_ID) {
+        for (const key of Object.keys(nextSettings)) {
+          if (CHAT_RATING_KEY.test(key)) delete nextSettings[key];
+        }
+      }
+      writePluginConfig({ settings: { [id]: { __replace__: nextSettings } } });
+      if (id === PIXIV_PLUGIN_ID && chatRatings !== undefined) writePixivChatRatings(dataDir, chatRatings);
       app.emit?.('plugin-update', { id, action: 'settings' });
       app.auditWrite?.('plugin.settings', id, { req, after: { keys: Object.keys(body.settings) } });
       const after = getConfig();
       json(res, 200, {
         ok: true,
-        settings: readPluginSettings(after, id),
+        restartRequired: true,
+        settings: pluginSettingsView(after, id, dataDir),
         secretFields: pluginSecretFieldNames(after, id),
         note: 'settings 是整体替换：客户端没提交的键（含凭据）已被清空'
       });

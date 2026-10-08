@@ -571,3 +571,74 @@ test('GET /api/plugins：每个插件报出来源根与"有没有状态目录"�
   assert.equal(ghost.root, '');
   assert.equal(ghost.enabled, true, 'missing 行也要能看出它"配置里是启用的"');
 });
+
+test('Pixiv 设置页：按会话分级从状态文件读写，不混进 config.json', async () => {
+  const stateDir = path.join(dataDir, 'plugin-state', 'pixiv-illust');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'chat-ratings.json'), JSON.stringify({ 'group:123': ['safe'] }));
+  const { call } = setup({ enabled: ['pixiv-illust'], settings: { 'pixiv-illust': { ratings: ['safe'] } } });
+  const got = await call('GET', '/api/plugins/settings', { url: '/api/plugins/settings?id=pixiv-illust' });
+  assert.equal(got.res.statusCode, 200);
+  assert.deepEqual(got.json.settings.chatRatings, { 'group:123': ['safe'] });
+
+  const saved = await call('POST', '/api/plugins/settings', {
+    body: {
+      id: 'pixiv-illust',
+      settings: {
+        ratings: ['safe'],
+        chatRatings: { 'group:123': ['safe', 'r18', 'r18g'], 'private:456': ['safe', 'r18'] }
+      }
+    }
+  });
+  assert.equal(saved.res.statusCode, 200);
+  assert.deepEqual(saved.json.settings.chatRatings, {
+    'group:123': ['safe', 'r18', 'r18g'], 'private:456': ['safe', 'r18']
+  });
+  assert.deepEqual(getConfig().plugins.settings['pixiv-illust'], { ratings: ['safe'] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stateDir, 'chat-ratings.json'), 'utf8')), saved.json.settings.chatRatings);
+});
+
+test('Pixiv 设置页：拒绝非法会话键和分级，不写入文件', async () => {
+  const stateDir = path.join(dataDir, 'plugin-state', 'pixiv-illust');
+  fs.mkdirSync(stateDir, { recursive: true });
+  const file = path.join(stateDir, 'chat-ratings.json');
+  fs.writeFileSync(file, JSON.stringify({ 'group:keep': ['safe'] }));
+  const { call } = setup({ enabled: ['pixiv-illust'], settings: { 'pixiv-illust': {} } });
+  for (const chatRatings of [{ nope: ['safe'] }, { 'group:1': ['unsafe'] }, { 'group:1': [] }]) {
+    const result = await call('POST', '/api/plugins/settings', { body: { id: 'pixiv-illust', settings: { chatRatings } } });
+    assert.equal(result.res.statusCode, 400);
+  }
+  assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { 'group:keep': ['safe'] });
+});
+
+test('Pixiv 设置页：隐藏并清理旧版误写进全局设置的会话键', async () => {
+  const stateDir = path.join(dataDir, 'plugin-state', 'pixiv-illust');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'chat-ratings.json'), JSON.stringify({ 'group:123': ['safe'] }));
+  const { call } = setup({
+    enabled: ['pixiv-illust'],
+    settings: {
+      'pixiv-illust': {
+        ratings: ['safe'],
+        'group:123': ['safe', 'r18'],
+        'private:456': ['safe']
+      }
+    }
+  });
+  const got = await call('GET', '/api/plugins/settings', { url: '/api/plugins/settings?id=pixiv-illust' });
+  assert.deepEqual(got.json.settings, { ratings: ['safe'], chatRatings: { 'group:123': ['safe'] } });
+
+  const saved = await call('POST', '/api/plugins/settings', {
+    body: {
+      id: 'pixiv-illust',
+      settings: {
+        ratings: ['safe'],
+        chatRatings: { 'group:123': ['safe'] },
+        'group:123': ['r18'],
+        'private:456': ['r18']
+      }
+    }
+  });
+  assert.equal(saved.res.statusCode, 200);
+  assert.deepEqual(getConfig().plugins.settings['pixiv-illust'], { ratings: ['safe'] });
+});

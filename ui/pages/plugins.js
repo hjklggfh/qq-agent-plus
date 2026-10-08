@@ -193,13 +193,25 @@ function renderSettingsEditor(payload) {
     return;
   }
   const item = (data.plugins || []).find((entry) => entry.id === data.editing) || {};
-  const settings = payload?.settings ?? item.settings ?? {};
+  const settings = { ...(payload?.settings ?? item.settings ?? {}) };
+  const isPixiv = data.editing === 'pixiv-illust';
+  const chatRatings = isPixiv && settings.chatRatings && typeof settings.chatRatings === 'object'
+    ? settings.chatRatings
+    : {};
+  if (isPixiv) delete settings.chatRatings;
   const secretFields = payload?.secretFields ?? item.secretFields ?? [];
   const secrets = secretFields.length
     ? `<div class="hint error">这个插件配过凭据：${secretFields.map((name) => `<code>${esc(name)}</code>`).join('、')}。
        凭据的<b>值</b>不会下发到页面（这是设计如此）。保存时会<b>整体替换</b>这段设置，
        所以没写进下面的凭据会被清空 —— 要保留就重新填一份。</div>`
     : '';
+
+  const pixivChatRatings = isPixiv ? `
+    <div class="plugin-chat-ratings">
+      <b>按会话分级（只对 Pixiv 生效）</b>
+      <div class="hint">每个键写成 <code>group:群号</code> 或 <code>private:QQ号</code>，值填写 safe / r18 / r18g 数组。未列出的会话使用全局 ratings。</div>
+      <textarea id="plugin-chat-ratings-text" spellcheck="false" rows="10" aria-label="Pixiv 按会话分级 JSON">${esc(JSON.stringify(chatRatings, null, 2))}</textarea>
+    </div>` : '';
 
   box.innerHTML = `<div class="plugin-settings">
     <div class="asset-toolbar">
@@ -210,6 +222,7 @@ function renderSettingsEditor(payload) {
       </div>
     </div>
     ${secrets}
+    ${pixivChatRatings}
     <textarea id="plugin-settings-text" spellcheck="false" rows="14"
       aria-label="插件设置 JSON">${esc(JSON.stringify(settings, null, 2))}</textarea>
     <div class="hint">这段就是 <code>config.json</code> 里 <code>plugins.settings.${esc(data.editing)}</code> 的内容，
@@ -395,10 +408,25 @@ async function handleAction(action, id, el) {
       note('设置必须是一个 JSON 对象（用 {} 包起来）。', 'error');
       return;
     }
+    if (data.editing === 'pixiv-illust') {
+      const ratingsArea = $('#plugin-chat-ratings-text');
+      if (ratingsArea) {
+        let chatRatings;
+        try { chatRatings = JSON.parse(String(ratingsArea.value || '{}')); } catch (error) {
+          note(`按会话分级 JSON 不合法：${error?.message ?? error}`, 'error');
+          return;
+        }
+        if (!chatRatings || typeof chatRatings !== 'object' || Array.isArray(chatRatings)) {
+          note('按会话分级必须是 JSON 对象', 'error');
+          return;
+        }
+        parsed.chatRatings = chatRatings;
+      }
+    }
     const result = await post('/api/plugins/settings', { id: data.editing, settings: parsed });
     // 用服务端回给的那份重画：保存会剥掉凭据，页面上该显示"凭据没了"而不是用户刚敲的原文。
     renderSettingsEditor(result);
-    note(`${data.editing} 的设置已保存${result?.secretFields?.length ? '（凭据已剥离，明文不入库到页面）' : ''}。`, 'success');
+    note(`${data.editing} 的设置已保存${result?.secretFields?.length ? '（凭据已剥离，明文不入库到页面）' : ''}${result?.restartRequired ? '，重启服务后生效' : ''}。`, 'success');
     await refresh();
   }
 }
