@@ -1,5 +1,11 @@
 # 改动清单（CHANGES）
 
+## v0.7.13：网页管理 Pixiv 按会话分级
+
+- 控制台插件设置页可直接编辑 Pixiv 的群聊/私聊分级权限，并写回服务器状态文件。
+- 旧版误写进全局设置的 `group:*` / `private:*` 字段会在保存时清理。
+- 保存后页面明确提示重启服务；保留合并转发 20 张图片的能力。
+
 ## 2026-10-08：Pixiv 按会话分级可在控制台编辑
 
 - 插件页打开 `pixiv-illust` 设置时，会同时读取 `data/plugin-state/pixiv-illust/chat-ratings.json`。
