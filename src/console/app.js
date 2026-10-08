@@ -3479,6 +3479,7 @@ export function createApp({
       if (changed) patch.persona.changedAt = Date.now();
     }
     const previousProactive = JSON.stringify(cfgNow.proactive || {});
+    const previousPrivateProactive = JSON.stringify(cfgNow.privateProactive || {});
     const previousDailyMoments = JSON.stringify(cfgNow.dailyMoments || {});
     const previousQzoneInteractions = JSON.stringify(cfgNow.qzoneInteractions || {});
     const previousIdentityPilot = JSON.stringify(cfgNow.identityPilot || {});
@@ -3561,6 +3562,10 @@ export function createApp({
     if (JSON.stringify(next.proactive || {}) !== previousProactive) {
       if (next.proactive?.enabled) orchestrator.startProactiveLoop();
       else orchestrator.stopProactiveLoop();
+    }
+    if (JSON.stringify(next.privateProactive || {}) !== previousPrivateProactive) {
+      if (next.privateProactive?.enabled) orchestrator.startPrivateProactiveLoop();
+      else orchestrator.stopPrivateProactiveLoop();
     }
     if (JSON.stringify(next.dailyMoments || {}) !== previousDailyMoments) {
       dailyMoments.reconfigure();
@@ -4246,6 +4251,7 @@ export function createApp({
     if (getConfig().groupDigest?.enabled) groupDigest.start();
     groupGame.startLoop();   // 内部按配置判断是否推进；重启后从磁盘恢复进行中的局
     if (getConfig().proactive?.enabled) orchestrator.startProactiveLoop();
+    if (getConfig().privateProactive?.enabled) orchestrator.startPrivateProactiveLoop();
     orchestrator.startScheduledWakeTicker();
     autoUpdate.start();
     log(`控制台已就绪：http://${serverCfg.host}:${port} (${getConfig().runtime.mode})`);

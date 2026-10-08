@@ -673,6 +673,28 @@ async function saveConfig({ quiet = false } = {}) {
       followUpEnabled: chk('#cfg-pro-followup', c.proactive?.followUpEnabled !== false),
       selfWakeEnabled: chk('#cfg-pro-selfwake', c.proactive?.selfWakeEnabled !== false)
     };
+    if ($('#cfg-dm-proactive')) {
+      patch.privateProactive = {
+        ...(c.privateProactive || {}),
+        enabled: chk('#cfg-dm-proactive', false),
+        dryRun: chk('#cfg-dm-dryrun', true),
+        targets: val('#cfg-dm-targets', '').trim(),
+        wakeRange: val('#cfg-dm-wake', '15-30').trim(),
+        targetIdleMinMinutes: clampInt(val('#cfg-dm-idle', 30), 1, 10080, 30),
+        cooldownMinutes: clampInt(val('#cfg-dm-cooldown', 120), 1, 10080, 120),
+        quietRange: val('#cfg-dm-quiet', '00:00-07:00').trim(),
+        maxPerDay: clampInt(val('#cfg-dm-daily', 20), 0, 100, 20),
+        targetSendRange: val('#cfg-dm-count', '1-1').trim(),
+        liangwenfengEnabled: chk('#cfg-dm-work-enabled', true),
+        lwfPeriods: val('#cfg-dm-work-hours', '09:00-12:00,14:00-18:00').trim(),
+        lwfDays: val('#cfg-dm-work-days', '1,2,3,4,5').trim(),
+        noRepeatWhenUnreplied: chk('#cfg-dm-no-repeat', true),
+        resendGuardMinutes: clampInt(val('#cfg-dm-self-guard', 30), 0, 1440, 30),
+        replyGuardMinutes: clampInt(val('#cfg-dm-reply-guard', 30), 0, 1440, 30),
+        sendGapSec: clampInt(val('#cfg-dm-gap', 20), 0, 600, 20),
+        personaNote: val('#cfg-dm-note', '').trim().slice(0, 120)
+      };
+    }
     // 收藏总闸（2026-10-02 用户反馈"乱收藏"）：界面是**一个开关** = collectEnabled 与
     // autoCollect 一起开/一起关（自动收与主动收都归它管，两个名字太像、分开摆会造成误解）。
     // 两个键在配置里仍独立，手改可以只关"自动扫图"那条；手改出的混合状态在界面上显示为"关"，

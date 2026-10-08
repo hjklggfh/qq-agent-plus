@@ -655,6 +655,38 @@ describe('Orchestrator', () => {
     assert.ok(bodies[0].tools.some((tool) => tool.function.name === 'schedule_wake'));
   });
 
+  it('private proactive uses the normal sender but limits one wake to one short text', async (t) => {
+    const sends = [];
+    const sender = {
+      sendTextBatch: async (chatKey, messages) => {
+        sends.push({ chatKey, messages });
+        return { sent: messages.map((text) => ({ text, at: Date.now(), messageId: sends.length })), failed: [] };
+      }
+    };
+    const { cfg, runner, store } = fixture(t, { sender });
+    cfg.allow.private = ['12345'];
+    cfg.privateProactive.enabled = true;
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:12345', { mid: 'dm-1', text: '你好', senderId: '12345', senderName: 'friend' });
+    store.markAllRead('private:12345');
+    const bodies = [];
+    globalThis.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      bodies.push(body);
+      const i = bodies.length;
+      const tool = i <= 2
+        ? { id: `send-${i}`, type: 'function', function: {
+          name: 'send_message', arguments: JSON.stringify({ messages: i === 1 ? '最近怎么样？' : '再问一句' })
+        } }
+        : { id: 'done', type: 'function', function: { name: 'finish', arguments: '{"summary":"主动私信已完成"}' } };
+      return Response.json({ choices: [{ message: { tool_calls: [tool] } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:12345', { proactive: true, privateProactive: true,
+      wakeNote: '【系统提醒】只发一条私信。' });
+    assert.deepEqual(sends, [{ chatKey: 'private:12345', messages: ['最近怎么样？'] }]);
+    assert.deepEqual(bodies[0].tools.map((tool) => tool.function.name).sort(), ['finish', 'send_message']);
+  });
+
   it('removes the sticker tools when the sticker switch is off (2026-10-02 用户反馈)', async (t) => {
     // 用户反馈：关掉「启用表情包」后机器人照样在发同一个表情 —— 那个开关只撤了提示词里的
     // 清单，四个贴纸工具还留着，模型没有新选项、只能反复用记得的那一个。修法与

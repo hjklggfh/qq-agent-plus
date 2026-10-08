@@ -335,6 +335,26 @@ export const DEFAULT_CONFIG = {
     followUpEnabled: true,      // 发言后没人接话，过十来分钟补一句
     selfWakeEnabled: true       // 模型用 schedule_wake 给自己安排稍后的主动发言
   },
+  // 主动私信：与群聊 proactive 完全独立；默认关闭，且只面向明确在私聊白名单中的 QQ。
+  privateProactive: {
+    enabled: false,
+    dryRun: true,
+    targets: '',
+    targetIdleMinMinutes: 30,
+    cooldownMinutes: 120,
+    wakeRange: '15-30',
+    quietRange: '00:00-07:00',
+    liangwenfengEnabled: true,
+    lwfPeriods: '09:00-12:00,14:00-18:00',
+    lwfDays: '1,2,3,4,5',
+    maxPerDay: 20,
+    targetSendRange: '1-1',
+    noRepeatWhenUnreplied: true,
+    resendGuardMinutes: 30,
+    replyGuardMinutes: 30,
+    sendGapSec: 20,
+    personaNote: ''
+  },
   // 自主节奏（可选）：消息不再即时触发，改由模型按自己安排的节奏醒来统一处理。
   // 默认关闭；开启后建议先在小范围（scope）试，确认能接受"延迟接话"的节奏。
   pacing: {

@@ -106,6 +106,7 @@ function proactiveWindowState(raw, now) {
 
 
 import { safeSlice } from './util.js';
+import { PrivateProactive } from './private-proactive.js';
 import { canRun } from './access.js';
 import { assertTimeAllowed, isTimeActive, TimeControlError, watchTimeWindow, withTimeScope } from './time-gate.js';
 import { vendorOfConfig, vendorOfBaseUrl } from '../pricing/model-prices.js';
@@ -393,6 +394,14 @@ export class Orchestrator {
     this.pauseReason = null;
     this.proactiveTimer = null;
     this.proactiveSuppressions = new Set();
+    this.privateProactive = new PrivateProactive({
+      store: this.store,
+      wake: (chatKey, options) => this.wake(chatKey, options),
+      canWake: (chatKey) => this.#wakeBlockedNow(chatKey) || this.proactiveSuppressions.size > 0
+        || this.#budgetWouldDrop(chatKey),
+      log,
+      random: this.random
+    });
     // 模型自己安排的「稍后主动发言」：chatKey -> { at, note, timer }
     this.scheduledWakes = new Map();
     this.scheduledWakeTicker = null;
@@ -524,6 +533,8 @@ export class Orchestrator {
   #maybeScheduleFollowUp(chatKey, session) {
     try {
       const cfgNow = getConfig();
+      // 这次若是主动私信，不再为同一句安排通用补话；普通私聊仍沿用原行为。
+      if (session?.triggerSummary === '主动私信') return;
       const window = proactiveWindowState(cfgNow.proactive?.activeHours, Date.now());
       const plan = followUpPlan({
         sentCount: Array.isArray(session?.sent) ? session.sent.length : 0,
@@ -986,7 +997,7 @@ export class Orchestrator {
     return task;
   }
 
-  async #wake(chatKey, { proactive = false, manual = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
+  async #wake(chatKey, { proactive = false, privateProactive = false, manual = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
     if (!canRun(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return; }
     if (!this.#chatRuntimeDecision(chatKey).allowed) {
       if (waitingSessionId) this.#discardWaiting(waitingSessionId);
@@ -1169,6 +1180,8 @@ export class Orchestrator {
       const first = triggerEntries[0];
       const triggerSummary = manual
         ? '控制台主动唤醒'
+        : privateProactive
+        ? '主动私信'
         : proactive
         ? '主动机会（冷场开话题）'
         : (first ? `${first.senderName || first.senderId}：${String(first.text || '').slice(0, 40)}` : '');
@@ -1226,7 +1239,7 @@ export class Orchestrator {
     }
 
     try {
-      const runResult = await this.#runAgent(session, { kind, chatId, chatKey, triggerEntries, proactive, wakeNote, paced, seq,
+      const runResult = await this.#runAgent(session, { kind, chatId, chatKey, triggerEntries, proactive, privateProactive, wakeNote, paced, seq,
         manual, contextLimit: tierResult.count, tierInfo: tierResult, conversation, signal: controller.signal });
       controller.signal.throwIfAborted();
       if (conversation.mode === 'lifecycle') {
@@ -1490,6 +1503,7 @@ export class Orchestrator {
     chatKey,
     triggerEntries,
     proactive,
+    privateProactive = false,
     wakeNote = '',
     paced = false,
     manual = false,
@@ -1548,6 +1562,9 @@ export class Orchestrator {
     // 图片生成按张计费：没开/没配就不注入工具，否则模型会去调一个必然失败的画图工具
     const imageGenEnabled = imageGenAvailable(cfg);
     const toolDefs = this.toolDefs.filter((d) => {
+      // 主动私信每轮至多一条文本。其它外发工具（含插件工具）不进入这一轮，
+      // 避免模型绕开每日额度和“未回复不追发”的记账。
+      if (privateProactive && !['send_message', 'finish'].includes(d.name)) return false;
       if (!canSeeImages && (d.name === 'get_message_images' || d.name === 'get_sticker_image')) return false;
       // 表情包总开关关掉：发送/列表/看图/收藏四个工具一并摘掉。原先只撤了提示词里的清单，
       // 工具还留着 —— 模型仍会发旧库里的表情，而【可用表情包】已被抽走、没有新选项，
@@ -1572,6 +1589,21 @@ export class Orchestrator {
       if (d.feature === 'identityPilot' && !identityAvailable) return false;
       if (d.feature === 'friendProposal' && !friendProposalAvailable) return false;
       return true;
+    }).map((definition) => {
+      if (!privateProactive || definition.name !== 'send_message') return definition;
+      return {
+        ...definition,
+        description: '本次主动私信最多发送一条、300 字以内的纯文本；也可以不发。messages 只能是字符串或单项字符串数组。',
+        async execute(ctx, args) {
+          const messages = args?.messages;
+          const text = Array.isArray(messages) && messages.length === 1 ? messages[0] : messages;
+          if (session.sent.length || typeof text !== 'string' || !text.trim() || text.length > 300
+            || (Array.isArray(messages) && messages.length !== 1)) {
+            return { content: '错误：主动私信每轮只允许发送一条 1~300 字的文本', isError: true, reportIncident: false };
+          }
+          return definition.execute(ctx, { ...args, messages: text });
+        }
+      };
     });
     const openAiTools = toOpenAiTools(toolDefs);
     const systemPrompt = buildSystemPrompt({
@@ -2806,6 +2838,9 @@ export class Orchestrator {
     this.proactiveTimer = null;
   }
 
+  startPrivateProactiveLoop() { this.privateProactive.start(); }
+  stopPrivateProactiveLoop() { this.privateProactive.stop(); }
+
   // ── 控制接口 ───────────────────────────────────────────────────────────
 
   setPaused(paused, reason = 'manual') {
@@ -2829,6 +2864,7 @@ export class Orchestrator {
     for (const sessionId of this.pendingSessions.values()) this.#finishWaiting(sessionId, 'aborted');
     this.pendingSessions.clear();
     this.stopProactiveLoop();
+    this.stopPrivateProactiveLoop();
     await Promise.allSettled([...this.runTasks]);
   }
 

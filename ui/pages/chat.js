@@ -182,6 +182,40 @@ return `
       完全不想让它主动开口就把三个都取消。后两项在较早版本里一直生效，本版起可以在控制台关掉。
     </div>
 
+    <h3>主动私信（独立开关）</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-dm-proactive" ${c.privateProactive?.enabled === true ? 'checked' : ''} />
+      <label for="cfg-dm-proactive">冷场时考虑主动私信</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-dm-dryrun" ${c.privateProactive?.dryRun !== false ? 'checked' : ''} />
+      <label for="cfg-dm-dryrun">演练：只记录符合条件的对象，不调用模型、不发送</label></div>
+    <div class="hint">默认关闭且仅考虑私聊白名单中的已有会话；启用后先保持演练，确认日志与对象范围，再关闭演练。群聊主动开话题不受影响。</div>
+    <div class="field"><label>指定 QQ（留空 = 私聊白名单；也可写 QQ:冷场分钟/冷却分钟）</label>
+      <textarea id="cfg-dm-targets" rows="2">${esc(c.privateProactive?.targets || '')}</textarea></div>
+    <div class="field-row">
+      <div class="field"><label>醒来间隔（分钟，最小-最大）</label><input id="cfg-dm-wake" value="${esc(c.privateProactive?.wakeRange ?? '15-30')}" /></div>
+      <div class="field"><label>冷场门槛（分钟）</label><input type="number" id="cfg-dm-idle" min="1" value="${esc(c.privateProactive?.targetIdleMinMinutes ?? 30)}" /></div>
+      <div class="field"><label>个人冷却（分钟）</label><input type="number" id="cfg-dm-cooldown" min="1" value="${esc(c.privateProactive?.cooldownMinutes ?? 120)}" /></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>睡眠时段（北京时间）</label><input id="cfg-dm-quiet" value="${esc(c.privateProactive?.quietRange ?? '00:00-07:00')}" /></div>
+      <div class="field"><label>每天最多主动消息数</label><input type="number" id="cfg-dm-daily" min="0" max="100" value="${esc(c.privateProactive?.maxPerDay ?? 20)}" /></div>
+      <div class="field"><label>每轮人数（最小-最大）</label><input id="cfg-dm-count" value="${esc(c.privateProactive?.targetSendRange ?? '1-1')}" /></div>
+    </div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-dm-work-enabled" ${c.privateProactive?.liangwenfengEnabled !== false ? 'checked' : ''} />
+      <label for="cfg-dm-work-enabled">工作时段禁发</label></div>
+    <div class="field-row">
+      <div class="field"><label>工作时段（逗号分隔）</label><input id="cfg-dm-work-hours" value="${esc(c.privateProactive?.lwfPeriods ?? '09:00-12:00,14:00-18:00')}" /></div>
+      <div class="field"><label>工作日（1=周一）</label><input id="cfg-dm-work-days" value="${esc(c.privateProactive?.lwfDays ?? '1,2,3,4,5')}" /></div>
+    </div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-dm-no-repeat" ${c.privateProactive?.noRepeatWhenUnreplied !== false ? 'checked' : ''} />
+      <label for="cfg-dm-no-repeat">主动私信未获回复前不再主动发第二次</label></div>
+    <div class="field-row">
+      <div class="field"><label>机器人刚发言保护（分钟）</label><input type="number" id="cfg-dm-self-guard" min="0" value="${esc(c.privateProactive?.resendGuardMinutes ?? 30)}" /></div>
+      <div class="field"><label>对方刚回复保护（分钟）</label><input type="number" id="cfg-dm-reply-guard" min="0" value="${esc(c.privateProactive?.replyGuardMinutes ?? 30)}" /></div>
+      <div class="field"><label>多人间隔（秒）</label><input type="number" id="cfg-dm-gap" min="0" value="${esc(c.privateProactive?.sendGapSec ?? 20)}" /></div>
+    </div>
+    <div class="field"><label>主动私信补充要求（可选，最多 120 字）</label>
+      <textarea id="cfg-dm-note" rows="2">${esc(c.privateProactive?.personaNote || '')}</textarea></div>
+
     <h3>所有模式 · 表情包</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-sticker" ${c.sticker.enabled ? 'checked' : ''} />
       <label for="cfg-sticker">启用表情包（收藏表情同步 + 发送工具）</label></div>
