@@ -513,8 +513,8 @@ test('sendForward：体积/条数上限、缺参数、非法 URL、引用/@ 都�
   await assert.rejects(() => api.sendForward({ items: [{}] }), /需要 \{ text \}/);
   await assert.rejects(() => api.sendForward({ items: [{ path: big }] }), /超过 \d+ 字节上限/);
   await assert.rejects(
-    () => api.sendForward({ items: Array.from({ length: 11 }, () => ({ text: 'x' })) }),
-    /最多 10 条/
+    () => api.sendForward({ items: Array.from({ length: 22 }, () => ({ text: 'x' })) }),
+    /最多 21 条/
   );
   await assert.rejects(() => api.sendForward({ items: [{ url: 'http://127.0.0.1/a.png' }] }),
     /内网|本机|只允许|仅允许|不合法|URL/);

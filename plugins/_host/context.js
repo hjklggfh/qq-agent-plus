@@ -30,9 +30,11 @@ export const MAX_RESULT_BYTES = 64 * 1024;
 /** 插件能发的单张图片上限。与内置链路读图的量级一致（safeFetchBinary 默认 12MB）。 */
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 /** 一条合并转发里最多几"条"（每个条目在卡片里是一个气泡）。 */
-export const MAX_FORWARD_ITEMS = 10;
+// 合并转发包含一个说明文字节点；允许最多 20 张图 + 1 个文字节点。
+export const MAX_FORWARD_ITEMS = 21;
 /** 合并转发里图片的**合计**上限：一条转发里的图会一起进同一个请求体，逐张各 12MB 会失控。 */
-export const MAX_FORWARD_BYTES = 12 * 1024 * 1024;
+// 16MB 二进制图片合计给 base64/JSON 和 OneBot WebSocket 留出余量；插件默认只用 8MB。
+export const MAX_FORWARD_BYTES = 16 * 1024 * 1024;
 export const SECRET_NAME_PATTERN = /^[a-zA-Z0-9_.-]{1,64}$/;
 
 /** 审计用的凭据容器名（与 secret-keys.js 的 SECRET_CONTAINER 同口径）。 */
