@@ -6,6 +6,7 @@ import { installManualFriendReviewRoute } from './console/manual-friend-review-r
 import { installExperimentalMultimodalContextPilot } from './pilots/experimental-multimodal-context.js';
 import { initPlugins } from '../plugins/loader.js';
 import { installPluginRoutes } from '../plugins/console-routes.js';
+import { initMarketExtensions } from '../plugins/market-loader.js';
 import { buildToolDefs as buildBuiltinToolDefs } from './tools/tools-core.js';
 import { DATA_DIR } from './core/config.js';
 import { assertSqliteAvailable } from './core/sqlite.js';
@@ -105,6 +106,7 @@ installExperimentalMultimodalContextPilot();
 const builtinToolNames = buildBuiltinToolDefs().map((def) => String(def.name));
 try {
   await initPlugins({ dataDir: DATA_DIR, log, builtinToolNames });
+  await initMarketExtensions({ dataDir: DATA_DIR, log });
 } catch (error) {
   log.error('[插件] 装载失败，按「没有插件」继续启动：', error?.message ?? error);
 }

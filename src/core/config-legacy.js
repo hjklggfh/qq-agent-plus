@@ -618,7 +618,12 @@ export const DEFAULT_CONFIG = {
     approved: {},
     // 每个插件自己的设置（凭据也放这里）。字段名命中密钥模式的值不会出现在 /api/config
     // 响应里，也不会明文进审计（走的是 core/secret-keys.js 同一份模式表）。
-    settings: {}
+    settings: {},
+    // 兼容对方市场扩展的独立代码根。默认空，避免自动执行未审查的市场包。
+    marketRoots: [],
+    marketEnabled: [],
+    marketApproved: {},
+    marketSettings: {}
   }
 };
 
@@ -1069,6 +1074,14 @@ function migrateConfig(parsed) {
   } else {
     pluginSection.roots = [];
   }
+  if (Array.isArray(pluginSection.marketRoots)) {
+    pluginSection.marketRoots = [...new Set(pluginSection.marketRoots.map((item) => String(item ?? '').trim()).filter(Boolean))].slice(0, MAX_PLUGIN_ROOTS);
+  } else pluginSection.marketRoots = [];
+  if (Array.isArray(pluginSection.marketEnabled)) {
+    pluginSection.marketEnabled = [...new Set(pluginSection.marketEnabled.map((id) => String(id ?? '').trim()).filter((id) => PLUGIN_ID_PATTERN.test(id)))].slice(0, MAX_PLUGINS_ENABLED);
+  } else pluginSection.marketEnabled = [];
+  if (!isPlainObject(pluginSection.marketApproved)) pluginSection.marketApproved = {};
+  if (!isPlainObject(pluginSection.marketSettings)) pluginSection.marketSettings = {};
   if (!isPlainObject(pluginSection.approved)) pluginSection.approved = {};
   for (const id of Object.keys(pluginSection.approved)) {
     const entry = pluginSection.approved[id];

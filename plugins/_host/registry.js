@@ -16,6 +16,7 @@
 let currentToolDefs = [];
 let currentStatuses = [];
 let currentPlugins = [];
+let currentMarketPrompts = [];
 
 /** 当前生效的插件工具（默认空数组）。tools.js 的 buildToolDefs 拼它。 */
 export function pluginToolDefs() {
@@ -39,6 +40,13 @@ export function loadedPluginSummaries() {
   return currentPlugins;
 }
 
+export function marketPromptSections() {
+  return currentMarketPrompts
+    .slice().sort((a, b) => Number(a.priority || 50) - Number(b.priority || 50))
+    .map((item) => item.title ? `【${item.title}】\n${item.content}` : item.content)
+    .join('\n\n');
+}
+
 /**
  * 装载结果一次写入。由 manager.js 在加载流程结束后调用。
  * 传空数组即彻底清空（测试之间隔离、以及"没有任何插件"的正常情形）。
@@ -49,6 +57,14 @@ export function setPluginRegistry({ toolDefs = [], statuses = [], plugins = [] }
   currentPlugins = Array.isArray(plugins) ? plugins : [];
 }
 
+export function mergePluginRegistry({ toolDefs = [], statuses = [], plugins = [], promptSections = [] } = {}) {
+  currentToolDefs = [...currentToolDefs, ...(Array.isArray(toolDefs) ? toolDefs : [])];
+  currentStatuses = [...currentStatuses, ...(Array.isArray(statuses) ? statuses : [])];
+  currentPlugins = [...currentPlugins, ...(Array.isArray(plugins) ? plugins : [])];
+  currentMarketPrompts = [...currentMarketPrompts, ...(Array.isArray(promptSections) ? promptSections : [])];
+}
+
 export function clearPluginRegistry() {
   setPluginRegistry({});
+  currentMarketPrompts = [];
 }

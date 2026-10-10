@@ -23,6 +23,7 @@ import {
 export { _sliderToTier as sliderToTier, _tierToSlider as tierToSlider };
 import { formatFullTime, formatShortTime, quotePrefixFor, safeSlice, sanitizeUserText, resolveSelfName } from '../core/util.js';
 import { buildStickerContext, buildStickerStrategyHint } from '../onebot/stickers.js';
+import { marketPromptSections } from '../../plugins/_host/registry.js';
 
 // ── 系统提示 ─────────────────────────────────────────────────────────────
 
@@ -438,6 +439,8 @@ export function buildSystemPrompt({
     parts.push('', gameLines.join('\n'));
   }
   if (gameContext) parts.push('', String(gameContext));
+  const marketSections = marketPromptSections();
+  if (marketSections) parts.push('', marketSections);
   parts.push('', closingDiscipline());
   return parts.join('\n');
 }
