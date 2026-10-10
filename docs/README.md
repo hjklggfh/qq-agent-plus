@@ -25,6 +25,7 @@
 | [EXPERIMENTAL_FEATURE_STANDARD.md](EXPERIMENTAL_FEATURE_STANDARD.md) | 实验功能的开发规范：开关、默认值、降级与转正流程 |
 | [ASSET_OBSERVABILITY.md](ASSET_OBSERVABILITY.md) | AI 资产观测（表情/黑话等）的统计口径与控制台入口 |
 | [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界 |
+| [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
 
 ## 开发与维护
 
@@ -33,6 +34,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构总览：模块划分、消息流、存储与外部依赖 |
 | [PLUGINS.md](PLUGINS.md) | 工具插件系统：目录布局、manifest、能力清单、enable/审批/重新确认与排查 |
 | [PLUGIN-API.md](PLUGIN-API.md) | 插件接口速查：字段与成员清单、能力边界、返回契约，外加「从别的接口迁过来」对照表与 11 个真实的坑（清单与示例由 `test/plugin-api-doc.test.mjs` 钉住） |
+| [MARKET-EXTENSIONS.md](MARKET-EXTENSIONS.md) | 市场扩展兼容层：清单、启用与审批、权限隔离和配置方式 |
 | [CHANGES.md](CHANGES.md) | 本分支相对上游的改动清单，每条附「失败模式 → 现行做法」 |
 | [KNOWN-ISSUES.md](KNOWN-ISSUES.md) | 当前已知但未修复的问题，以及历史上的基线失败记录 |
 | [PERSONAS.md](PERSONAS.md) | 内置角色卡清单、选择与保存、语气档位（原版群友 / 自然可靠）与生效范围 |

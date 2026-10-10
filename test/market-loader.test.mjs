@@ -14,12 +14,23 @@ import { clearPluginRegistry, pluginToolDefs } from '../plugins/_host/registry.j
 const SAMPLE = path.resolve('D:/QQ-Agent/market-analysis/bangumi-lookup/bangumi-lookup');
 
 test('市场扩展：没有启用或审批时不执行代码', async () => {
-  const result = await initMarketExtensions({
-    dataDir: os.tmpdir(),
-    config: { plugins: { marketRoots: [path.dirname(SAMPLE)], marketEnabled: [] } }
-  });
-  assert.equal(result.statuses[0]?.status, 'disabled');
-  clearPluginRegistry();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-agent-market-test-'));
+  const fixture = path.join(root, 'disabled-fixture');
+  fs.mkdirSync(fixture);
+  fs.writeFileSync(path.join(fixture, 'skill.json'), JSON.stringify({
+    id: 'disabled-fixture', name: 'Disabled fixture', version: '1.0.0', apiVersion: 1, entry: 'index.js'
+  }));
+  fs.writeFileSync(path.join(fixture, 'index.js'), 'export async function setup() {}\n');
+  try {
+    const result = await initMarketExtensions({
+      dataDir: os.tmpdir(),
+      config: { plugins: { marketRoots: [root], marketEnabled: [] } }
+    });
+    assert.equal(result.statuses[0]?.status, 'disabled');
+  } finally {
+    clearPluginRegistry();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('市场扩展：真实 bangumi skill 注册带前缀的工具并注入提示词', async (t) => {
