@@ -24,6 +24,7 @@
 | [STABLE_FEATURE_MIGRATION_NOTES.md](STABLE_FEATURE_MIGRATION_NOTES.md) | 实验/退役功能留下的一次性兼容边界（身份、好友、异常、黑话） |
 | [EXPERIMENTAL_FEATURE_STANDARD.md](EXPERIMENTAL_FEATURE_STANDARD.md) | 实验功能的开发规范：开关、默认值、降级与转正流程 |
 | [ASSET_OBSERVABILITY.md](ASSET_OBSERVABILITY.md) | AI 资产观测（表情/黑话等）的统计口径与控制台入口 |
+| [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界 |
 
 ## 开发与维护
 
