@@ -23,6 +23,16 @@ test('B站链接识别支持 QQ json/xml 分享卡片', () => {
   ]);
 });
 
+test('B站链接识别支持 OneBot share/link 卡片段', () => {
+  const feature = new BilibiliAutoForward({ getConfig: () => ({ bilibili: { enabled: true } }) });
+  assert.deepEqual(feature.extractUrlsFromSegments([
+    { type: 'share', data: { url: 'https://www.bilibili.com/video/BV1share' } },
+    { type: 'link', data: { link: 'https://b23.tv/link-card' } }
+  ]), [
+    'https://www.bilibili.com/video/BV1share', 'https://b23.tv/link-card'
+  ]);
+});
+
 test('B站配置限制有安全上限且默认关闭', () => {
   const cfg = normalizeBilibiliConfig({ bilibili: { maxDurationSeconds: 999999, maxFileBytes: 1, maxConcurrent: 99 } });
   assert.equal(cfg.enabled, false);
