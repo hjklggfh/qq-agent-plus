@@ -548,6 +548,24 @@ async function saveConfig({ quiet = false } = {}) {
     };
   }
 
+  if (sec === 'media') {
+    patch.bilibili = {
+      ...(c.bilibili || {}),
+      enabled: chk('#cfg-bili-enabled', c.bilibili?.enabled === true),
+      allowPrivate: chk('#cfg-bili-private', c.bilibili?.allowPrivate === true),
+      downloader: val('#cfg-bili-downloader', c.bilibili?.downloader || 'yt-dlp').trim() || 'yt-dlp',
+      ffmpeg: val('#cfg-bili-ffmpeg', c.bilibili?.ffmpeg || 'ffmpeg').trim() || 'ffmpeg',
+      maxDurationSeconds: Math.max(30, Number(val('#cfg-bili-max-duration', c.bilibili?.maxDurationSeconds || 900)) || 900),
+      maxFileBytes: Math.max(20, Number(val('#cfg-bili-max-size', '300')) || 300) * 1048576,
+      maxConcurrent: Math.min(3, Math.max(1, Number(val('#cfg-bili-concurrent', c.bilibili?.maxConcurrent || 1)) || 1)),
+      rejectCollections: chk('#cfg-bili-reject-collections', c.bilibili?.rejectCollections !== false),
+      preferredUploader: val('#cfg-bili-uploader', c.bilibili?.preferredUploader || '').trim(),
+      searchLimit: Math.min(10, Math.max(1, Number(val('#cfg-bili-search-limit', c.bilibili?.searchLimit || 5)) || 5)),
+      searchMaxDurationSeconds: Math.max(30, Number(val('#cfg-bili-search-duration', c.bilibili?.searchMaxDurationSeconds || 900)) || 900),
+      searchSort: val('#cfg-bili-sort', c.bilibili?.searchSort || 'relevance')
+    };
+  }
+
   if (sec === 'persona') {
     // 模板 id 跟着正文一起存：绑着内置卡（比如"猫娘（二次元）"）时后端会按 roles/*.md
     // 刷新正文，卡文件改了不用再来这里重选一次；手写了正文、或选的是自定义卡时这里为空，

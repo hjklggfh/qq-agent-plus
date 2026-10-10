@@ -62,6 +62,7 @@ function renderSettingsSidebar() {
   const menu = [
     ['api', '模型 API'],
     ['search', '搜索服务'],
+    ['media', 'B站媒体'],
     ['asr', '语音转文字'],
     ['memory', '记忆'],
     ['experiments', '实验功能'],
@@ -110,6 +111,7 @@ function renderSettingsSection(c) {
   const sections = {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
+    media: () => renderBilibiliSection(c),
     asr: () => renderAsrSection(c),
     memory: () => renderMemorySettingsSection(c),
     experiments: () => renderExperimentalSettingsSection(c),
@@ -135,6 +137,20 @@ function renderSettingsSection(c) {
       <button class="btn btn-primary" id="save-cfg-btn">保存设置</button>
       <span id="cfg-save-result" class="muted"></span>
     </div>`;
+}
+
+function renderBilibiliSection(c) {
+  const b = c.bilibili || {};
+  return `
+    <h3 id="settings-bilibili">B站视频搜索与转发</h3>
+    <div class="hint">宿主直接识别群里的 B 站链接并下载转发，不调用模型。服务器需要安装 yt-dlp 与 ffmpeg。</div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-bili-enabled" ${b.enabled === true ? 'checked' : ''} /><label for="cfg-bili-enabled">启用自动下载与转发</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-bili-private" ${b.allowPrivate === true ? 'checked' : ''} /><label for="cfg-bili-private">处理白名单私聊中的链接</label></div>
+    <div class="field-row"><div class="field"><label>yt-dlp 路径</label><input id="cfg-bili-downloader" value="${esc(b.downloader || 'yt-dlp')}" /></div><div class="field"><label>ffmpeg 路径</label><input id="cfg-bili-ffmpeg" value="${esc(b.ffmpeg || 'ffmpeg')}" /></div></div>
+    <div class="field-row"><div class="field"><label>最大时长（秒）</label><input type="number" id="cfg-bili-max-duration" min="30" value="${esc(b.maxDurationSeconds ?? 900)}" /></div><div class="field"><label>最大文件（MiB）</label><input type="number" id="cfg-bili-max-size" min="20" value="${esc(Math.round((b.maxFileBytes || 314572800) / 1048576))}" /></div><div class="field"><label>并发下载数</label><input type="number" id="cfg-bili-concurrent" min="1" max="3" value="${esc(b.maxConcurrent ?? 1)}" /></div></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-bili-reject-collections" ${b.rejectCollections !== false ? 'checked' : ''} /><label for="cfg-bili-reject-collections">跳过合集、歌单、循环和助眠内容</label></div>
+    <div class="field"><label>UP 主筛选（可留空）</label><input id="cfg-bili-uploader" value="${esc(b.preferredUploader || '')}" /></div>
+    <div class="field-row"><div class="field"><label>搜索结果数量</label><input type="number" id="cfg-bili-search-limit" min="1" max="10" value="${esc(b.searchLimit ?? 5)}" /></div><div class="field"><label>搜索最大时长（秒）</label><input type="number" id="cfg-bili-search-duration" min="30" value="${esc(b.searchMaxDurationSeconds ?? 900)}" /></div><div class="field"><label>搜索排序</label><select id="cfg-bili-sort"><option value="relevance" ${b.searchSort === 'relevance' ? 'selected' : ''}>相关度</option><option value="date" ${b.searchSort === 'date' ? 'selected' : ''}>最新</option><option value="views" ${b.searchSort === 'views' ? 'selected' : ''}>播放量</option><option value="duration" ${b.searchSort === 'duration' ? 'selected' : ''}>时长</option></select></div></div>`;
 }
 
 function renderApiSection(c) {

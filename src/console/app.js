@@ -86,7 +86,7 @@ const UI_DIR = path.resolve(__dirname, '..', '..', 'ui');
 function uiBuildStamp() {
   return [
     'index.html', 'app.js', 'style.css', 'stable-features.js', 'status-refresh.js',
-    'auto-update-network.js', 'pages/plugins.js'
+    'auto-update-network.js', 'pages/plugins.js', 'pages/settings.js', 'pages/settings-save.js'
   ]
     .map((name) => {
       try {
