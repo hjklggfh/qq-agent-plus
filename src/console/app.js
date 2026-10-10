@@ -1061,7 +1061,7 @@ export function createApp({
     }
     emit('chat-update', chatKey);
     // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
-    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, isSelf });
+    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, segments, isSelf });
     if (
       !isSelf
       && (

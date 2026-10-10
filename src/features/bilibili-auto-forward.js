@@ -7,7 +7,7 @@ const URL_RE = /https?:\/\/[^\s<>「」【】]+/gi;
 const DEFAULT_COLLECTION_WORDS = ['合集', '歌单', '循环', '助眠', '白噪音', 'playlist', 'mix'];
 
 function trimUrl(raw) {
-  return String(raw || '').replace(/[),.!?，。！？》】]+$/g, '');
+  return String(raw || '').replace(/[),.!?，。！？》】"'\\}\]]+$/g, '');
 }
 
 function hostOf(url) {
@@ -17,6 +17,40 @@ function hostOf(url) {
 function isAllowedBiliUrl(raw) {
   const host = hostOf(raw);
   return host === 'bilibili.com' || host.endsWith('.bilibili.com') || host === 'b23.tv' || host.endsWith('.b23.tv');
+}
+
+function decodeCardSource(value) {
+  return String(value || '')
+    .replace(/\\u002f/gi, '/')
+    .replace(/\\\//g, '/')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#x2f;/gi, '/')
+    .replace(/&#47;/gi, '/');
+}
+
+function collectCardSources(value, output = [], depth = 0) {
+  if (value == null || depth > 6) return output;
+  if (typeof value === 'string') {
+    const source = decodeCardSource(value);
+    output.push(source);
+    const trimmed = value.trim();
+    if (/^[{[]/.test(trimmed)) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (parsed && parsed !== value) collectCardSources(parsed, output, depth + 1);
+      } catch { /* XML 或非 JSON 卡片，保留原文继续用 URL 正则提取 */ }
+    }
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 100)) collectCardSources(item, output, depth + 1);
+    return output;
+  }
+  if (typeof value === 'object') {
+    for (const item of Object.values(value).slice(0, 100)) collectCardSources(item, output, depth + 1);
+  }
+  return output;
 }
 
 function run(command, args, { cwd, timeoutMs = 120000, signal } = {}) {
@@ -91,7 +125,19 @@ export class BilibiliAutoForward {
     return [...new Set(String(text || '').match(URL_RE)?.map(trimUrl).filter(isAllowedBiliUrl) || [])];
   }
 
-  handleMessage({ chatKey, text, isSelf = false } = {}) {
+  extractUrlsFromSegments(segments) {
+    const sources = [];
+    for (const segment of segments || []) {
+      if (!segment || typeof segment !== 'object') continue;
+      if (segment.type === 'text') sources.push(segment.data?.text || '');
+      if (segment.type === 'json' || segment.type === 'xml') {
+        collectCardSources(segment.data, sources);
+      }
+    }
+    return [...new Set(sources.flatMap((source) => this.extractUrls(source)))];
+  }
+
+  handleMessage({ chatKey, text, segments = null, isSelf = false } = {}) {
     const cfg = normalizeConfig(this.getConfig());
     if (!cfg.enabled || isSelf || !chatKey || (!cfg.allowPrivate && String(chatKey).startsWith('private:'))) return;
     const search = /^\s*(?:[\/#]?b(?:站|ilibili)\s*(?:搜索|搜)|[\/#]?搜索b(?:站|ilibili))\s+(.+)$/i.exec(String(text || ''));
@@ -99,7 +145,10 @@ export class BilibiliAutoForward {
       this.searchAndReply(String(chatKey), search[1], cfg).catch((error) => this.log.warn?.(`[bilibili] 搜索失败：${error?.message ?? error}`));
       return;
     }
-    const urls = this.extractUrls(text);
+    const urls = [...new Set([
+      ...this.extractUrls(text),
+      ...this.extractUrlsFromSegments(segments)
+    ])];
     for (const url of urls) this.enqueue({ chatKey: String(chatKey), url, cfg });
   }
 
