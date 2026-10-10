@@ -12,7 +12,7 @@
     "server": "node src/server.js",
     "ops": "node src/ops.js",
     "test": "node --test test/*.test.mjs && node test/test-prompt.mjs && node test/render-test.mjs && node test/scroll-test.mjs && node test/usage-e2e.mjs",
-    "test:unit": "node --test --test-concurrency=1 test/*.test.mjs",
+    "test:unit": "node --test test/*.test.mjs",
     "test:local": "node test/local/run.mjs",
     "test:prompt": "node test/test-prompt.mjs",
     "test:render": "node test/render-test.mjs",
