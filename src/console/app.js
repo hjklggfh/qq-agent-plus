@@ -28,6 +28,7 @@ import { DailyMomentsManager } from '../features/daily-moments.js';
 import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
+import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
 import { ReminderStore } from '../core/reminders.js';
 import { listModels, chatCompletion, resolveApiKey, cachedTokensOfUsage } from '../llm/llm.js';
 import { synthesizeSpeech } from '../llm/tts.js';
@@ -556,6 +557,12 @@ export function createApp({
     onSent: ({ chatKey, text }) => log(`[发送 -> ${chatKey}] ${String(text).slice(0, 60)}`),
     onIncident: (error, context) => incidentPilot?.capture(error, context)
   });
+  const bilibiliAutoForward = new BilibiliAutoForward({
+    dataDir: DATA_DIR,
+    getConfig,
+    sender,
+    log: moduleLog('bilibili')
+  });
   let identityPilot = null;
   let identityPilotError = '';
   // 定时提醒：落盘持久化（重启不丢），到点由编排器走主动唤醒让模型说出来
@@ -1053,6 +1060,8 @@ export function createApp({
         log('[sticker] 自动收藏失败:', error?.message ?? error));
     }
     emit('chat-update', chatKey);
+    // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
+    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, isSelf });
     if (
       !isSelf
       && (

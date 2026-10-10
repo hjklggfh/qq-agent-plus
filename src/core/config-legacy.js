@@ -30,6 +30,23 @@ export const MAX_PLUGINS_ENABLED = 50;
 export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
+  bilibili: {
+    enabled: false,
+    allowPrivate: false,
+    downloader: 'yt-dlp',
+    ffmpeg: 'ffmpeg',
+    maxDurationSeconds: 900,
+    maxFileBytes: 314572800,
+    timeoutMs: 180000,
+    maxConcurrent: 1,
+    rejectCollections: true,
+    collectionKeywords: ['合集', '歌单', '循环', '助眠', '白噪音', 'playlist', 'mix'],
+    preferredUploader: '',
+    searchMaxDurationSeconds: 900,
+    searchLimit: 5,
+    searchSort: 'relevance',
+    keywordCompletion: true
+  },
   // OpenAI 兼容 API（必填才能跑）
   api: {
     // 每日花费上限（改进方案 #8，默认关闭＝升级不改变任何行为）。按**估算价**累计当日用量，

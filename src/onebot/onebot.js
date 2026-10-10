@@ -592,6 +592,30 @@ export class OneBotClient {
     return this.sendSegments(kind, id, segments, signal, { timeoutMs: MEDIA_TIMEOUT_MS });
   }
 
+  /** 发送本地视频或协议端可访问的 URL。 */
+  async sendVideo(kind, id, file, { text = null, replyToMessageId = null, atUserId = null, signal } = {}) {
+    const segments = [];
+    if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
+      const rid = String(replyToMessageId).trim();
+      if (!/^-?[1-9]\d*$/.test(rid)) throw new OneBotActionError('replyToMessageId 无效', {
+        action: kind === 'private' ? 'send_private_msg' : 'send_group_msg', outcome: 'failed'
+      });
+      segments.push({ type: 'reply', data: { id: rid } });
+    }
+    if (atUserId !== undefined && atUserId !== null && String(atUserId).trim() !== '') {
+      const at = String(atUserId).trim();
+      if (!/^\d+$/.test(at)) throw new OneBotActionError('atUserId 无效', {
+        action: kind === 'private' ? 'send_private_msg' : 'send_group_msg', outcome: 'failed'
+      });
+      segments.push({ type: 'at', data: { qq: at } });
+    }
+    if (text !== undefined && text !== null && String(text).trim() !== '') {
+      segments.push({ type: 'text', data: { text: escapeCqText(String(text)) } });
+    }
+    segments.push({ type: 'video', data: { file: String(file) } });
+    return this.sendSegments(kind, id, segments, signal, { timeoutMs: MEDIA_TIMEOUT_MS });
+  }
+
   /** 群成员名单（OneBot v11 标准接口；大群协议端可能只给缓存，noCache 可强刷）。 */
   async getGroupMemberList(groupId, { noCache = false } = {}) {
     return this.call('get_group_member_list', { group_id: Number(groupId), no_cache: noCache === true });

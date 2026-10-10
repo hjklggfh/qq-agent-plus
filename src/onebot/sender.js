@@ -515,6 +515,32 @@ export class SendQueue {
     });
   }
 
+  /** 发送视频并写入 self 记录；用于宿主侧自动媒体功能，不经过模型。 */
+  video(chatKey, { file, duration = 0, label = '' } = {}, options = {}) {
+    const [kind, id] = String(chatKey).split(':');
+    const chain = this.#chain(chatKey);
+    return chain(async () => {
+      if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
+      this.#checkRate(chatKey);
+      const data = await this.#deliver(chatKey, options, { type: 'video', duration }, () =>
+        this.onebot.sendVideo(kind, id, file, {
+          text: options.text ?? null,
+          replyToMessageId: options.replyToMessageId ?? null,
+          atUserId: options.atUserId ?? null,
+          signal: options.signal
+        }));
+      const ts = Date.now();
+      let targetUserId = this.#replyTarget(chatKey, options);
+      if (!targetUserId && kind === 'private') targetUserId = String(id);
+      const text = `[视频${label ? `:${String(label).slice(0, 80)}` : ''}]`;
+      this.#afterSent(() => {
+        this.store.appendSelf(chatKey, { text, ts, mid: data?.message_id ?? null, targetUserId, eventKind: 'message' });
+        this.onSent?.({ chatKey, text, messageId: data?.message_id ?? null, video: true, duration });
+      });
+      return { message_id: data?.message_id ?? null };
+    });
+  }
+
   /** 拍一拍。发送成功后留档（self 记录），否则下一次运行不知道自己拍过。 */
   poke(chatKey, targetUserId, options = {}) {
     const [kind, id] = String(chatKey).split(':');
