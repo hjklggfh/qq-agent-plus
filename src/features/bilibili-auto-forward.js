@@ -130,7 +130,7 @@ export class BilibiliAutoForward {
     for (const segment of segments || []) {
       if (!segment || typeof segment !== 'object') continue;
       if (segment.type === 'text') sources.push(segment.data?.text || '');
-      if (['json', 'xml', 'share', 'link', 'url'].includes(String(segment.type || '').toLowerCase())) {
+      if (segment.type !== 'text') {
         collectCardSources(segment.data, sources);
       }
     }
