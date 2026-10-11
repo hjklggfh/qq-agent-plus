@@ -26,6 +26,7 @@
 | [ASSET_OBSERVABILITY.md](ASSET_OBSERVABILITY.md) | AI 资产观测（表情/黑话等）的统计口径与控制台入口 |
 | [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界 |
 | [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
+| [JM-SUOMINGOR.md](JM-SUOMINGOR.md) | JM 禁漫下载内置功能：设置、工具和受限 OneBot 文件操作 |
 
 ## 开发与维护
 
