@@ -57,6 +57,31 @@ function normalizeConfig(config = {}) {
 }
 function searchSortMode(value) { return ({ relevance: 'default', date: 'default', views: 'play', duration: 'default' })[value] || 'default'; }
 
+const MEDIA_RETENTION_MS = 10 * 60_000;
+const MEDIA_PRUNE_AGE_MS = 2 * 60 * 60_000;
+
+function pruneMediaJobs(root, maxAgeMs = MEDIA_PRUNE_AGE_MS) {
+  try {
+    if (!fs.existsSync(root)) return;
+    const now = Date.now();
+    for (const name of fs.readdirSync(root)) {
+      if (!name.startsWith('job-')) continue;
+      const target = path.join(root, name);
+      try {
+        const stat = fs.statSync(target);
+        if (now - stat.mtimeMs > maxAgeMs) fs.rmSync(target, { recursive: true, force: true });
+      } catch { /* 单个临时目录清理失败不影响发送 */ }
+    }
+  } catch { /* 目录不存在或暂时不可读 */ }
+}
+
+function removeMediaJobLater(jobDir, delayMs = MEDIA_RETENTION_MS) {
+  const timer = setTimeout(() => {
+    fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+  }, delayMs);
+  timer.unref?.();
+}
+
 export class BilibiliAutoForward {
   constructor({ dataDir, getConfig, sender, log = console } = {}) {
     this.dataDir = dataDir || os.tmpdir(); this.getConfig = getConfig || (() => ({})); this.sender = sender; this.log = log;
@@ -112,13 +137,24 @@ export class BilibiliAutoForward {
     const play = await getPlayUrl(info.bvid, info.cid, { qn: cfg.qn, timeoutMs: cfg.timeoutMs });
     if (!play.ok) { await this.sendCaption(chatKey, `${caption}\n视频流获取失败：${play.error}`); return; }
     if (play.sizeBytes && play.sizeBytes > cfg.maxFileBytes) { await this.sendCaption(chatKey, `${caption}\n视频大小超过 ${Math.round(cfg.maxFileBytes / 1048576)} MiB 限制，未下载。`); return; }
-    const dir = cfg.mediaDir || this.tempRoot; await fs.promises.mkdir(dir, { recursive: true }); const jobDir = await fs.promises.mkdtemp(path.join(dir, 'job-')); const dest = path.join(jobDir, safeFileName(info));
+    const dir = cfg.mediaDir || this.tempRoot;
+    await fs.promises.mkdir(dir, { recursive: true });
+    pruneMediaJobs(dir);
+    const jobDir = await fs.promises.mkdtemp(path.join(dir, 'job-'));
+    const dest = path.join(jobDir, safeFileName(info));
+    let handedToOnebot = false;
     try {
       const dl = await downloadVideo(play.urls, dest, { maxBytes: cfg.maxFileBytes, referer: pageUrl, timeoutMs: cfg.timeoutMs, log: (message) => this.log.info?.(`[bilibili] ${message}`) });
       if (!dl.ok) { await this.sendCaption(chatKey, `${caption}\n视频下载失败：${dl.error}`); return; }
-      await this.sender.video(chatKey, { file: dest, duration, label: title }); await this.sendCaption(chatKey, caption);
+      await this.sender.video(chatKey, { file: dest, duration, label: title });
+      // OneBot 可能以 status=async 先确认请求，NapCat 随后才读取本地文件；不能在这里立即删除。
+      handedToOnebot = true;
+      removeMediaJobLater(jobDir);
+      await this.sendCaption(chatKey, caption);
       this.log.info?.(`[bilibili] 已转发《${title}》（${uploader}，${qualityLabel(play.qn)}，${(dl.bytes / 1048576).toFixed(1)} MB）`);
-    } finally { await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {}); }
+    } finally {
+      if (!handedToOnebot) await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 export { normalizeConfig as normalizeBilibiliConfig };
