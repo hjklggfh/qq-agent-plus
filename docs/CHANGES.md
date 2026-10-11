@@ -1,3 +1,11 @@
+# Change Log (CHANGES)
+
+## v8.0.0 - 2026-10-11
+- Added Bilibili automatic forwarding for direct links, b23.tv short links, and QQ share cards.
+- Switched Bilibili metadata and media retrieval to the Bilibili API to avoid webpage 412 responses.
+- Added download limits, collection filtering, staged logging, delayed cleanup, and media permissions for asynchronous OneBot delivery.
+- Stabilized the proactive private-chat adaptation and the market-extension safety boundary.
+
 # 改动清单（CHANGES）
 
 ## 2026-10-10：B 站分享卡片识别
