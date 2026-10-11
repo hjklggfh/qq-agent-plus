@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeMessageList } from '../../src/core/util.js';
 import { SECRET_KEY_EXCLUDE, SECRET_KEY_PATTERN } from '../../src/core/secret-keys.js';
-import { validateImageUrl } from '../../src/llm/safe-fetch.js';
+import { safeFetchBinary, validateImageUrl } from '../../src/llm/safe-fetch.js';
 import { pluginFetch } from './http.js';
 import { PluginKvStore, pluginStateDir } from './storage.js';
 
@@ -239,7 +239,18 @@ export function buildPluginToolContext({
     session: Object.freeze({
       id: String(hostCtx.session?.id ?? ''),
       rounds: Number(hostCtx.session?.rounds) || 0
-    })
+    }),
+    triggerEntries: capabilities.includes('jm:onebot') && Array.isArray(hostCtx.triggerEntries)
+      ? hostCtx.triggerEntries.map((entry) => ({
+        id: entry?.id ?? null,
+        ts: Number(entry?.ts) || 0,
+        text: String(entry?.text ?? ''),
+        senderId: String(entry?.senderId ?? ''),
+        senderName: String(entry?.senderName ?? ''),
+        self: entry?.self === true,
+        atMe: entry?.atMe === true || entry?.mentionsSelf === true
+      }))
+      : []
   };
 
   if (capabilities.includes('chat:send')) {
@@ -276,6 +287,51 @@ export function buildPluginToolContext({
         sent: Array.isArray(result?.sent) ? result.sent.length : 0,
         failed: Array.isArray(result?.failed) ? result.failed.length : 0
       };
+    };
+  }
+
+  if (capabilities.includes('jm:onebot')) {
+    const onebot = hostCtx.onebot;
+    const chatKey = String(hostCtx.chatKey ?? '');
+    const [currentKind, currentId] = chatKey.split(':');
+    const allowedCalls = new Set([
+      'upload_group_file', 'upload_private_file', 'get_group_file_system_info',
+      'get_group_root_files', 'delete_group_file', 'get_group_member_info',
+      'get_group_info'
+    ]);
+    const ensureCurrentGroup = (params = {}) => {
+      if (currentKind !== 'group' || String(params.group_id ?? '') !== currentId) {
+        throw new Error('JM OneBot 操作只能作用于当前群');
+      }
+    };
+    toolCtx.onebot = {
+      async call(action, params = {}, timeoutMs) {
+        if (!onebot || typeof onebot.call !== 'function') throw new Error('OneBot 客户端不可用');
+        const name = String(action ?? '');
+        if (!allowedCalls.has(name)) throw new Error(`JM 插件不允许调用 OneBot 方法：${name}`);
+        if (name === 'upload_group_file' || name === 'get_group_file_system_info'
+          || name === 'get_group_root_files' || name === 'delete_group_file'
+          || name === 'get_group_member_info' || name === 'get_group_info') {
+          ensureCurrentGroup(params);
+        }
+        if (name === 'upload_private_file' && (currentKind !== 'private'
+          || String(params.user_id ?? '') !== currentId)) {
+          throw new Error('JM OneBot 私聊文件只能发送到当前私聊');
+        }
+        return onebot.call(name, params, timeoutMs);
+      },
+      async sendSegments(kind, id, segments) {
+        if (!onebot || typeof onebot.sendSegments !== 'function') throw new Error('OneBot 客户端不可用');
+        if (String(kind) !== currentKind || String(id) !== currentId) {
+          throw new Error('JM 消息只能发送到当前会话');
+        }
+        if (!Array.isArray(segments) || segments.length > 20) throw new Error('JM 消息段数量超限');
+        for (const segment of segments) {
+          const type = String(segment?.type || '');
+          if (!['text', 'image', 'file'].includes(type)) throw new Error(`JM 不允许发送消息段：${type}`);
+        }
+        return onebot.sendSegments(currentKind, currentId, segments);
+      }
     };
   }
 
@@ -467,10 +523,25 @@ export function buildPluginToolContext({
   }
 
   if (capabilities.includes('http')) {
-    toolCtx.fetch = (url, options = {}) => pluginFetch(url, {
-      ...options,
-      signal: options.signal ?? toolCtx.signal ?? undefined
-    });
+    toolCtx.fetch = (url, options = {}) => {
+      const request = {
+        ...options,
+        signal: options.signal ?? toolCtx.signal ?? undefined
+      };
+      // JM 下载引擎需要保留图片等二进制响应。只给声明了 JM 专用
+      // OneBot 能力的插件开放这个受限分支，仍然走宿主的 SSRF 校验。
+      if (capabilities.includes('jm:onebot') && options.responseType === 'bytes') {
+        const maxBytes = Math.min(12 * 1024 * 1024, Math.max(1024, Number(options.maxBytes) || 12 * 1024 * 1024));
+        return safeFetchBinary(url, maxBytes, request.signal, request.headers || {}).then((result) => ({
+          url: String(url),
+          statusCode: 200,
+          headers: result.contentType ? { 'content-type': result.contentType } : {},
+          body: result.buffer,
+          truncated: false
+        }));
+      }
+      return pluginFetch(url, request);
+    };
   }
 
   if (capabilities.includes('secrets')) {

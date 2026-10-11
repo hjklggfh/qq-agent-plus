@@ -194,9 +194,15 @@ function readBounded(res, maxBytes, asText) {
 }
 
 // 使用已校验的 IP 发起请求（保留 Host/SNI），从根上消除 DNS rebinding。
-function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal } = {}) {  return new Promise((resolve, reject) => {
+function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal, headers = {} } = {}) {  return new Promise((resolve, reject) => {
     const mod = url.protocol === 'https:' ? https : http;
     const port = url.port || (url.protocol === 'https:' ? 443 : 80);
+    const forwardedHeaders = { ...headers };
+    for (const name of ['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade']) {
+      delete forwardedHeaders[name];
+      delete forwardedHeaders[name.toLowerCase()];
+      delete forwardedHeaders[name.toUpperCase()];
+    }
     const req = mod.request({
       hostname: ip,
       port,
@@ -206,7 +212,8 @@ function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal } = {
         host: url.host,
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) qq-agent/1.0',
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8,image/avif,image/webp,image/*;q=0.8',
-        'accept-language': 'zh-CN,zh;q=0.9'
+        'accept-language': 'zh-CN,zh;q=0.9',
+        ...forwardedHeaders
       },
       servername: url.protocol === 'https:' ? url.hostname : undefined,
       rejectUnauthorized: url.protocol === 'https:',
@@ -252,12 +259,12 @@ export async function safeFetch(urlString) {
 }
 
 /** 下载二进制（图片，≤maxBytes 字节），返回 { buffer, contentType }。 */
-export async function safeFetchBinary(urlString, maxBytes = 12 * 1024 * 1024, signal) {
+export async function safeFetchBinary(urlString, maxBytes = 12 * 1024 * 1024, signal, headers = {}) {
   const allowPrivate = getConfig().security?.allowPrivateImageHosts === true;
   let { url, ip } = await validateFetchUrl(urlString, { allowPrivate });
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     signal?.throwIfAborted();
-    const result = await requestOnce(url, ip, { asBinary: true, maxBytes: maxBytes + 1, signal });
+    const result = await requestOnce(url, ip, { asBinary: true, maxBytes: maxBytes + 1, signal, headers });
     if ([301, 302, 303, 307, 308].includes(result.statusCode)) {
       if (!result.redirect) throw new Error(`重定向缺少 Location: ${result.statusCode}`);
       const next = new URL(result.redirect, url).toString();

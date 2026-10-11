@@ -18,6 +18,13 @@
  */
 export const PLUGIN_CAPABILITIES = Object.freeze([
   {
+    id: 'jm:onebot',
+    label: 'JM 专用 OneBot 操作',
+    risk: 'high',
+    summary: '仅允许 JM 插件对当前会话执行受控的文件上传、群文件查询/删除和消息发送。',
+    detail: '宿主只转发 JM 下载所需的 OneBot 方法，并强制目标群/私聊等于当前会话；插件拿不到通用 OneBot 客户端，也不能操作其他会话。'
+  },
+  {
     id: 'chat:send',
     label: '发送消息',
     risk: 'medium',

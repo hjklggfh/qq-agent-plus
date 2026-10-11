@@ -63,6 +63,7 @@ function renderSettingsSidebar() {
     ['api', '模型 API'],
     ['search', '搜索服务'],
     ['media', 'B站媒体'],
+    ['jm', 'JM 禁漫下载'],
     ['asr', '语音转文字'],
     ['memory', '记忆'],
     ['experiments', '实验功能'],
@@ -106,12 +107,69 @@ function renderSettingsImpl() {
   bindCrossSectionControls();
 }
 
+function renderJmSection(c) {
+  const j = c?.plugins?.settings?.['jm-suomingor'] || {};
+  const checked = (key, fallback = true) => (j[key] === undefined ? fallback : j[key] !== false);
+  const value = (key, fallback = '') => esc(String(j[key] ?? fallback));
+  return `<h3 id="settings-jm">JM 禁漫漫画下载</h3>
+    <div class="hint">这是独立的 JM 下载插件设置。下载任务在后台运行，结果发送回触发下载的当前会话。插件仍需先在“插件”页面启用，并确认它声明的能力。</div>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="cfg-jm-enabled" ${checked('enabled') ? 'checked' : ''}> 启用 JM 下载</label></div>
+      <div class="field"><label>输出格式</label><select id="cfg-jm-output">
+        <option value="pdf"${j.outputFormat !== 'images' ? ' selected' : ''}>PDF</option>
+        <option value="images"${j.outputFormat === 'images' ? ' selected' : ''}>原始图片</option>
+      </select></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-restore" ${checked('restore') ? 'checked' : ''}> 还原竖切图片</label></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>最大页数</label><input type="number" id="cfg-jm-max-pages" min="1" max="5000" value="${value('maxPages', 500)}"></div>
+      <div class="field"><label>下载并发</label><input type="number" id="cfg-jm-concurrency" min="1" max="8" value="${value('concurrency', 4)}"></div>
+      <div class="field"><label>请求超时（秒）</label><input type="number" id="cfg-jm-timeout" min="5" max="300" value="${value('timeoutSeconds', 30)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>PDF 图片质量</label><input type="number" id="cfg-jm-pdf-quality" min="30" max="95" value="${value('pdfQuality', 85)}"></div>
+      <div class="field"><label>PDF 单页最长边（0=原尺寸）</label><input type="number" id="cfg-jm-pdf-max-dim" min="0" max="6000" value="${value('pdfMaxDim', 0)}"></div>
+      <div class="field"><label>成品缓存（小时，0=关闭）</label><input type="number" id="cfg-jm-keep-hours" min="0" max="8760" value="${value('keepHours', 12)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="cfg-jm-delete-images" ${checked('deleteImagesAfterPdf', false) ? 'checked' : ''}> PDF 成功后删除原图</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-reject-oversize" ${checked('rejectOversize', false) ? 'checked' : ''}> 超出单文件上限时拒绝</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-check-quota" ${checked('checkQuota', true) ? 'checked' : ''}> 上传前检查群文件配额</label></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>文件发送</label><select id="cfg-jm-upload">
+        <option value="request"${(j.uploadMode || 'request') === 'request' ? ' selected' : ''}>发送回当前会话</option>
+        <option value="off"${j.uploadMode === 'off' ? ' selected' : ''}>只保存本地</option>
+        <option value="group"${j.uploadMode === 'group' ? ' selected' : ''}>仅群聊</option>
+        <option value="private"${j.uploadMode === 'private' ? ' selected' : ''}>仅私聊</option>
+      </select></div>
+      <div class="field"><label>单文件上限（MB）</label><input type="number" id="cfg-jm-max-upload" min="1" max="4096" value="${value('maxUploadMB', 200)}"></div>
+      <div class="field"><label>本地保留天数（0=不清理）</label><input type="number" id="cfg-jm-keep-days" min="0" max="365" value="${value('keepDays', 0)}"></div>
+      <div class="field"><label>群文件保留天数（0=不清理）</label><input type="number" id="cfg-jm-group-keep-days" min="0" max="365" value="${value('groupFileKeepDays', 0)}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>API 备用域名</label><input type="text" id="cfg-jm-domains" value="${value('domains')}"></div>
+      <div class="field"><label>代理地址（可选）</label><input type="text" id="cfg-jm-proxy" value="${value('proxy')}"></div>
+      <div class="field"><label>允许触发的 QQ（逗号分隔，留空=所有人）</label><input type="text" id="cfg-jm-allow" value="${value('allowIds')}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="cfg-jm-multi" ${checked('multiChapter') ? 'checked' : ''}> 下载合集全部章节</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-progress" ${checked('progress') ? 'checked' : ''}> 发送进度提示</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-translate" ${checked('translateTitles') ? 'checked' : ''}> 翻译日文标题</label></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Python 路径（可选）</label><input type="text" id="cfg-jm-python" value="${value('pythonPath')}" placeholder="python3"></div>
+    </div>
+    <div class="hint">群文件上传、群权限和群文件配额由宿主的 JM 专用 OneBot 能力处理，只能作用于当前会话。</div>`;
+}
+
 function renderSettingsSection(c) {
   const sec = state.settingsSection || 'api';
   const sections = {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
     media: () => renderBilibiliSection(c),
+    jm: () => renderJmSection(c),
     asr: () => renderAsrSection(c),
     memory: () => renderMemorySettingsSection(c),
     experiments: () => renderExperimentalSettingsSection(c),

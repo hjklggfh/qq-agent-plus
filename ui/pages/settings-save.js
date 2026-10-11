@@ -36,6 +36,46 @@ async function saveConfig({ quiet = false } = {}) {
 
   const patch = {};
 
+  if (sec === 'jm') {
+    const settings = {
+      ...(c.plugins?.settings?.['jm-suomingor'] || {}),
+      enabled: chk('#cfg-jm-enabled', true),
+      outputFormat: val('#cfg-jm-output', 'pdf') === 'images' ? 'images' : 'pdf',
+      restore: chk('#cfg-jm-restore', true),
+      maxPages: clampInt(val('#cfg-jm-max-pages', 500), 1, 5000, 500),
+      concurrency: clampInt(val('#cfg-jm-concurrency', 4), 1, 8, 4),
+      timeoutSeconds: clampInt(val('#cfg-jm-timeout', 30), 5, 300, 30),
+      pdfQuality: clampInt(val('#cfg-jm-pdf-quality', 85), 30, 95, 85),
+      pdfMaxDim: clampInt(val('#cfg-jm-pdf-max-dim', 0), 0, 6000, 0),
+      keepHours: clampInt(val('#cfg-jm-keep-hours', 12), 0, 8760, 12),
+      deleteImagesAfterPdf: chk('#cfg-jm-delete-images', false),
+      rejectOversize: chk('#cfg-jm-reject-oversize', false),
+      checkQuota: chk('#cfg-jm-check-quota', true),
+      uploadMode: ['off', 'request', 'group', 'private'].includes(val('#cfg-jm-upload', 'request'))
+        ? val('#cfg-jm-upload', 'request') : 'request',
+      maxUploadMB: clampInt(val('#cfg-jm-max-upload', 200), 1, 4096, 200),
+      keepDays: clampInt(val('#cfg-jm-keep-days', 0), 0, 365, 0),
+      groupFileKeepDays: clampInt(val('#cfg-jm-group-keep-days', 0), 0, 365, 0),
+      domains: val('#cfg-jm-domains').trim(),
+      proxy: val('#cfg-jm-proxy').trim(),
+      allowIds: val('#cfg-jm-allow').trim(),
+      multiChapter: chk('#cfg-jm-multi', true),
+      progress: chk('#cfg-jm-progress', true),
+      translateTitles: chk('#cfg-jm-translate', true),
+      pythonPath: val('#cfg-jm-python').trim()
+    };
+    const result = await api('/api/plugins/settings', {
+      method: 'POST',
+      body: JSON.stringify({ id: 'jm-suomingor', settings })
+    });
+    state.config = state.config || {};
+    state.config.plugins = state.config.plugins || {};
+    state.config.plugins.settings = state.config.plugins.settings || {};
+    state.config.plugins.settings['jm-suomingor'] = result.settings || settings;
+    setStatusLabel('cfg-save-result', 'JM 设置已保存，重启服务后生效');
+    return;
+  }
+
   if (sec === 'token-saver') {
     const picked = $('input[name="token-saver-mode"]:checked')?.value;
     patch.tokenSaver = {

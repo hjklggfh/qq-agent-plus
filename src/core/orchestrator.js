@@ -1753,6 +1753,7 @@ export class Orchestrator {
 
     const ctx = {
       chatKey, kind, chatId,
+      triggerEntries,
       selfId: this.onebot.selfId,
       selfNickname,
       botName: cfg.persona.botName,

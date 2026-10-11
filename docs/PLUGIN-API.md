@@ -169,10 +169,10 @@ id name version apiVersion capabilities log config registerTool kv stateDir secr
 
 ## 5. 能力清单
 
-**这是白名单，只有这六个**：
+**这是白名单，只有这些能力**：
 
 <!-- plugin-api:capability-ids -->
-chat:send chat:read chat:send-image chat:send-forward storage http secrets
+chat:send chat:read chat:send-image chat:send-forward storage http secrets jm:onebot
 <!-- /plugin-api:capability-ids -->
 
 | capability | 控制台显示 | 门面上多出 | 风险 | 一句话边界 |
@@ -181,6 +181,7 @@ chat:send chat:read chat:send-image chat:send-forward storage http secrets
 | `chat:read` | 读取聊天记录 | `recent(limit?)` | 低 | 只读**当前会话**最近消息，默认 20 / 上限 100，返回 `{id, mid, at, senderId, senderName, self, text}` |
 | `chat:send-image` | 发送图片 | `sendImage(source, options?)` | 中 | `{ path }` 必须是**该插件状态目录内**的文件（要同时声明 `storage`）、单张 ≤12MB；或 `{ url }` 公网图片地址。见第 6 节 |
 | `chat:send-forward` | 发送合并转发（聊天记录） | `sendForward({ items, label? })` | 中 | 把 ≤10 条内容打包成**一条**「聊天记录」卡片（多张图不刷屏）。每条 `{ text }` / `{ path }`（状态目录内，要 `storage`）/ `{ url }`；图片合计 ≤12MB。**node 的显示名由宿主填死**，插件不能伪装成别人。见第 6 节 |
+| `jm:onebot` | JM 专用 OneBot 操作 | `onebot` `triggerEntries` | 高 | 仅供 JM 下载适配使用：当前会话的文件上传、群文件查询/删除、群成员权限查询和消息段发送；不能访问其它会话或通用 OneBot 客户端 |
 | `storage` | 持久化存储 | `kv` `dir` | 低 | 自己的键值存储与状态目录。键 ≤64 字符，单值 ≤32KB，≤200 键，文件 ≤512KB |
 | `http` | 发起网络请求 | `fetch(url, options?)` | 中 | 只回**文本**（不是二进制）。GET/HEAD/POST/PUT/PATCH/DELETE，头 ≤24，请求体 ≤64KB，响应默认 256KB / 上限 1MB，超时默认 20s / 上限 30s，重定向 ≤5，**拒绝内网与本机地址** |
 | `secrets` | 读取自己的凭据 | `secret(name)` | 高 | 读本插件设置里的凭据。名字要过凭据判定（`token` 结尾、`apiKey`、`keys` 容器等） |
@@ -197,7 +198,7 @@ chat:send chat:read chat:send-image chat:send-forward storage http secrets
 没有 `store`、没有 `sender`、没有 `session.sent`、没有 `emit`，这些是刻意不给的。
 
 <!-- plugin-api:toolctx-members -->
-pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNickname botName signal log session send recent sendImage sendForward kv dir fetch secret
+pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNickname botName signal log session triggerEntries send recent sendImage sendForward kv dir fetch secret onebot
 <!-- /plugin-api:toolctx-members -->
 
 | 成员 | 何时存在 | 说明 |
@@ -208,6 +209,7 @@ pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNi
 | `signal` | 总是 | 本次运行的取消信号（超时/中止时会 abort） |
 | `log` | 总是 | 同 `api.log` |
 | `session` | 总是 | 冻结的 `{ id, rounds }` 快照 —— **不是活对象**，改它不影响宿主 |
+| `triggerEntries` | `jm:onebot` | 当前唤醒批次的消息来源快照。每项为 `{ id, ts, text, senderId, senderName, self, atMe }`；只读，插件不能修改宿主消息。 |
 | `send(messages, options?)` | `chat:send` | 结果 `{ sent, failed }`。成功会自动进会话留档 |
 | `recent(limit?)` | `chat:read` | 见第 5 节 |
 | `sendImage(source, options?)` | `chat:send-image` | 结果 `{ sent: true, messageId, bytes }`。见下 |
@@ -215,6 +217,17 @@ pluginId pluginName pluginVersion capabilities chatKey kind chatId selfId selfNi
 | `kv` `dir` | `storage` | `dir` = 状态目录绝对路径，`kv` 同步方法 `get/set/delete/list/all/sizeBytes/updatedAt` |
 | `fetch(url, options?)` | `http` | 见第 5 节 |
 | `secret(name)` | `secrets` | 见第 5 节 |
+| `onebot` | `jm:onebot` | JM 专用 OneBot 门面，见下方；只允许当前会话和列出的动作。 |
+
+### `jm:onebot` 的边界
+
+这是给单个 JM 适配插件的高风险能力，不是通用 OneBot 客户端。`onebot.call(action, params?, timeoutMs?)` 只允许：
+
+- `upload_group_file`、`get_group_file_system_info`、`get_group_root_files`、`delete_group_file`；参数中的 `group_id` 必须是当前群。
+- `get_group_member_info`、`get_group_info`；参数中的 `group_id` 必须是当前群。
+- `upload_private_file`；参数中的 `user_id` 必须是当前私聊对象。
+
+`onebot.sendSegments(kind, id, segments)` 只能发到当前会话，最多 20 个 `text`、`image` 或 `file` 消息段。JM 插件使用它上传处理结果和发送状态；插件不能指定其它群/私聊，也不能取得宿主的通用 OneBot 对象。
 
 **`sendImage` 的两条硬规则**（写成代码就是这样）：
 

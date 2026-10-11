@@ -253,7 +253,7 @@ function bindSettingsSaveAndSections() {
     try {
       await saveConfig();
       const res = $('#cfg-save-result');
-      res.textContent = '已保存 ✓';
+      res.textContent = state.settingsSection === 'jm' ? '已保存，重启服务后生效 ✓' : '已保存 ✓';
       res.classList.remove('saved-flash');
       void res.offsetWidth;
       res.classList.add('saved-flash');
