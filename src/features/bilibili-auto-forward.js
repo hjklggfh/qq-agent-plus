@@ -154,6 +154,8 @@ export class BilibiliAutoForward {
     await fs.promises.mkdir(dir, { recursive: true });
     pruneMediaJobs(dir);
     const jobDir = await fs.promises.mkdtemp(path.join(dir, 'job-'));
+    // OneBot/NapCat 可能由不同用户运行；mkdtemp 默认 0700，会让它把现有文件误报为 realpath ENOENT。
+    await fs.promises.chmod(jobDir, 0o755);
     const dest = path.join(jobDir, safeFileName(info));
     this.log.info?.(`[bilibili] 开始下载：${dest}`);
     let downloaded = false;
@@ -161,6 +163,8 @@ export class BilibiliAutoForward {
       const dl = await downloadVideo(play.urls, dest, { maxBytes: cfg.maxFileBytes, referer: pageUrl, timeoutMs: cfg.timeoutMs, log: (message) => this.log.info?.(`[bilibili] ${message}`) });
       if (!dl.ok) { await this.sendCaption(chatKey, `${caption}\n视频下载失败：${dl.error}`); return; }
       downloaded = true;
+      // 视频是 B 站公开内容，允许 OneBot 进程读取本地文件；失败时仍由延迟清理回收。
+      await fs.promises.chmod(dest, 0o644);
       this.log.info?.(`[bilibili] 下载完成：${(dl.bytes / 1048576).toFixed(1)} MB，准备发送`);
       await this.sender.video(chatKey, { file: dest, duration, label: title });
       // OneBot 可能以 status=async 先确认请求，NapCat 随后才读取本地文件；不能在这里立即删除。
