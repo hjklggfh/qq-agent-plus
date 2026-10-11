@@ -6,7 +6,7 @@ import {
   downloadVideo, searchVideos, safeFileName, shareCaption, qualityLabel
 } from './bilibili-api.js';
 
-const URL_RE = /https?:\/\/[^\s<>“”【】]+/gi;
+const URL_RE = /https?:\/\/[^\s<>“”【】\[\]()'"`]+/gi;
 const DEFAULT_COLLECTION_WORDS = ['合集', '歌单', '循环', '助眠', '白噪音', 'playlist', 'mix'];
 
 function trimUrl(raw) { return String(raw || '').replace(/[),.!?，。！？】）}'"\\\]]+$/g, ''); }
@@ -103,6 +103,7 @@ export class BilibiliAutoForward {
     const search = /^\s*(?:[\/#]?b(?:站|ilibili)\s*(?:搜索|搜|[\/#]?搜索b(?:站|ilibili)))\s+(.+)$/i.exec(String(text || ''));
     if (search) { this.searchAndReply(String(chatKey), search[1], cfg).catch((error) => this.log.warn?.(`[bilibili] 搜索失败：${error?.message ?? error}`)); return; }
     const urls = [...new Set([...this.extractUrls(text), ...this.extractUrlsFromSegments(segments)])];
+    if (urls.length) this.log.info?.(`[bilibili] 检测到 ${urls.length} 个链接：${urls.join(', ')}`);
     for (const url of urls) this.enqueue({ chatKey: String(chatKey), url, cfg });
   }
   async searchAndReply(chatKey, query, cfg) {
@@ -113,7 +114,17 @@ export class BilibiliAutoForward {
     const lines = items.map((item, index) => `${index + 1}. ${String(item.title || '未命名').slice(0, 80)}\n   UP主：${String(item.author || '未知').slice(0, 40)}  时长：${item.duration || durationText(item.durationSec)}\n   ${item.url}`);
     await this.sender.sendText(chatKey, lines.length ? `B站搜索：${terms}\n${lines.join('\n')}` : `没有找到符合条件的 B 站视频：${terms}${result.error ? `（${result.error}）` : ''}`);
   }
-  enqueue(task) { const key = `${task.chatKey}|${task.url}`; const previous = this.seen.get(key) || 0; if (Date.now() - previous < 6 * 60 * 60_000) return; this.seen.set(key, Date.now()); this.pending.push(task); this.pump(); }
+  enqueue(task) {
+    const key = `${task.chatKey}|${task.url}`;
+    const previous = this.seen.get(key) || 0;
+    if (Date.now() - previous < 6 * 60 * 60_000) {
+      this.log.info?.(`[bilibili] 跳过六小时内重复链接：${task.url}`);
+      return;
+    }
+    this.seen.set(key, Date.now()); this.pending.push(task);
+    this.log.info?.(`[bilibili] 已入队：${task.url}（队列 ${this.pending.length}）`);
+    this.pump();
+  }
   pump() {
     const cfg = normalizeConfig(this.getConfig());
     while (this.running < cfg.maxConcurrent && this.pending.length) { const task = this.pending.shift(); this.running += 1; this.process(task).catch((error) => this.log.warn?.(`[bilibili] ${error?.stack ?? error}`)).finally(() => { this.running -= 1; this.pump(); }); }
@@ -121,6 +132,7 @@ export class BilibiliAutoForward {
   async sendCaption(chatKey, caption) { if (this.sender?.sendText) await this.sender.sendText(chatKey, caption); }
   async process({ chatKey, url, cfg }) {
     if (!isAllowedBiliUrl(url)) return;
+    this.log.info?.(`[bilibili] 开始处理：${url}`);
     const link = pickBiliLink(url) || pickBareVideoToken(url) || url;
     const resolved = await resolveLink(link);
     if (resolved.error || resolved.kind !== 'video') { await this.sendCaption(chatKey, `B站链接解析失败：${resolved.error || '不是视频链接'}\n原链接：${url}`); return; }
@@ -134,6 +146,7 @@ export class BilibiliAutoForward {
     if (cfg.preferredUploader && !uploader.toLowerCase().includes(cfg.preferredUploader.toLowerCase())) return;
     const pageUrl = info.bvid ? `https://www.bilibili.com/video/${info.bvid}${info.page > 1 ? `?p=${info.page}` : ''}` : url;
     const caption = shareCaption({ ...info, title, author: uploader, duration }, { link: pageUrl });
+    this.log.info?.(`[bilibili] 元信息成功：${info.bvid || url}，${durationText(duration)}，${title}`);
     const play = await getPlayUrl(info.bvid, info.cid, { qn: cfg.qn, timeoutMs: cfg.timeoutMs });
     if (!play.ok) { await this.sendCaption(chatKey, `${caption}\n视频流获取失败：${play.error}`); return; }
     if (play.sizeBytes && play.sizeBytes > cfg.maxFileBytes) { await this.sendCaption(chatKey, `${caption}\n视频大小超过 ${Math.round(cfg.maxFileBytes / 1048576)} MiB 限制，未下载。`); return; }
@@ -142,11 +155,13 @@ export class BilibiliAutoForward {
     pruneMediaJobs(dir);
     const jobDir = await fs.promises.mkdtemp(path.join(dir, 'job-'));
     const dest = path.join(jobDir, safeFileName(info));
+    this.log.info?.(`[bilibili] 开始下载：${dest}`);
     let downloaded = false;
     try {
       const dl = await downloadVideo(play.urls, dest, { maxBytes: cfg.maxFileBytes, referer: pageUrl, timeoutMs: cfg.timeoutMs, log: (message) => this.log.info?.(`[bilibili] ${message}`) });
       if (!dl.ok) { await this.sendCaption(chatKey, `${caption}\n视频下载失败：${dl.error}`); return; }
       downloaded = true;
+      this.log.info?.(`[bilibili] 下载完成：${(dl.bytes / 1048576).toFixed(1)} MB，准备发送`);
       await this.sender.video(chatKey, { file: dest, duration, label: title });
       // OneBot 可能以 status=async 先确认请求，NapCat 随后才读取本地文件；不能在这里立即删除。
       await this.sendCaption(chatKey, caption);
