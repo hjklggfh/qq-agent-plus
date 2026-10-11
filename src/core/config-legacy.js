@@ -33,8 +33,10 @@ export const DEFAULT_CONFIG = {
   bilibili: {
     enabled: false,
     allowPrivate: false,
-    downloader: 'yt-dlp',
-    ffmpeg: 'ffmpeg',
+    qn: 16,
+    mediaDir: '',
+    downloader: 'bilibili-api',
+    ffmpeg: 'unused',
     maxDurationSeconds: 900,
     maxFileBytes: 314572800,
     timeoutMs: 180000,
