@@ -142,18 +142,20 @@ export class BilibiliAutoForward {
     pruneMediaJobs(dir);
     const jobDir = await fs.promises.mkdtemp(path.join(dir, 'job-'));
     const dest = path.join(jobDir, safeFileName(info));
-    let handedToOnebot = false;
+    let downloaded = false;
     try {
       const dl = await downloadVideo(play.urls, dest, { maxBytes: cfg.maxFileBytes, referer: pageUrl, timeoutMs: cfg.timeoutMs, log: (message) => this.log.info?.(`[bilibili] ${message}`) });
       if (!dl.ok) { await this.sendCaption(chatKey, `${caption}\n视频下载失败：${dl.error}`); return; }
+      downloaded = true;
       await this.sender.video(chatKey, { file: dest, duration, label: title });
       // OneBot 可能以 status=async 先确认请求，NapCat 随后才读取本地文件；不能在这里立即删除。
-      handedToOnebot = true;
-      removeMediaJobLater(jobDir);
       await this.sendCaption(chatKey, caption);
       this.log.info?.(`[bilibili] 已转发《${title}》（${uploader}，${qualityLabel(play.qn)}，${(dl.bytes / 1048576).toFixed(1)} MB）`);
     } finally {
-      if (!handedToOnebot) await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
+      // 下载完成后即使 OneBot 返回错误也延迟清理，给异步媒体后端留下读取时间，
+      // 同时保留现场以便排查；超过 2 小时由 pruneMediaJobs 回收。
+      if (downloaded) removeMediaJobLater(jobDir);
+      else await fs.promises.rm(jobDir, { recursive: true, force: true }).catch(() => {});
     }
   }
 }
