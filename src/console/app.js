@@ -29,6 +29,7 @@ import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
 import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
+import { initJmFeature } from '../features/jm-suomingor-host.js';
 import { ReminderStore } from '../core/reminders.js';
 import { listModels, chatCompletion, resolveApiKey, cachedTokensOfUsage } from '../llm/llm.js';
 import { synthesizeSpeech } from '../llm/tts.js';
@@ -563,6 +564,13 @@ export function createApp({
     sender,
     log: moduleLog('bilibili')
   });
+  const jmFeature = initJmFeature({
+    dataDir: DATA_DIR,
+    getConfig,
+    onebot,
+    sender,
+    log: moduleLog('jm')
+  });
   let identityPilot = null;
   let identityPilotError = '';
   // 定时提醒：落盘持久化（重启不丢），到点由编排器走主动唤醒让模型说出来
@@ -1060,6 +1068,36 @@ export function createApp({
         log('[sticker] 自动收藏失败:', error?.message ?? error));
     }
     emit('chat-update', chatKey);
+    // JM 是宿主内置功能：明确的 JM 指令直接交给功能处理，避免先唤醒模型猜测。
+    // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
+    if (!isSelf && jmFeature?.handleMessage) {
+      try {
+        const handled = await jmFeature.handleMessage({
+          chatKey,
+          kind,
+          chatId: id,
+          session: null,
+          send: async (messages) => sender.sendTextBatch(chatKey, messages, {
+            runId: `jm-direct-${stored.id}`,
+            preserveCode: false
+          })
+        }, {
+          text,
+          senderId,
+          senderName,
+          atMe: mentionsSelf,
+          ts: message.ts,
+          id: stored.id
+        });
+        if (handled) {
+          store.markRead(chatKey, [stored.id]);
+          emit('chat-update', chatKey);
+          return;
+        }
+      } catch (error) {
+        log(`[jm] 直接指令处理失败，交回普通流程：${error?.message ?? error}`);
+      }
+    }
     // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
     if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, segments, isSelf });
     if (
@@ -4294,6 +4332,7 @@ export function createApp({
     slangPilot = null;
     await incidentPilot?.stop();
     incidentPilot = null;
+    await jmFeature?.deactivate?.();
     onebot.close();
     await orchestrator.abortAll();
     await Promise.allSettled([...ingress.values()]);

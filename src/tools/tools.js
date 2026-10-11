@@ -13,6 +13,7 @@ import {
   ExperimentalToolBatch
 } from '../pilots/experimental-tool-scheduler.js';
 import { pluginToolDefs } from '../../plugins/_host/registry.js';
+import { builtinFeatureToolDefs } from '../features/feature-registry.js';
 import {
   buildToolDefs as coreBuildToolDefs,
   executeTool as coreExecuteTool,
@@ -31,8 +32,9 @@ export * from './tools-core.js';
 // （experimentalToolEffect 返回 'ordered'），不会并发预启动 —— 对第三方代码正是想要的。
 export function buildToolDefs() {
   const core = coreBuildToolDefs();
+  const builtins = builtinFeatureToolDefs();
   const plugins = pluginToolDefs();
-  return plugins.length ? [...core, ...plugins] : core;
+  return [...core, ...builtins, ...plugins];
 }
 
 export function toOpenAiTools(defs) {

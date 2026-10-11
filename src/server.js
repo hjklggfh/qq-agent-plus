@@ -8,7 +8,8 @@ import { initPlugins } from '../plugins/loader.js';
 import { installPluginRoutes } from '../plugins/console-routes.js';
 import { initMarketExtensions } from '../plugins/market-loader.js';
 import { buildToolDefs as buildBuiltinToolDefs } from './tools/tools-core.js';
-import { DATA_DIR } from './core/config.js';
+import { initJmFeature } from './features/jm-suomingor-host.js';
+import { DATA_DIR, getConfig } from './core/config.js';
 import { assertSqliteAvailable } from './core/sqlite.js';
 import { createLogger } from './core/logger.js';
 
@@ -103,6 +104,9 @@ installExperimentalMultimodalContextPilot();
 // 内置工具名从 tools-core 直接取（不是 tools.js）：tools.js 的列表里已经会带上
 // 上一次装载的插件工具，用它做"保留名"会把自己的插件判成重名。
 // 同一份清单还要给控制台的插件页 —— 它要能报出"这个插件的工具名和内置的撞了"。
+// 宿主内置 feature 必须先注册，插件装载器才能把它们当作保留工具名，
+// 同时 JM 不会进入插件状态、启用或能力审批列表。
+initJmFeature({ dataDir: DATA_DIR, getConfig, log });
 const builtinToolNames = buildBuiltinToolDefs().map((def) => String(def.name));
 try {
   await initPlugins({ dataDir: DATA_DIR, log, builtinToolNames });

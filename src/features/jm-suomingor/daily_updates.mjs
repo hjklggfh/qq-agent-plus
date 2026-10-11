@@ -23,7 +23,6 @@
 //   · tags 不在列表里，逐本调 /album?id= 补（失败不致命，tags 留空）
 // ---------------------------------------------------------------------------
 
-/* eslint-disable no-unused-vars */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';

@@ -1,6 +1,8 @@
 ﻿import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { setup as setupLegacy, activate as activateLegacy, deactivate as deactivateLegacy } from './legacy-index.js';
+import { handleMessage as handleLegacyMessage, dispose as disposeLegacy } from './legacy-index.js';
+import { classifyJmDirectCommand } from './direct-command.js';
 
 const TOOL_PREFIX = 'jm_';
 
@@ -41,13 +43,15 @@ function legacyContext(toolCtx) {
   };
 }
 
-export async function activate(api) {
+export function activate(api) {
   const fetchContext = new AsyncLocalStorage();
+  const toolRunners = new Map();
+  const readConfig = () => (typeof api.config === 'function' ? api.config() : (api.config || {}));
   const bridge = {
     config: () => ({
-      ...(api.config || {}),
-      dataDir: api.stateDir ? path.resolve(api.stateDir, '..', '..') : '',
-      downloadDir: api.config?.downloadDir || api.stateDir || ''
+      ...readConfig(),
+      dataDir: readConfig().dataDir || (api.stateDir ? path.resolve(api.stateDir, '..', '..') : ''),
+      downloadDir: readConfig().downloadDir || api.stateDir || ''
     }),
     fetch: async (url, options = {}) => {
       const toolFetch = fetchContext.getStore();
@@ -59,20 +63,17 @@ export async function activate(api) {
     warn: (...args) => api.log.warn(...args),
     registerTool(def) {
       const name = `${TOOL_PREFIX}${String(def.id || '').trim()}`;
+      const runner = async (toolCtx, args) => fetchContext.run(toolCtx.fetch, async () => {
+        const ctx = legacyContext(toolCtx);
+        await import('./legacy-index.js').then((mod) => mod.hooks?.['before-tool']?.(ctx));
+        return def.execute(ctx, args);
+      });
+      toolRunners.set(name, runner);
       api.registerTool({
         name,
         description: String(def.description || '').trim(),
         parameters: def.parameters || { type: 'object', properties: {} },
-        async execute(toolCtx, args) {
-          return fetchContext.run(toolCtx.fetch, async () => {
-            const ctx = legacyContext(toolCtx);
-            // 原 skill 的 before-tool 钩子负责记录指令来源，供白名单和群管理权限校验使用。
-            // AsyncLocalStorage 会把本次工具的网络门面传给后台任务，避免不同会话并行下载时
-            // 互相覆盖全局 fetch 上下文。
-            await import('./legacy-index.js').then((mod) => mod.hooks?.['before-tool']?.(ctx));
-            return def.execute(ctx, args);
-          });
-        }
+        async execute(toolCtx, args) { return runner(toolCtx, args); }
       });
     }
   };
@@ -80,8 +81,30 @@ export async function activate(api) {
   setupLegacy(bridge);
   activateLegacy();
   return {
+    async handleMessage(toolCtx, message) {
+      const directCtx = { ...toolCtx, triggerEntries: [{ ...message, self: false }] };
+      const direct = classifyJmDirectCommand(message?.text);
+      const directTool = (name, args = {}) => {
+        const runner = toolRunners.get(name);
+        return runner ? runner(directCtx, args) : null;
+      };
+      if (direct?.tool) {
+        const result = await directTool(direct.tool, direct.args);
+        if (result?.isError && result.content) await toolCtx.send([String(result.content)]);
+        return true;
+      }
+      return handleLegacyMessage({
+        ...legacyContext(directCtx),
+        runTool: async (name, args) => {
+          const runner = toolRunners.get(String(name));
+          if (!runner) throw new Error(`JM 工具不存在：${name}`);
+          return runner(directCtx, args);
+        }
+      }, message);
+    },
     async deactivate() {
       deactivateLegacy();
+      disposeLegacy();
     }
   };
 }

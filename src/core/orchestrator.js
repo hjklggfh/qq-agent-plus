@@ -1588,6 +1588,7 @@ export class Orchestrator {
       if (!imageGenEnabled && d.name === 'generate_image') return false;
       if (d.feature === 'identityPilot' && !identityAvailable) return false;
       if (d.feature === 'friendProposal' && !friendProposalAvailable) return false;
+      if (d.feature === 'jm' && cfg.jm?.enabled === false) return false;
       return true;
     }).map((definition) => {
       if (!privateProactive || definition.name !== 'send_message') return definition;

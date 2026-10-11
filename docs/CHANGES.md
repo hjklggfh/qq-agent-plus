@@ -5,7 +5,7 @@
 - Switched Bilibili metadata and media retrieval to the Bilibili API to avoid webpage 412 responses.
 - Added download limits, collection filtering, staged logging, delayed cleanup, and media permissions for asynchronous OneBot delivery.
 - Stabilized the proactive private-chat adaptation and the market-extension safety boundary.
-- Added the native `jm-suomingor` plugin with a dedicated “JM 禁漫下载” settings page, scoped OneBot file operations, and persistent plugin state.
+- Integrated JM 禁漫下载 as a host built-in feature: it no longer appears in the plugin page or capability approval flow, uses top-level `config.jm`, and keeps the dedicated settings page and scoped OneBot file operations.
 
 # 改动清单（CHANGES）
 

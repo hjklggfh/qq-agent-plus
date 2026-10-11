@@ -108,11 +108,11 @@ function renderSettingsImpl() {
 }
 
 function renderJmSection(c) {
-  const j = c?.plugins?.settings?.['jm-suomingor'] || {};
+  const j = c?.jm || {};
   const checked = (key, fallback = true) => (j[key] === undefined ? fallback : j[key] !== false);
   const value = (key, fallback = '') => esc(String(j[key] ?? fallback));
   return `<h3 id="settings-jm">JM 禁漫漫画下载</h3>
-    <div class="hint">这是独立的 JM 下载插件设置。下载任务在后台运行，结果发送回触发下载的当前会话。插件仍需先在“插件”页面启用，并确认它声明的能力。</div>
+    <div class="hint">JM 是宿主内置功能。下载任务在后台运行，结果发送回触发下载的当前会话；可在这里直接开启、关闭和调整全部参数。</div>
     <div class="field-row">
       <div class="field"><label><input type="checkbox" id="cfg-jm-enabled" ${checked('enabled') ? 'checked' : ''}> 启用 JM 下载</label></div>
       <div class="field"><label>输出格式</label><select id="cfg-jm-output">

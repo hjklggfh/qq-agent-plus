@@ -30,6 +30,32 @@ export const MAX_PLUGINS_ENABLED = 50;
 export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
+  // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。
+  jm: {
+    enabled: false,
+    outputFormat: 'pdf',
+    restore: true,
+    maxPages: 500,
+    concurrency: 4,
+    timeoutSeconds: 30,
+    pdfQuality: 85,
+    pdfMaxDim: 0,
+    keepHours: 12,
+    deleteImagesAfterPdf: false,
+    rejectOversize: false,
+    checkQuota: true,
+    uploadMode: 'request',
+    maxUploadMB: 200,
+    keepDays: 0,
+    groupFileKeepDays: 0,
+    domains: '',
+    proxy: '',
+    allowIds: '',
+    multiChapter: true,
+    progress: true,
+    translateTitles: true,
+    pythonPath: ''
+  },
   bilibili: {
     enabled: false,
     allowPrivate: false,
@@ -938,6 +964,13 @@ function migrateConfig(parsed) {
   // 被 loadConfig 的 catch 吞掉后静默退回默认值、还会被持久化 —— 用户配置整份没了。
   if (!isPlainObject(parsed)) parsed = {};
   const out = structuredClone(parsed);
+  // 旧版 JM 适配曾把配置放在 plugins.settings.jm-suomingor。
+  // 首次启动时迁移到宿主顶层；顶层已有配置优先，避免覆盖用户新设置。
+  const legacyJm = out.plugins?.settings?.['jm-suomingor'];
+  if (!isPlainObject(out.jm) && isPlainObject(legacyJm)) out.jm = structuredClone(legacyJm);
+  if (out.plugins?.settings && typeof out.plugins.settings === 'object') {
+    delete out.plugins.settings['jm-suomingor'];
+  }
   // 人设段必须是对象：手改坏的 config.json 里可能是 "persona": "小鲸鱼" 这类标量或数组，
   // 放它过去会在保存时炸（Cannot create property 'behaviorProfile' on string），
   // 而控制台保存与 scripts/configure-linux.mjs 都要走这条路径 —— 恢复成默认人设对象。

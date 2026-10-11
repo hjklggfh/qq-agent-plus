@@ -38,7 +38,7 @@ async function saveConfig({ quiet = false } = {}) {
 
   if (sec === 'jm') {
     const settings = {
-      ...(c.plugins?.settings?.['jm-suomingor'] || {}),
+      ...(c.jm || {}),
       enabled: chk('#cfg-jm-enabled', true),
       outputFormat: val('#cfg-jm-output', 'pdf') === 'images' ? 'images' : 'pdf',
       restore: chk('#cfg-jm-restore', true),
@@ -64,15 +64,13 @@ async function saveConfig({ quiet = false } = {}) {
       translateTitles: chk('#cfg-jm-translate', true),
       pythonPath: val('#cfg-jm-python').trim()
     };
-    const result = await api('/api/plugins/settings', {
+    const result = await api('/api/config', {
       method: 'POST',
-      body: JSON.stringify({ id: 'jm-suomingor', settings })
+      body: JSON.stringify({ jm: settings })
     });
     state.config = state.config || {};
-    state.config.plugins = state.config.plugins || {};
-    state.config.plugins.settings = state.config.plugins.settings || {};
-    state.config.plugins.settings['jm-suomingor'] = result.settings || settings;
-    setStatusLabel('cfg-save-result', 'JM 设置已保存，重启服务后生效');
+    state.config.jm = result.config?.jm || result.jm || settings;
+    setStatusLabel('cfg-save-result', 'JM 设置已保存，重启服务后生效。');
     return;
   }
 

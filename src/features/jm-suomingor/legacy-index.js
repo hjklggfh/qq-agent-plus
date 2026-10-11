@@ -54,8 +54,8 @@ const SKILL_ID = (() => {
   return path.basename(SKILL_DIR) || 'jm-suomingor';
 })();
 const DATA_SUBDIR = SKILL_ID;
-/** 拼出带前缀的真实工具 id，例如 toolId('download_album')。 */
-const toolId = (name) => `${SKILL_ID}__${name}`;
+/** 宿主内置工具名统一使用 jm_ 前缀；数据目录仍跟随原 skill id。 */
+const toolId = (name) => `jm_${name}`;
 
 // ───────────────────────── 模块级状态 ─────────────────────────
 // ⚠️ 热重载会重新 import 本文件，这些变量会被重置（正常行为）。
@@ -1927,6 +1927,98 @@ export function deactivate() {
     cleanupTimer = null;
   }
   log('已停用：定时清理已停止（正在进行的下载任务不会被中断）');
+}
+
+/**
+ * 宿主直接消息入口。明确的 JM 指令在这里执行，避免先唤醒模型再依赖提示词猜测。
+ * 返回 true 表示消息已被 JM 消费，调用方应停止后续普通聊天流程。
+ */
+export async function handleMessage(ctx = {}, message = {}) {
+  if (cfg().enabled === false || typeof ctx.runTool !== 'function') return false;
+  const text = String(message.text || '').replace(/@\S+\s*/g, '').trim();
+  if (!text) return false;
+  const entry = {
+    ...message,
+    text,
+    self: false,
+    atMe: message.atMe === true,
+    senderId: String(message.senderId || ''),
+    senderName: String(message.senderName || '')
+  };
+  const local = { ...ctx, triggerEntries: [entry] };
+  await hooks['before-context'](local);
+  const invoke = async (name, args) => {
+    const result = await ctx.runTool(name, args);
+    if (result?.isError && result.content && typeof ctx.send === 'function') {
+      await ctx.send([String(result.content)]);
+    }
+    return result;
+  };
+  // 直接入口优先处理固定指令；仍先执行 before-context，供权限校验记录调用者。
+  const normalized = text.replace(/\s+/g, ' ');
+  const todayDirect = normalized === '今日JM' || normalized === 'JM列表' || normalized === '今日 JM'
+    || TODAY_JM_RE.test(normalized)
+    || /^(?:今日|今天|本日)\s*(?:JM|禁漫)(?:列表|清单|目录|有哪些|有啥|有什么)?$/iu.test(normalized)
+    || /^(?:JM|禁漫)\s*(?:列表|清单|目录)$/iu.test(normalized);
+  if (todayDirect && isChatAllowed(String(ctx.chatKey || ''))) {
+    await invoke(toolId('today_list'), {});
+    return true;
+  }
+  const updateDirect = UPDATE_JM_RE.test(normalized)
+    || /^(?:(?:今日|今天|本日)\s*)?(?:更新|日更|新更)\s*(?:JM|禁漫)?$/iu.test(normalized);
+  if (updateDirect && isChatAllowed(String(ctx.chatKey || ''))) {
+    await invoke(toolId('daily_updates'), {});
+    return true;
+  }
+  const controlMatch = parseControl(normalized);
+  if (controlMatch && isChatAllowed(String(ctx.chatKey || ''))) {
+    await invoke(toolId('control'), { action: controlMatch.action, album_id: controlMatch.id });
+    return true;
+  }
+  const groupAction = /^(?:开启|打开|开通|开放)\s*(?:JM|禁漫)$/i.test(normalized) ? 'on'
+    : /^(?:关闭|停用)\s*(?:JM|禁漫)$/i.test(normalized) ? 'off'
+      : /^(?:JM|禁漫)\s*(?:群列表|列表|名单)$/i.test(normalized) ? 'list'
+        : /^(?:JM|禁漫)\s*(?:所有群开放|全开)$/i.test(normalized) ? 'all' : '';
+  if (groupAction) {
+    await invoke(toolId('group_toggle'), { action: groupAction });
+    return true;
+  }
+  const explicit = normalized.match(/(?:^|[^0-9a-zA-Z])(?:jm)[\s\-_:：#]*(\d{2,9})(?!\d)|\/(?:album|photo)\/(\d{2,9})(?!\d)/i);
+  if (explicit && isChatAllowed(String(ctx.chatKey || ''))) {
+    await invoke(toolId('download_album'), { album_id: explicit[1] || explicit[2] });
+    return true;
+  }
+  const key = callerKey(local);
+  const take = (map) => {
+    const hit = map.get(key);
+    if (hit && Date.now() - hit.at < 120000) { map.delete(key); return hit; }
+    return null;
+  };
+  const group = take(pendingGroupCmd);
+  if (group) {
+    await invoke(toolId('group_toggle'), { action: group.action });
+    return true;
+  }
+  const control = take(controlRequests);
+  if (control) {
+    await invoke(toolId('control'), { action: control.action, album_id: control.id });
+    return true;
+  }
+  if (take(pendingToday)) {
+    await invoke(toolId('today_list'), {});
+    return true;
+  }
+  if (take(pendingUpdate)) {
+    await invoke(toolId('daily_updates'), {});
+    return true;
+  }
+  const hint = pendingHint.get(key);
+  if (hint?.explicitDownload) {
+    pendingHint.delete(key);
+    await invoke(toolId('download_album'), { album_id: hint.id });
+    return true;
+  }
+  return false;
 }
 
 export function dispose() {
