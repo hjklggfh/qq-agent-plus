@@ -1587,7 +1587,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
       const authorized = isOwner || (kind === 'group' && role === 'owner');
       if (!authorized) {
         return {
-          content: `只有群主或机主 QQ ${JM_CONTROL_OWNER_ID} 能管理 JM 群白名单（你是 ${role || '普通成员'}）。`,
+          content: `只有群主或机主能管理 JM 群白名单（你是 ${role || '普通成员'}）。`,
           isError: true,
         };
       }
