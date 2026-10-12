@@ -621,7 +621,7 @@ function isChatAllowed(chatKey) {
 /** 门禁：返回空串=放行；否则返回给群友看的提示文本。 */
 function gateChat(chatKey) {
   if (isChatAllowed(chatKey)) return '';
-  return '本群还没有开启 JM 漫画功能。让群主/管理员在群里 @我 说「开启JM」即可开通；'
+  return '本群还没有开启 JM 漫画功能。让群主或机主在群里 @我 说「开启JM」即可开通；'
     + '机主也可以说「JM所有群开放」恢复全部群可用。';
 }
 
@@ -1535,8 +1535,9 @@ export function setup(injected) {
   });
 
   // ── 工具：JM 群开关（机主自由选择哪些群可用）──────────────────────────────
-  // 群主/管理员（或 allowIds 白名单 QQ）在目标群里说「开启JM」「关闭JM」即可；
-  // 「JM群列表」查看；「JM所有群开放」恢复默认（所有群可用）。
+// 目标群群主或机主 QQ 在目标群里说「开启JM」「关闭JM」即可；
+// 「JM群列表」查看；「JM所有群开放」恢复默认（所有群可用）。
+const JM_CONTROL_OWNER_ID = '2118530760';
   api.registerTool({
     id: 'group_toggle',
     name: '管理JM群开关',
@@ -1567,6 +1568,30 @@ export function setup(injected) {
         };
       };
 
+      // 群名单的查看和修改都属于管理操作：只允许当前群群主或机主 QQ。
+      const caller = lookupCaller(ctx);
+      const candidate = caller && Date.now() - caller.at < 120000 ? caller.candidates?.[0] : null;
+      if (!candidate?.id) {
+        return { content: '认不出是谁在下指令。请 @我 再说一次 JM 群管理指令。', isError: true };
+      }
+      let role = '';
+      if (kind === 'group') try {
+        const info = await ctx.onebot.call('get_group_member_info', {
+          group_id: Number(chatId), user_id: Number(candidate.id), no_cache: true,
+        });
+        role = String(info?.role || 'member');
+      } catch (error) {
+        warn(`查询群身份失败：${error?.message ?? error}`);
+      }
+      const isOwner = String(candidate.id) === JM_CONTROL_OWNER_ID;
+      const authorized = isOwner || (kind === 'group' && role === 'owner');
+      if (!authorized) {
+        return {
+          content: `只有群主或机主 QQ ${JM_CONTROL_OWNER_ID} 能管理 JM 群白名单（你是 ${role || '普通成员'}）。`,
+          isError: true,
+        };
+      }
+
       if (action === 'list') {
         const ids = Object.keys(st.groups || {}).filter(Boolean);
         const text = ids.length
@@ -1578,32 +1603,8 @@ export function setup(injected) {
         return reply(text);
       }
 
-      // on/off/all 都是"改权限"的操作：只允许 群主/管理员/allowIds 白名单
       if (kind !== 'group') {
         return { content: '开启/关闭是按群生效的。请到目标群里发「开启JM」或「关闭JM」。', isError: true };
-      }
-      const c = cfg();
-      const allow = new Set(String(c.allowIds || '').split(/[\s,;，、]+/).map((s) => s.trim()).filter(Boolean));
-      const caller = lookupCaller(ctx);
-      const candidate = caller && Date.now() - caller.at < 120000 ? caller.candidates?.[0] : null;
-      if (!candidate?.id) {
-        return { content: '认不出是谁在下指令。请 @我 再说一次「开启JM」/「关闭JM」。', isError: true };
-      }
-      let role = '';
-      try {
-        const info = await ctx.onebot.call('get_group_member_info', {
-          group_id: Number(chatId), user_id: Number(candidate.id), no_cache: true,
-        });
-        role = String(info?.role || 'member');
-      } catch (error) {
-        warn(`查询群身份失败：${error?.message ?? error}`);
-      }
-      const isAllow = allow.size > 0 && allow.has(candidate.id);
-      if (!isAllow && role !== 'owner' && role !== 'admin') {
-        return {
-          content: `只有群主/管理员（或白名单 QQ）能开关 JM 功能（你是 ${role || '普通成员'}）。`,
-          isError: true,
-        };
       }
 
       if (action === 'on') {
@@ -2321,7 +2322,7 @@ export const hooks = {
       const entries = Array.isArray(ctx.triggerEntries) ? ctx.triggerEntries : [];
 
       // ── 「开启JM / 关闭JM / JM群列表 / JM所有群开放」群开关指令 ─────────────
-      // 由 group_toggle 工具执行（权限校验在工具里做：群主/管理员/白名单）。
+      // 由 group_toggle 工具执行（权限校验在工具里做：群主或机主）。
       // 注意：这条必须放在最前面 —— 未开启的群里也要能发「开启JM」来开通。
       const GROUP_ON_RE = /^(?:开启|打开|开通)\s*(?:JM|jm|Jm|禁漫)$/;
       const GROUP_OFF_RE = /^(?:关闭|停用)\s*(?:JM|jm|Jm|禁漫)$/;
@@ -2355,7 +2356,7 @@ export const hooks = {
         const who = String(e.senderName || e.senderId || '群友');
         if (!chatAllowed) {
           e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能，暂停/继续/删除也用不了。'
-            + '群主/管理员在群里 @我 说「开启JM」即可开通。';
+            + '群主或机主在群里 @我 说「开启JM」即可开通。';
           log(`JM 控制指令被群白名单拦下（${who}）`);
           return;
         }
@@ -2378,7 +2379,7 @@ export const hooks = {
         const who = String(e.senderName || e.senderId || '群友');
         if (!chatAllowed) {
           e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能。'
-            + '群主/管理员在群里 @我 说「开启JM」即可开通。';
+            + '群主或机主在群里 @我 说「开启JM」即可开通。';
           log(`今日JM 指令被群白名单拦下（${who}）`);
           return;
         }
@@ -2398,7 +2399,7 @@ export const hooks = {
         const who = String(e.senderName || e.senderId || '群友');
         if (!chatAllowed) {
           e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能。'
-            + '群主/管理员在群里 @我 说「开启JM」即可开通。';
+            + '群主或机主在群里 @我 说「开启JM」即可开通。';
           log(`更新JM 指令被群白名单拦下（${who}）`);
           return;
         }
