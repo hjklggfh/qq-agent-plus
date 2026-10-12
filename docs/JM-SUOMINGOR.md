@@ -17,3 +17,5 @@ JM 是宿主内置的单功能模块，不属于可安装插件，也不会出�
 JM 工具由宿主内置工具表注册：`jm_download_album`、`jm_control`、`jm_group_toggle`、`jm_task_status`、`jm_today_list`、`jm_daily_updates`、`jm_library` 和 `jm_storage`。下载、PDF/图片处理、群文件上传和日更功能继续复用原 skill 实现。
 
 工具只能操作当前会话；群文件和私聊文件操作由宿主内部的受限 OneBot 门面执行。
+
+PDF 合成会逐页解码、还原并写入临时 PDF，同一进程只运行一个 PDF 任务，避免多本同时合成耗尽服务器内存。单页超过 2400 万像素时会跳过该页并在结果中报告；全部页面失败时不保留不完整的 PDF。合成成功后才会将临时 PDF 替换为正式文件。

@@ -6,6 +6,7 @@
 - Added download limits, collection filtering, staged logging, delayed cleanup, and media permissions for asynchronous OneBot delivery.
 - Stabilized the proactive private-chat adaptation and the market-extension safety boundary.
 - Integrated JM 禁漫下载 as a host built-in feature: it no longer appears in the plugin page or capability approval flow, uses top-level `config.jm`, and keeps the dedicated settings page and scoped OneBot file operations.
+- JM PDF generation now streams pages into an atomic PDF file and serializes workers, preventing the all-pages-in-memory OOM seen during 36-page albums.
 
 # 改动清单（CHANGES）
 

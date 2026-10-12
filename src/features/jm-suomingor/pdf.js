@@ -119,7 +119,20 @@ export function detect(configuredPython = '') {
  * @param {number}  opts.timeoutMs    超时（大本子要放宽）
  * @returns {Promise<{ok:boolean, output?:string, bytes?:number, pages?:number, pagesOk?:number, restored?:number, failed?:Array, error?:string, raw?:string}>}
  */
-export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
+let pdfQueue = Promise.resolve();
+
+// PDF decoding can use hundreds of MB even when pages are streamed. Keep one
+// worker per host process so two groups cannot exhaust the service together.
+export function runTask(options) {
+  const pending = pdfQueue.then(() => {
+    if (options?.task?.control?.deleted) return { ok: false, error: '任务已取消' };
+    return runTaskUnqueued(options);
+  });
+  pdfQueue = pending.catch(() => {});
+  return pending;
+}
+
+function runTaskUnqueued({ python, task, onProgress, timeoutMs = 300000 }) {
   return new Promise((resolve) => {
     let child;
     if (task?.control) task.control.child = null;
@@ -139,6 +152,8 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timedOut = false;
+    let reportedResult = null;
     const finish = (val) => {
       if (settled) return;
       settled = true;
@@ -148,12 +163,12 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
     };
 
     const timer = setTimeout(() => {
+      timedOut = true;
       try {
-        child.kill();
+        child.kill('SIGKILL');
       } catch {
         /* ignore */
       }
-      finish({ ok: false, error: `处理超时（${Math.round(timeoutMs / 1000)} 秒），已中止` });
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
@@ -177,7 +192,7 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
             /* 进度回调出错不影响任务 */
           }
         } else if (msg.t === 'result') {
-          finish({
+          reportedResult = {
             ok: msg.ok === true,
             output: msg.output,
             bytes: msg.bytes,
@@ -188,7 +203,7 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
             warnings: msg.warnings || [],
             error: msg.ok === true ? undefined : msg.error || '未知错误',
             trace: msg.trace,
-          });
+          };
         }
       }
     });
@@ -200,6 +215,14 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
 
     child.on('error', (error) => finish({ ok: false, error: `Python 进程错误：${error?.message ?? error}` }));
     child.on('close', (code) => {
+      if (timedOut) {
+        finish({ ok: false, error: `处理超时（${Math.round(timeoutMs / 1000)} 秒），已中止` });
+        return;
+      }
+      if (reportedResult) {
+        finish(reportedResult);
+        return;
+      }
       // 收尾：把残留的 result 行也解析一次
       const rest = stdout.trim();
       if (rest.startsWith('{')) {
@@ -229,7 +252,10 @@ export function runTask({ python, task, onProgress, timeoutMs = 300000 }) {
     });
 
     try {
-      child.stdin.write(JSON.stringify(task), 'utf8');
+      // control is a host-side object and contains the ChildProcess itself.
+      // Passing it to JSON would serialize process streams into worker stdin.
+      const { control: _control, ...workerTask } = task;
+      child.stdin.write(JSON.stringify(workerTask), 'utf8');
       child.stdin.end();
     } catch (error) {
       finish({ ok: false, error: `写入任务失败：${error?.message ?? error}` });

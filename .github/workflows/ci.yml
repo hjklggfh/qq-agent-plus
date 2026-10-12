@@ -33,7 +33,7 @@ jobs:
       - name: 安装 ffmpeg（GIF 帧条 / 音频转码用例依赖）
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
+          sudo apt-get install -y -qq ffmpeg python3-pil
           ffmpeg -version | head -n 1
 
       - name: 语法检查（src / plugins / scripts / test / ui，递归）
@@ -72,6 +72,9 @@ jobs:
 
       - name: 单元测试
         run: npm run test:unit
+
+      - name: JM PDF 内存回归
+        run: /usr/bin/python3 test/jm-pdf-worker.test.py
 
       - name: 本地回归测试
         run: npm run test:local

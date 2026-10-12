@@ -38,7 +38,10 @@ import json
 import math
 import os
 import sys
+import tempfile
 import traceback
+
+from pdf_stream import PdfStream
 
 # ── jm 竖切参数（与 jmcomic 的 JmMagicConstants 一致）──────────────────────────
 SCRAMBLE_220980 = 220980
@@ -184,46 +187,65 @@ def run_task(task):
 
     emit({"t": "progress", "stage": "descramble", "done": 0, "total": total, "ok": 0, "fail": 0})
 
-    frames = []
+    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
+    pdf = PdfStream(output)
     failed = []
     warnings = []
     restored = 0
     ok_count = 0
     done = 0
 
-    for _chapter_name, path in all_pages:
-        done += 1
-        try:
-            if not os.path.isfile(path):
-                raise FileNotFoundError(path)
-            if os.path.getsize(path) <= 512:
-                raise ValueError("文件过小，可能下载不完整")
-            with Image.open(path) as img:
-                img.load()
-                frames.append(_prepare(img, path, do_descramble, scramble_id, album_id,
-                                       max_dim, to_rgb))
-            if do_descramble and segmentation_num(scramble_id, album_id, filename_stem(path)) > 0:
-                restored += 1
-            ok_count += 1
-        except Exception as exc:  # noqa: BLE001
-            failed.append({"page": os.path.basename(path), "error": f"{type(exc).__name__}: {exc}"})
-
-        if done % 10 == 0 or done == total:
-            emit({"t": "progress", "stage": "descramble", "done": done, "total": total,
-                  "ok": ok_count, "fail": len(failed)})
-
-    if not frames:
-        emit({"t": "result", "ok": False, "error": f"全部 {total} 张图都读不出来，无法生成 PDF",
-              "failed": failed[:20]})
-        return 1
-
-    emit({"t": "progress", "stage": "pdf", "done": 0, "total": 1, "ok": 0, "fail": 0})
-    os.makedirs(os.path.dirname(os.path.abspath(output)), exist_ok=True)
     try:
-        first, rest = frames[0], frames[1:]
-        first.save(output, "PDF", save_all=True, append_images=rest,
-                   resolution=150.0, quality=quality)
+        for _chapter_name, path in all_pages:
+            done += 1
+            jpeg_path = None
+            try:
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(path)
+                if os.path.getsize(path) <= 512:
+                    raise ValueError("文件过小，可能下载不完整")
+                with Image.open(path) as img:
+                    # A malformed or exceptionally large page must not exhaust the service.
+                    if img.width * img.height > 24_000_000:
+                        raise ValueError(f"图片像素过大：{img.width}x{img.height}（上限 2400 万像素）")
+                    img.load()
+                    prepared = _prepare(img, path, do_descramble, scramble_id, album_id,
+                                        max_dim, to_rgb)
+                    try:
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", dir=os.path.dirname(output),
+                                                         delete=False) as jpeg:
+                            jpeg_path = jpeg.name
+                            prepared.save(jpeg, "JPEG", quality=quality)
+                        jpeg_size = prepared.size
+                    finally:
+                        if prepared is not img:
+                            prepared.close()
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"page": os.path.basename(path), "error": f"{type(exc).__name__}: {exc}"})
+            else:
+                pdf.append_jpeg(jpeg_path, *jpeg_size)
+                if do_descramble and segmentation_num(scramble_id, album_id, filename_stem(path)) > 0:
+                    restored += 1
+                ok_count += 1
+            finally:
+                if jpeg_path:
+                    try:
+                        os.remove(jpeg_path)
+                    except FileNotFoundError:
+                        pass
+            if done % 10 == 0 or done == total:
+                emit({"t": "progress", "stage": "descramble", "done": done, "total": total,
+                      "ok": ok_count, "fail": len(failed)})
+
+        if not ok_count:
+            pdf.abort()
+            emit({"t": "result", "ok": False, "error": f"全部 {total} 张图都读不出来，无法生成 PDF",
+                  "failed": failed[:20]})
+            return 1
+        emit({"t": "progress", "stage": "pdf", "done": 0, "total": 1, "ok": 0, "fail": 0})
+        pdf.finish()
     except Exception as exc:  # noqa: BLE001
+        pdf.abort()
         emit({"t": "result", "ok": False, "error": f"PDF 写入失败：{exc}",
               "trace": traceback.format_exc()[-800:]})
         return 1
