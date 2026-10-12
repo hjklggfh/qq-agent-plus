@@ -150,7 +150,7 @@ function renderJmSection(c) {
     <div class="field-row">
       <div class="field"><label>API 备用域名</label><input type="text" id="cfg-jm-domains" value="${value('domains')}"></div>
       <div class="field"><label>代理地址（可选）</label><input type="text" id="cfg-jm-proxy" value="${value('proxy')}"></div>
-      <div class="field"><label>允许触发的 QQ（逗号分隔，留空=所有人）</label><input type="text" id="cfg-jm-allow" value="${value('allowIds')}"></div>
+      <div class="field"><label>私聊允许触发的 QQ（逗号分隔，留空=所有人；白名单群内成员不受限制）</label><input type="text" id="cfg-jm-allow" value="${value('allowIds')}"></div>
     </div>
     <div class="field-row">
       <div class="field"><label><input type="checkbox" id="cfg-jm-multi" ${checked('multiChapter') ? 'checked' : ''}> 下载合集全部章节</label></div>

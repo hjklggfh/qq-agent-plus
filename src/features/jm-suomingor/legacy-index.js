@@ -544,18 +544,25 @@ function pushHistory(entry) {
 // ───────────────────────── 权限 ─────────────────────────
 
 /**
- * 谁能触发。留空 = 所有人；填了 QQ 号 → 只有管理员/群主/白名单能触发。
+ * 私聊中的触发权限。留空 = 所有人；填了 QQ 号 → 只有管理员/群主/白名单能触发。
+ * 已开启 JM 的群由群白名单控制会话权限，群内成员不再受此字段限制。
  * 注意：工具的 ctx 里没有发送者，只能读 before-tool 钩子记下的 callerLog。
  */
 async function checkPermission(ctx) {
   const c = cfg();
-  if (!c.allowIds) return { ok: true };
+  // 群白名单控制的是“哪个群可以使用 JM”，不是“群内哪个成员可以使用”。
+  // 群开关仍由 group_toggle 单独校验群主/机主；一旦群已开启，普通群友
+  // 也应能正常发起下载，即使旧配置里的 allowIds 只填写了管理员 QQ。
+  const caller = lookupCaller(ctx);
+  const candidate = caller && Date.now() - caller.at < 120000 ? caller.candidates?.[0] : null;
+  if (String(ctx?.kind) === 'group' && isChatAllowed(String(ctx?.chatKey || ''))) {
+    return { ok: true, caller: candidate };
+  }
+  if (!c.allowIds) return { ok: true, caller: candidate };
 
   const allow = new Set(
     c.allowIds.split(/[\s,;，、]+/).map((s) => s.trim()).filter(Boolean),
   );
-  const caller = lookupCaller(ctx);
-  const candidate = caller && Date.now() - caller.at < 120000 ? caller.candidates?.[0] : null;
 
   if (!candidate?.id) {
     return {
@@ -1888,7 +1895,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             : `不可用 —— ${worker.error}。会降级为原样保存图片。`}`,
           `上传模式：${{ off: '不上传', request: '传回提出请求的会话', group: '只传群', private: '只传私聊' }[c.uploadMode]}`,
           `单文件上限：${c.maxUploadMB} MB${c.rejectOversize ? '（超限拒绝）' : '（超限自动分卷）'}`,
-          `允许触发：${c.allowIds ? `仅管理员/白名单（${c.allowIds}）` : '所有人'}`,
+          `私聊允许触发：${c.allowIds ? `仅管理员/白名单（${c.allowIds}）` : '所有人'}；已开启的白名单群内所有成员可用`,
         ];
         if (String(ctx?.kind) === 'group' && ctx?.onebot) {
           const q = await groupQuota(ctx.onebot, ctx.chatId);
@@ -2556,7 +2563,7 @@ export function promptSections() {
   }
   if (c.uploadMode === 'off') bits.push('不会上传文件，只保存在机器人本地');
   else bits.push('会把文件上传到提出请求的那个会话（群文件 / 私聊文件）');
-  if (c.allowIds) bits.push('只有管理员或白名单 QQ 才能触发下载');
+  if (c.allowIds) bits.push('私聊仅管理员或白名单 QQ 可触发下载，已开启的白名单群内所有成员可用');
 
   return [{
     id: `${SKILL_ID}-rules`,
