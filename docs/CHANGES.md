@@ -1,12 +1,16 @@
 # Change Log (CHANGES)
 
+## v8.1.0 - 2026-10-13
+- Added JM comic download as a host built-in feature with its own settings page and direct commands.
+- Streamed PDF page processing and serialized PDF workers to reduce memory pressure on small servers.
+- Added group controls: the group owner or bot owner manages access, and all members of an enabled group can use JM.
+- Kept the bot owner's QQ number out of group-control denial messages.
+
 ## v8.0.0 - 2026-10-11
 - Added Bilibili automatic forwarding for direct links, b23.tv short links, and QQ share cards.
 - Switched Bilibili metadata and media retrieval to the Bilibili API to avoid webpage 412 responses.
 - Added download limits, collection filtering, staged logging, delayed cleanup, and media permissions for asynchronous OneBot delivery.
 - Stabilized the proactive private-chat adaptation and the market-extension safety boundary.
-- Integrated JM 禁漫下载 as a host built-in feature: it no longer appears in the plugin page or capability approval flow, uses top-level `config.jm`, and keeps the dedicated settings page and scoped OneBot file operations.
-- JM PDF generation now streams pages into an atomic PDF file and serializes workers, preventing the all-pages-in-memory OOM seen during 36-page albums.
 
 # 改动清单（CHANGES）
 
