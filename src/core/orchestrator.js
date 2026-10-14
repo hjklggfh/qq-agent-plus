@@ -116,6 +116,7 @@ import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } 
 import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from '../llm/prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
+import { trpgToolDefs } from '../features/trpg/tools.js';
 import { normalizeMid } from '../tools/tools-core.js';
 import { visionEnabled } from '../llm/vision-scan.js';
 import { currentProviders } from './providers.js';
@@ -353,6 +354,7 @@ export class Orchestrator {
     onebot,
     reminders = null,
     getGames = null,
+    getTrpg = null,
     emit = null,
     random = Math.random,
     getIdentityPilot = null,
@@ -366,6 +368,8 @@ export class Orchestrator {
     this.onebot = onebot;
     this.reminders = reminders;
     this.getGames = typeof getGames === 'function' ? getGames : null;
+    this.getTrpg = typeof getTrpg === 'function' ? getTrpg : (() => null);
+    this.trpgRuns = new Map();
     this.random = random;
     this.getIdentityPilot = typeof getIdentityPilot === 'function' ? getIdentityPilot : (() => null);
     this.getIncidentPilot = typeof getIncidentPilot === 'function'
@@ -441,6 +445,16 @@ export class Orchestrator {
       { code: 'CHAT_BLOCKED' }
     ));
     return decision;
+  }
+
+  enforceTrpgState() {
+    const manager = this.getTrpg();
+    for (const [chatKey, id] of this.trpgRuns) {
+      const c = manager?.current(chatKey);
+      if (!manager?.settings().enabled || c?.id !== id || c.status !== 'playing') {
+        this.controllers.get(chatKey)?.abort(new Error('跑团已暂停、结束或关闭'));
+      }
+    }
   }
 
   enforceTimeControl() {
@@ -534,7 +548,7 @@ export class Orchestrator {
     try {
       const cfgNow = getConfig();
       // 这次若是主动私信，不再为同一句安排通用补话；普通私聊仍沿用原行为。
-      if (session?.triggerSummary === '主动私信') return;
+      if (session?.triggerSummary === '主动私信' || session?.trpgCampaignId || session?.trpgNarrator) return;
       const window = proactiveWindowState(cfgNow.proactive?.activeHours, Date.now());
       const plan = followUpPlan({
         sentCount: Array.isArray(session?.sent) ? session.sent.length : 0,
@@ -1307,6 +1321,7 @@ export class Orchestrator {
       clearTimeout(runTimer);
       this.controllers.delete(chatKey);
       this.activeRuns.delete(chatKey);
+      this.trpgRuns.delete(chatKey);
       this.runningChats.delete(chatKey);
       this.emit('chat-update', chatKey);
     }
@@ -1515,6 +1530,9 @@ export class Orchestrator {
   }) {
     const cfg = getConfig();
     const conversationCfg = conversation || conversationConfigForChat(chatKey);
+    const trpg = this.getTrpg();
+    const trpgNarrator = trpg?.narratorActive(chatKey) === true;
+    session.trpgNarrator = trpgNarrator;
     const chatName = kind === 'group' ? await this.#chatName(chatId) : '';
     const selfNickname = kind === 'group' ? (cfg.persona.selfNickname || this.onebot.selfNickname || cfg.persona.botName) : cfg.persona.botName;
     let thread = conversationCfg.mode !== 'legacy'
@@ -1533,13 +1551,13 @@ export class Orchestrator {
     })();
 
     // 表情包总开关：关掉时连动作类工具带清单一起摘（见下方 toolDefs 过滤，2026-10-02 用户反馈）
-    const stickerEnabled = cfg.sticker?.enabled !== false;
+    const stickerEnabled = cfg.sticker?.enabled !== false && !trpgNarrator;
     // 表情库快照（提示词用）
     let stickerEntries = [];
     if (stickerEnabled) {
       try { stickerEntries = (await this.stickers.sync(false)).entries ?? []; } catch { stickerEntries = []; }
     }
-    const slangContext = slangPilotEnabled(cfg)
+    const slangContext = !trpgNarrator && slangPilotEnabled(cfg)
       ? buildSlangContextForChat(chatKey, { max: 8 })
       : '';
     const incidentContext = this.getIncidentPilot()?.active
@@ -1561,7 +1579,15 @@ export class Orchestrator {
     const selfWakeEnabled = cfg.proactive?.selfWakeEnabled !== false;
     // 图片生成按张计费：没开/没配就不注入工具，否则模型会去调一个必然失败的画图工具
     const imageGenEnabled = imageGenAvailable(cfg);
-    const toolDefs = this.toolDefs.filter((d) => {
+    const trpgAction = !proactive && !privateProactive ? trpg?.actionContext(chatKey, triggerEntries) : null;
+    if (trpgAction) {
+      this.trpgRuns.set(chatKey, trpgAction.campaign.id);
+      session.trpgCampaignId = trpgAction.campaign.id;
+    }
+    const toolDefs = [...this.toolDefs, ...(trpgAction ? trpgToolDefs() : [])].filter((d) => {
+      if (d.feature === 'trpg' && !trpgAction) return false;
+      if (trpgAction && !['send_message', 'finish', 'trpg_state', 'trpg_roll', 'trpg_update'].includes(d.name)) return false;
+      if (trpgNarrator && ['send_face', 'send_poke'].includes(d.name)) return false;
       // 主动私信每轮至多一条文本。其它外发工具（含插件工具）不进入这一轮，
       // 避免模型绕开每日额度和“未回复不追发”的记账。
       if (privateProactive && !['send_message', 'finish'].includes(d.name)) return false;
@@ -1591,6 +1617,20 @@ export class Orchestrator {
       if (d.feature === 'jm' && cfg.jm?.enabled === false) return false;
       return true;
     }).map((definition) => {
+      if (trpgAction) return {
+        ...definition,
+        async execute(ctx, args) {
+          if (ctx.signal?.aborted || !trpg.settings().enabled || trpg.current(chatKey)?.id !== trpgAction.campaign.id || trpg.current(chatKey)?.status !== 'playing') {
+            throw new Error('跑团已暂停、结束或关闭');
+          }
+          if (definition.name === 'send_message' && ctx.session.trpgSavedRevision !== trpg.current(chatKey).revision) {
+            throw new Error('请先用trpg_update成功保存本轮最新状态，再发送剧情');
+          }
+          const result = await definition.execute(ctx, args);
+          if (definition.name === 'trpg_update' && !result?.isError) ctx.session.trpgSavedRevision = trpg.current(chatKey).revision;
+          return result;
+        }
+      };
       if (!privateProactive || definition.name !== 'send_message') return definition;
       return {
         ...definition,
@@ -1614,7 +1654,8 @@ export class Orchestrator {
       gameContext: this.getGames?.()?.summaryFor(chatKey) || '',
       identityPilotAvailable: identityAvailable,
       friendProposalAvailable,
-      stickerEntries
+      stickerEntries,
+      trpgNarrator
     });
     const promptPrefixHash = crypto.createHash('sha256')
       .update(String(cfg.api.provider || ''))
@@ -1687,8 +1728,9 @@ export class Orchestrator {
       threadCheckpoint,
       conversationMode: conversationCfg.mode,
       lifecycleContinuation,
-      session
-    });
+      session,
+      trpgNarrator
+    }) + (trpgAction ? trpg.prompt(chatKey, triggerEntries) : '');
 
     session.systemPrompt = systemPrompt;
     session.userPrompt = userPrompt;
@@ -1758,7 +1800,7 @@ export class Orchestrator {
       selfId: this.onebot.selfId,
       selfNickname,
       botName: cfg.persona.botName,
-      behaviorProfile: cfg.persona.behaviorProfile || 'legacy',
+      behaviorProfile: trpgNarrator ? 'grounded' : cfg.persona.behaviorProfile || 'legacy',
       onebot: this.onebot,
       store: this.store,
       memory: this.memory,
@@ -1773,7 +1815,8 @@ export class Orchestrator {
       // 定时提醒（remind 工具）：持久化的"给别人的承诺"，到点走主动唤醒
       reminders: this.reminders,
       // 群游戏（group_game 工具）：进行中的局由管理器负责推进与判定
-      games: this.getGames?.() || null
+      games: this.getGames?.() || null,
+      trpg
     };
 
     // 省 Token 模式：轮数与单次运行预算夹上限（关闭时与升级前逐字一致）

@@ -1,5 +1,11 @@
 # Change Log (CHANGES)
 
+## 未发布 - 2026-10-14
+- 跑团进行中的会话统一切换为独立的中性裁判／旁白口吻，不注入原聊天人设与亲疏印象；暂停/结束后恢复普通聊天。增加可直接导入的角色卡、世界观JSON示例与字段说明。
+- 新增宿主内置轻量叙事跑团：独立工作台、自定义世界观与角色卡、JSON/文本导入导出、单人或最多6人小团。
+- 提供QQ开团/加入/行动/真实掷骰/暂停/续团/结束指令，世界与角色快照随存档持久化。
+- 剧情复用现有模型、预算与发送链路；工具仅在本团玩家行动中开放，存档先于叙述发送，重复检定去重、状态写入校验版本。详见 [跑团说明](TRPG.md)。
+
 ## v8.1.0 - 2026-10-13
 - Added JM comic download as a host built-in feature with its own settings page and direct commands.
 - Streamed PDF page processing and serialized PDF workers to reduce memory pressure on small servers.

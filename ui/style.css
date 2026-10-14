@@ -3278,3 +3278,20 @@ dialog { margin: auto; max-height: 88vh; }
 }
 #plugin-note:empty { display: none; }
 #plugin-note { margin-top: 10px; }
+:root { --trpg-gap: 16px; }
+#view-trpg { overflow: auto; }
+#trpg-page { width: 100%; max-width: 1440px; margin: 0 auto; }
+.trpg-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--trpg-gap); align-items: start; }
+.trpg-card { border: 1px solid var(--line, #8893a544); border-radius: 14px; padding: 20px; margin-bottom: 16px; min-width: 0; }
+.trpg-card h3 { margin-top: 0; }
+.trpg-editor > label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.trpg-editor input:not([type="hidden"]), .trpg-editor textarea { width: 100%; box-sizing: border-box; }
+.trpg-editor textarea { resize: vertical; min-height: 70px; font: inherit; }
+.trpg-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.trpg-actions input[type="number"] { width: 70px; }
+.trpg-import { cursor: pointer; position: relative; overflow: hidden; }
+.trpg-import input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
+.trpg-list-item { border-top: 1px solid var(--line, #8893a544); padding: 12px 0; overflow-wrap: anywhere; }
+.trpg-pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+#trpg-notice { white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .trpg-grid { grid-template-columns: 1fr; } }

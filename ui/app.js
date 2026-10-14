@@ -35,6 +35,7 @@ import {
 import { loadMemoryView, renderMemoryList } from './pages/memory.js';
 import { renderExperimentalSettingsSectionImpl } from './pages/moments.js';
 import { loadPluginPage } from './pages/plugins.js';
+import { loadTrpgPage } from './pages/trpg.js';
 import { loadSessionDetail, loadSessions } from './pages/sessions.js';
 import {
   renderSettingsImpl, resolveTheme, startListPoller, syncPriceDialogBilling
@@ -158,6 +159,7 @@ function switchTab(name) {
   if (name === 'assets') loadAssetObservatory();
   if (name === 'usage') loadUsageView({ force: true });
   if (name === 'plugins') loadPluginPage();
+  if (name === 'trpg') loadTrpgPage();
   if (name === 'settings') loadSettings();
 }
 

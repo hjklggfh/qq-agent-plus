@@ -12,6 +12,7 @@
 
 import { asrAvailable, getConfig, imageGenAvailable } from '../core/config.js';
 import { visionEnabled } from './vision-scan.js';
+import { TRPG_NARRATOR_RULES } from '../features/trpg/prompt.js';
 import { cappedByTokenSaver, tokenSaverCapsOf } from '../core/token-saver.js';
 // 滑条换算放在独立模块（零依赖），避免 config.js ↔ prompt.js 循环依赖。
 // 这里 re-export 是为了让已经从 prompt.js 引用的代码不受影响。
@@ -346,8 +347,12 @@ export function buildSystemPrompt({
   identityPilotAvailable = false,
   friendProposalAvailable = false,
   stickerEntries = null,
-  gameContext = ''
+  gameContext = '',
+  trpgNarrator = false
 } = {}) {
+  if (trpgNarrator) {
+    return [TRPG_NARRATOR_RULES, securityRules(true), toolProtocol(true), quoteAndAt(), reportBan()].join('\n\n');
+  }
   const cfg = persona ?? getConfig().persona;
   const grounded = cfg.behaviorProfile === 'grounded';
   // 开场白只交代"名字"与平台基调；人格、口吻、身份交给【角色设定】 ——
@@ -797,7 +802,9 @@ export function buildUserPrompt(ctx) {
   // 不加说明的话模型会照着自己上一条的口气继续说（实测换卡 26 小时后仍在用旧卡的口癖）。
   const personaChangedAt = Number(getConfig().persona?.changedAt) || 0;
   const personaFreshlyChanged = personaChangedAt > 0 && (now - personaChangedAt) < 24 * 60 * 60 * 1000;
-  const staleNote = personaFreshlyChanged
+  const staleNote = ctx.trpgNarrator
+    ? '（当前使用跑团裁判／旁白口吻；旧聊天记录中的情绪、口癖和亲昵称呼不作为本轮风格依据。）'
+    : personaFreshlyChanged
     ? '（注意：【角色设定】刚换过 —— 下面是换卡之前的旧记录，里面的口癖、自称、称呼都不一定还适用，一切以当前卡为准。）'
     : '';
   // 过去状态
@@ -830,7 +837,7 @@ export function buildUserPrompt(ctx) {
   for (const m of (past?.messages || [])) {
     if (m.senderId && !m.self) relevantUserIds.add(String(m.senderId));
   }
-  const memText = ctx.memory.formatForPrompt(ctx.chatKey, { userIds: [...relevantUserIds] });
+  const memText = ctx.trpgNarrator ? '' : ctx.memory.formatForPrompt(ctx.chatKey, { userIds: [...relevantUserIds] });
   if (memText) parts.push(`【记忆】\n${memText}`);
 
   // 成员备注：不再单独成段——备注名已经直接替换了消息里的显示名
@@ -867,10 +874,10 @@ export function buildUserPrompt(ctx) {
   }
 
   // 工作状态靠近最新消息，避免在长历史中间被模型忽略。
-  const handoffText = typeof ctx.memory?.formatHandoffForPrompt === 'function'
+  const handoffText = !ctx.trpgNarrator && typeof ctx.memory?.formatHandoffForPrompt === 'function'
     ? ctx.memory.formatHandoffForPrompt(ctx.chatKey)
     : '';
-  const checkpointText = formatThreadCheckpoint(ctx.threadCheckpoint);
+  const checkpointText = ctx.trpgNarrator ? '' : formatThreadCheckpoint(ctx.threadCheckpoint);
   const stalePrefix = staleNote ? `${staleNote}
 ` : '';
   if (ctx.conversationMode === 'lifecycle' && checkpointText) parts.push(stalePrefix + checkpointText);

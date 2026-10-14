@@ -65,6 +65,7 @@
         <button class="tab" data-icon="📈" data-tab="assets" data-page-node-id="qassetobserve">观测</button>
         <button class="tab" data-icon="💰" data-tab="usage" data-page-node-id="hcZzcXuMojNoiE7UcRVYfR">用量</button>
         <button class="tab" data-icon="🚨" data-tab="incidents" data-feature-nav="incidents">异常处理</button>
+        <button class="tab" data-icon="🎲" data-tab="trpg">跑团</button>
         <button class="tab" data-icon="🔌" data-tab="plugins" data-page-node-id="qpluginspage">插件</button>
         <button class="tab" data-icon="⚙️" data-tab="settings" data-page-node-id="4cXbRBtGmcpcL272eKvHPV">设置</button>
       </nav>
@@ -194,6 +195,7 @@
     </section>
 
     <!-- 插件 -->
+    <section id="view-trpg" class="view"><div id="trpg-page" class="asset-pane"></div></section>
     <section id="view-plugins" class="view" data-page-node-id="qpluginsview">
       <div class="asset-pane" data-page-node-id="qpluginspane">
         <div id="plugin-page" data-page-node-id="qpluginslist"></div>
@@ -300,6 +302,7 @@
   <script type="module" src="/pages/moments.js"></script>
   <script type="module" src="/pages/features.js"></script>
   <script type="module" src="/pages/plugins.js"></script>
+  <script type="module" src="/pages/trpg.js"></script>
   <!-- 设置域（第二轮拆出；app.js 的 loadSettings/bindSettingsEvents/saveConfig 链全靠它们） -->
   <script type="module" src="/pages/settings.js"></script>
   <script type="module" src="/pages/settings-voice.js"></script>

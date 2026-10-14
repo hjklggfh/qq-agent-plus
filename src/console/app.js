@@ -30,6 +30,9 @@ import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
 import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
+import { TrpgManager } from '../features/trpg/manager.js';
+import { installTrpgRoutes } from '../features/trpg/routes.js';
+import { canRun } from '../core/access.js';
 import { ReminderStore } from '../core/reminders.js';
 import { listModels, chatCompletion, resolveApiKey, cachedTokensOfUsage } from '../llm/llm.js';
 import { synthesizeSpeech } from '../llm/tts.js';
@@ -575,6 +578,7 @@ export function createApp({
   let identityPilotError = '';
   // 定时提醒：落盘持久化（重启不丢），到点由编排器走主动唤醒让模型说出来
   const reminders = new ReminderStore();
+  const trpg = new TrpgManager({ dataDir: DATA_DIR, getConfig, canRun });
   const orchestrator = new Orchestrator({
     store,
     memory,
@@ -584,6 +588,7 @@ export function createApp({
     onebot,
     reminders,
     getGames: () => groupGame,
+    getTrpg: () => trpg,
     emit,
     getIdentityPilot: () => identityPilot,
     getIncidentPilot: () => incidentPilot
@@ -1052,7 +1057,7 @@ export function createApp({
         ? '[表情包]' : '[图片]'),
       reply,
       media,
-      mentionsSelf,
+      mentionsSelf: mentionsSelf || (!isSelf && trpg.isAction(chatKey, senderId, text)),
       // 引擎发的游戏私聊（身份/查验结果/行动回执）标成 game-secret：提示词构建时会过滤掉，
       // 模型在私聊里不该是上帝视角（2026-09-29 审查 P2）
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : 'message'
@@ -1069,6 +1074,26 @@ export function createApp({
     }
     emit('chat-update', chatKey);
     // JM 是宿主内置功能：明确的 JM 指令直接交给功能处理，避免先唤醒模型猜测。
+    if (!isSelf && /^\/跑团(?:\s|$)/.test(text.trim())) {
+      if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) {
+        store.markRead(chatKey, [stored.id]);
+        return;
+      }
+      let result;
+      try {
+        result = trpg.command(chatKey, String(senderId), text, stored.id);
+        orchestrator.enforceTrpgState();
+      } catch (error) {
+        result = { reply: String(error.message) };
+      }
+      if (!result?.narrative) {
+        // 先消费指令，再发送回执；发送结果未知时不能让通用编排器重新执行。
+        store.markRead(chatKey, [stored.id]);
+        if (result?.reply) await sender.sendTextBatch(chatKey, [result.reply], { runId: `trpg-${stored.id}`, preserveCode: false });
+        emit('chat-update', chatKey);
+        return;
+      }
+    }
     // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
     if (!isSelf && jmFeature?.handleMessage) {
       try {
@@ -3599,6 +3624,7 @@ export function createApp({
     }
     auditWrite('config.update', 'config', { req, before: auditBefore, after: next, changed: changedTopKeys(auditBefore, next) });
     store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
+    orchestrator.enforceTrpgState();
     let closedThreads = 0;
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
@@ -4355,8 +4381,16 @@ export function createApp({
     store.close();
   }
 
+  installTrpgRoutes({
+    addRoute: (method, routePath, handler) => router.add(method, routePath, handler),
+    updateConfig,
+    enforceTrpgState: () => orchestrator.enforceTrpgState(),
+    auditWrite
+  }, trpg);
+
   return {
     server,
+    trpg,
     onebot,
     store,
     memory,

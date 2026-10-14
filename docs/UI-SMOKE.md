@@ -1,5 +1,14 @@
 # 控制台手工烟测清单（UI-SMOKE）
 
+## 跑团工作台
+
+- [ ] 左侧「跑团」打开后有独立设置、两个卡片编辑器、使用说明和存档列表，关闭时仍可编辑卡片。
+- [ ] 新建世界与角色、编辑已有卡、导入JSON/TXT，保存后得到ID；导出JSON可重新导入。
+- [ ] 卡片名称和设定中的HTML按文字显示；刷新存档、切换页签不会清空编辑中的草稿。
+- [ ] 默认示例团在QQ开团后，网页可看到玩家HP、背包、地点、剧情与骰点。
+- [ ] 暂停/结束/删除操作先确认，只有已结束的团能删除；卡片删除不改动团内快照。
+- [ ] 窄屏两个编辑器上下排列，长设定和长存档不撑出屏幕。
+
 自动化只覆盖到「渲染函数不抛异常 + 真实 DOM 能加载 + 钩子接上了」这三层
 （`test/render-test.mjs`、`test/scroll-test.mjs`、`test/usage-e2e.mjs`、
 `test/ui-smoke.test.mjs`、`test/ui-module-graph.test.mjs`、`test/ui-real-modules.test.mjs`、

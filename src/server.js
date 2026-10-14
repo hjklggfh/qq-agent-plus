@@ -9,6 +9,7 @@ import { installPluginRoutes } from '../plugins/console-routes.js';
 import { initMarketExtensions } from '../plugins/market-loader.js';
 import { buildToolDefs as buildBuiltinToolDefs } from './tools/tools-core.js';
 import { initJmFeature } from './features/jm-suomingor-host.js';
+import { trpgToolDefs } from './features/trpg/tools.js';
 import { DATA_DIR, getConfig } from './core/config.js';
 import { assertSqliteAvailable } from './core/sqlite.js';
 import { createLogger } from './core/logger.js';
@@ -107,7 +108,7 @@ installExperimentalMultimodalContextPilot();
 // 宿主内置 feature 必须先注册，插件装载器才能把它们当作保留工具名，
 // 同时 JM 不会进入插件状态、启用或能力审批列表。
 initJmFeature({ dataDir: DATA_DIR, getConfig, log });
-const builtinToolNames = buildBuiltinToolDefs().map((def) => String(def.name));
+const builtinToolNames = [...buildBuiltinToolDefs(), ...trpgToolDefs()].map((def) => String(def.name));
 try {
   await initPlugins({ dataDir: DATA_DIR, log, builtinToolNames });
   await initMarketExtensions({ dataDir: DATA_DIR, log });

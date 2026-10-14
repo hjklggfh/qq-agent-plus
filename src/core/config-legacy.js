@@ -13,6 +13,7 @@ import {
 import { DEFAULT_TIME_CONTROL, normalizeTimeControl } from './time-control.js';
 import { normalizeTokenSaverMode } from './token-saver.js';   // 零依赖模块，避免循环依赖
 import { normalizeMomentWindows } from '../features/moment-schedule.js';
+import { DEFAULT_TRPG_CONFIG } from '../features/trpg/config.js';
 // 插件 id 的规则只有一处定义（plugins/_host/manifest.js 是零依赖的叶子模块，不会引回 core/）。
 // 在配置里重抄一份正则，就会埋下"配置认为合法、装载器认为不合法"的两套口径。
 import { PLUGIN_ID_PATTERN } from '../../plugins/_host/manifest.js';
@@ -30,6 +31,7 @@ export const MAX_PLUGINS_ENABLED = 50;
 export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
+  trpg: { ...DEFAULT_TRPG_CONFIG },
   // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。
   jm: {
     enabled: false,

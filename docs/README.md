@@ -27,6 +27,7 @@
 | [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界 |
 | [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
 | [JM-SUOMINGOR.md](JM-SUOMINGOR.md) | JM 禁漫下载内置功能：设置、工具和受限 OneBot 文件操作 |
+| [TRPG.md](TRPG.md) | 单人/小群轻量跑团：角色卡、世界观、真实骰点、持久化存档与QQ指令 |
 
 ## 开发与维护
 
