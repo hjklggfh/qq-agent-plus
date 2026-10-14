@@ -17,7 +17,7 @@ test('跑团 API 沿用鉴权、405、验证与删除确认，禁用时仍可编
   const manager = new TrpgManager({ dataDir: root, getConfig: () => cfg, canRun: () => true });
   const json = (res, code, value) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
   const router = createRouter({ authorize: (req) => req.headers['x-test-token'] === 'yes', json });
-  installTrpgRoutes({ addRoute: (...args) => router.add(...args), updateConfig: (patch) => Object.assign(cfg, patch), enforceTrpgState: () => {} }, manager);
+  installTrpgRoutes({ addRoute: (...args) => router.add(...args), updateConfig: (patch) => Object.assign(cfg.trpg, patch.trpg), enforceTrpgState: () => {} }, manager);
   const server = http.createServer((req, res) => { router.handle(req, res).catch(() => json(res, 500, { error: 'unexpected' })); });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
@@ -40,6 +40,12 @@ test('跑团 API 沿用鉴权、405、验证与删除确认，禁用时仍可编
   assert.equal((await request('/delete-asset', { kind: 'characters', id: card.data.id, confirm: true })).status, 200);
   assert.equal((await request('/settings', { enabled: true, maxPlayers: 3 })).data.settings.maxPlayers, 3);
   assert.equal(cfg.trpg.enabled, true);
+  assert.equal((await request('/settings', { allowedGroups: ['100001'], allowedPrivate: ['123456'] })).status, 200);
+  await request('/settings', { maxPlayers: 4 });
+  assert.deepEqual(cfg.trpg.allowedGroups, ['100001'], '部分保存不能清空白名单');
+  assert.equal(cfg.trpg.enabled, true);
+  assert.equal((await request('/settings', { allowedGroups: ['*'] })).status, 400);
+  assert.equal((await request('/settings', { allowedPrivate: '123456' })).status, 400);
 });
 
 test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘后发送，计入既有会话用量', async (t) => {
@@ -58,7 +64,7 @@ test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘�
   cfg.api.maxRounds = 6;
   cfg.sticker.enabled = false;
   cfg.memory.consolidateEnabled = false;
-  cfg.trpg = { enabled: true, maxPlayers: 6 };
+  cfg.trpg = { enabled: true, maxPlayers: 6, allowedGroups: ['100001'], allowedPrivate: [] };
   setRuntimeConfig(cfg);
   const dir = path.join(root, 'model');
   const manager = new TrpgManager({ dataDir: dir, getConfig, canRun, rng: () => 12 });
@@ -92,7 +98,7 @@ test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘�
     const [name, args] = queue[calls++];
     return Response.json({ choices: [{ message: { role: 'assistant', tool_calls: [{ id: `tool-${calls}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }], usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } });
   };
-  store.appendIncoming(chatKey, { mid: 1, ts: Date.now(), text: '/跑团 行动 检查门锁', senderId: actor, mentionsSelf: true });
+  store.appendIncoming(chatKey, { mid: 1, ts: Date.now(), text: '检查门锁', eventKind: 'trpg-action', senderId: actor, mentionsSelf: true });
   await runner.wake(chatKey);
   assert.equal(calls, 4);
   assert.equal(sends, 1);
@@ -152,7 +158,7 @@ test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘�
   manager.command(chatKey, actor, '/跑团 继续');
   await assertTone(chatKey, true);
 
-  // 关闭开关必须中断已在进行的模型请求，而非仅阻止下一次开团。
+  // 撤销白名单必须中断已在进行的模型请求，存档保留。
   let signal;
   let started;
   const ready = new Promise((resolve) => { started = resolve; });
@@ -168,13 +174,27 @@ test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘�
   store.appendIncoming(chatKey, { mid: 100, ts: Date.now(), text: '/跑团 行动 走进灯塔', senderId: actor, mentionsSelf: true });
   const running = runner.wake(chatKey);
   await ready;
-  cfg.trpg.enabled = false;
+  cfg.trpg.allowedGroups = [];
   setRuntimeConfig(cfg);
   runner.enforceTrpgState();
   await running;
   assert.equal(signal.aborted, true);
   assert.equal(sends, 2);
   assert.equal(manager.current(chatKey).summary, '旅人把钥匙插进铜锁');
+  let staleCalls = 0;
+  globalThis.fetch = async () => { staleCalls++; throw new Error('失效行动不得触发模型'); };
+  store.appendIncoming(chatKey, { mid: 200, ts: Date.now(), text: '等候中的行动', eventKind: 'trpg-action', senderId: actor, mentionsSelf: true });
+  await runner.wake(chatKey);
+  assert.equal(staleCalls, 0, '撤销权限后的排队行动不能转为普通聊天');
+  globalThis.fetch = async (_url, options) => {
+    staleCalls++;
+    assert.equal(JSON.parse(options.body).messages[0].content.includes('跑团裁判／旁白模式'), false);
+    return Response.json({ choices: [{ message: { role: 'assistant', tool_calls: [{ id: 'normal-after-exit', type: 'function', function: { name: 'finish', arguments: '{"summary":"普通聊天"}' } }] } }] });
+  };
+  store.appendIncoming(chatKey, { mid: 201, ts: Date.now(), text: '另一条失效行动', eventKind: 'trpg-action', senderId: actor, mentionsSelf: true });
+  store.appendIncoming(chatKey, { mid: 202, ts: Date.now(), text: '现在正常聊天', senderId: actor, mentionsSelf: true });
+  await runner.wake(chatKey);
+  assert.equal(staleCalls, 1, '失效行动不能吞掉同一批次的新聊天');
 });
 
 test('真实消息入口：确定性指令直接消费，行动标记唤醒，重复事件不重复修改存档', async (t) => {
@@ -182,8 +202,9 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
   const cfg = structuredClone(DEFAULT_CONFIG);
   cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
-  cfg.allow.groups = ['200001'];
-  cfg.trpg = { enabled: true, maxPlayers: 6 };
+  cfg.allow.groups = ['200001', '200002'];
+  cfg.allow.private = ['123456', '234567'];
+  cfg.trpg = { enabled: true, maxPlayers: 6, allowedGroups: ['200001'], allowedPrivate: ['123456'] };
   cfg.sticker.autoCollect = false;
   cfg.api.apiKey = 'test-key'; cfg.api.model = 'mock';
   setRuntimeConfig(cfg);
@@ -195,6 +216,8 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   app.orchestrator.onIncoming = () => { wakes++; };
   let id = 1000;
   const message = (text, uid = '123456', mid = ++id) => app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: 200001, user_id: Number(uid), message_id: mid, time: Math.floor(Date.now() / 1000), sender: { nickname: '玩家' }, message: [{ type: 'text', data: { text } }] });
+  await app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: 200002, user_id: 123456, message_id: ++id, message: '/跑团 开团 mist-harbor' });
+  assert.equal(app.trpg.current('group:200002'), null, '全局授权群也必须单独加入跑团白名单');
   await message('/跑团 开团 mist-harbor');
   await message('/跑团 加入 traveler');
   await message('/跑团 开始');
@@ -202,14 +225,37 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   assert.equal(app.trpg.current('group:200001').status, 'playing');
   await message('/跑团 行动 观察码头', '234567');
   assert.equal(wakes, 0, '旁观者行动被拒绝并消费');
-  await message('/跑团 行动 观察码头');
+  await message('观察码头');
   assert.equal(wakes, 1);
   const entry = app.store.findByMid('group:200001', id);
   assert.equal(entry.mentionsSelf, true);
+  assert.equal(entry.eventKind, 'trpg-action');
+  await message('观察码头', '123456', id);
+  assert.equal(wakes, 1, '普通行动的重复事件也不重复唤醒');
+  await message('我也观察码头', '234567');
+  assert.equal(wakes, 1, '旁观者普通消息不触发模型');
+  await message('检查这张藏宝图 https://b23.tv/example');
+  assert.equal(wakes, 2, '游戏消息优先作为行动，不交给链接下载器');
   assert.ok(app.trpg.actionContext('group:200001', [entry]), 'QQ秒级时间戳不能误判为开团前的消息');
   await message('/跑团 掷骰 1d20', '123456', 9000);
   const revision = app.trpg.current('group:200001').revision;
   await message('/跑团 掷骰 1d20', '123456', 9000);
   assert.equal(app.trpg.current('group:200001').revision, revision);
   assert.equal(replies.filter((text) => /掷骰.*合计/.test(text)).length, 1);
+  await message('退出游戏', '234567');
+  assert.equal(app.trpg.current('group:200001').status, 'playing', '只有团主可退出整局');
+  await message('退出游戏');
+  assert.equal(app.trpg.current('group:200001'), null);
+  assert.equal(wakes, 2);
+  await message('现在正常聊天');
+  assert.equal(wakes, 3, '退出后恢复普通聊天路由');
+  const privateMessage = (text, uid = 123456) => app.onebot.onEvent({ post_type: 'message', message_type: 'private', user_id: uid, message_id: ++id, message: text });
+  await privateMessage('/跑团 开团 mist-harbor', 234567);
+  assert.equal(app.trpg.current('private:234567'), null);
+  for (const text of ['/跑团 开团 mist-harbor', '/跑团 加入 traveler', '/跑团 开始', '我独自探索灯塔']) await privateMessage(text);
+  assert.equal(app.trpg.current('private:123456').status, 'playing');
+  assert.equal(wakes, 4, '私聊开始后直接发言行动');
+  await privateMessage('退出游戏');
+  assert.equal(app.trpg.current('private:123456'), null);
+  assert.equal(wakes, 4);
 });

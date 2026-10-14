@@ -67,6 +67,12 @@ test('跑团页面：真实表单保存、HTML转义、导入导出及切页草�
   assert.equal(parsed.asset.name, '<img src=x onerror=alert(1)>');
   assert.equal(Object.hasOwn(parsed.asset, 'ownerId'), false);
   window.document.querySelector('#trpg-enabled').checked = true;
+  window.document.querySelector('#trpg-groups').value = '100001，200001\n100001';
+  window.document.querySelector('#trpg-private').value = '123456 234567';
+  await run('loadTrpgPage()');
+  assert.equal(window.document.querySelector('#trpg-private').value, '123456 234567', '刷新和切页保留白名单草稿');
   await run("handleTrpgClick({dataset:{trpgAction:'settings'}})");
   assert.equal(cfg.trpg.enabled, true);
+  assert.deepEqual(cfg.trpg.allowedGroups, ['100001', '200001']);
+  assert.deepEqual(cfg.trpg.allowedPrivate, ['123456', '234567']);
 });

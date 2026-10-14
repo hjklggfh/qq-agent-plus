@@ -9,7 +9,7 @@ import { validateTrpgPatch } from '../src/features/trpg/config.js';
 function fixture(t, enabled = true) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-trpg-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const cfg = { trpg: { enabled, maxPlayers: 6 } };
+  const cfg = { trpg: { enabled, maxPlayers: 6, allowedGroups: ['100001'], allowedPrivate: ['123456'] } };
   let allowed = true, rolls = 0;
   const manager = new TrpgManager({ dataDir: dir, getConfig: () => cfg, canRun: () => allowed, rng: () => { rolls++; return 11; } });
   return { manager, cfg, dir, deny: () => { allowed = false; }, rolls: () => rolls };
@@ -146,4 +146,48 @@ test('损坏存档拒绝覆盖；导出后仅可删除已结束的团', (t) => {
   const restored = new TrpgManager({ dataDir: f.dir, getConfig: () => f.cfg, canRun: () => true });
   assert.throws(() => restored.saveAsset('worlds', { name: 'a', description: 'b' }));
   assert.equal(fs.readFileSync(f.manager.file, 'utf8'), '{broken');
+});
+
+test('跑团独立白名单默认拒绝，群与私聊隔离，移出后停止并保留存档', (t) => {
+  const f = fixture(t);
+  f.cfg.trpg = { enabled: true };
+  assert.throws(() => begin(f.manager), /白名单/);
+  assert.equal(fs.existsSync(f.manager.file), false);
+  f.cfg.trpg.allowedPrivate = ['100001'];
+  assert.throws(() => begin(f.manager), /白名单/);
+  f.cfg.trpg.allowedGroups = ['100001'];
+  begin(f.manager);
+  assert.equal(f.manager.narratorActive(CHAT), true);
+  f.cfg.trpg.allowedGroups = [];
+  assert.equal(f.manager.narratorActive(CHAT), false);
+  assert.equal(f.manager.isAction(CHAT, HOST, '开门'), false);
+  assert.throws(() => f.manager.tool(context(f.manager), 'trpg_state', {}), /白名单/);
+  f.manager.command(CHAT, HOST, '暂停跑团');
+  const c = f.manager.current(CHAT);
+  assert.throws(() => f.manager.command(CHAT, HOST, '继续跑团'), /白名单/);
+  assert.throws(() => f.manager.manageCampaign(c.id, 'resume', c.revision), /白名单/);
+  f.manager.command(CHAT, HOST, '退出游戏');
+  assert.equal(f.manager.current(CHAT), null);
+  assert.equal(f.manager.snapshot().campaigns[0].status, 'ended');
+  for (const bad of ['123456', ['*'], [123456], ['group:100001'], [' 100001'], ['1234']]) {
+    assert.throws(() => validateTrpgPatch({ allowedGroups: bad }), /白名单/);
+  }
+  validateTrpgPatch({ allowedGroups: [], allowedPrivate: ['123456'] });
+});
+
+test('在册玩家普通消息在开局和重启后自动成为行动，控制指令和旁观者不成为行动', (t) => {
+  const f = fixture(t);
+  begin(f.manager, 'private:123456');
+  assert.equal(f.manager.isAction('private:123456', HOST, '我检查门锁'), true);
+  assert.equal(f.manager.isAction('private:123456', OTHER, '我检查门锁'), false);
+  for (const control of ['退出游戏', '暂停跑团', '跑团状态', '/跑团 状态', '/跑团 掷骰 1d20']) {
+    assert.equal(f.manager.isAction('private:123456', HOST, control), false);
+  }
+  const restored = new TrpgManager({ dataDir: f.dir, getConfig: () => f.cfg, canRun: () => true });
+  const entries = [{ id: 100, ts: Date.now() + 1, senderId: HOST, text: '我检查门锁', eventKind: 'trpg-action' }];
+  assert.match(restored.prompt('private:123456', entries), /跑团主持任务/);
+  assert.equal(restored.actionContext('private:123456', [{ ...entries[0], self: true }]), null);
+  restored.command('private:123456', HOST, '退出游戏');
+  assert.equal(restored.isAction('private:123456', HOST, '我检查门锁'), false);
+  assert.equal(restored.commandText('private:123456', '退出游戏'), '');
 });

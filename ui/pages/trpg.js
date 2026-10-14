@@ -73,7 +73,8 @@ async function handleTrpgClick(target) {
   const { trpgAction: action, kind, id } = target.dataset;
   if (action === 'refresh') { await refreshTrpgData(); return; }
   if (action === 'settings') {
-    await trpgPost('settings', { enabled: $('#trpg-enabled').checked, maxPlayers: Number($('#trpg-max').value) });
+    const parseIds = (selector) => [...new Set($(selector).value.split(/[\s,，;；]+/).filter(Boolean))];
+    await trpgPost('settings', { enabled: $('#trpg-enabled').checked, maxPlayers: Number($('#trpg-max').value), allowedGroups: parseIds('#trpg-groups'), allowedPrivate: parseIds('#trpg-private') });
     await refreshTrpgData(); trpgNotice('跑团设置已保存，立即生效。'); return;
   }
   if (action === 'new') { fillTrpgForm(kind, null); return; }
@@ -134,16 +135,19 @@ async function loadTrpgPage() {
   if (!host.dataset.ready) {
     host.dataset.ready = 'true';
     host.innerHTML = `<header><h2>跑团工作台</h2><p class="muted">单人或1—6人小团 · 自定义角色与世界 · 真实骰点 · 持久化存档</p></header>
-      <section class="trpg-card"><div class="trpg-actions"><label><input type="checkbox" id="trpg-enabled"> 开启跑团</label><label>人数上限 <input type="number" id="trpg-max" min="1" max="6" value="6"></label><button class="btn btn-primary" data-trpg-action="settings">保存设置</button><button class="btn" data-trpg-action="refresh">刷新存档</button></div><p class="hint">仅在机器人已授权的私聊或群内使用。关闭后保留所有卡片和存档；剧情生成使用当前聊天模型并计入原有预算。</p></section>
+      <section class="trpg-card"><div class="trpg-actions"><label><input type="checkbox" id="trpg-enabled"> 开启跑团</label><label>人数上限 <input type="number" id="trpg-max" min="1" max="6" value="6"></label><button class="btn btn-primary" data-trpg-action="settings">保存设置</button><button class="btn" data-trpg-action="refresh">刷新存档</button></div>
+      <div class="trpg-grid trpg-allowlists"><label for="trpg-groups">群聊白名单（群号）<textarea id="trpg-groups" rows="3" placeholder="每行一个群号，也可用逗号分隔"></textarea></label><label for="trpg-private">私聊白名单（QQ号）<textarea id="trpg-private" rows="3" placeholder="每行一个QQ号，也可用逗号分隔"></textarea></label></div>
+      <p class="hint">只有白名单中的群聊／私聊可以开团，还需满足机器人全局授权与运行时段。名单留空表示禁止该类会话开团；移出名单立即停止游戏接管，卡片与存档保留。游戏开始后直接发消息行动，团主可用“退出游戏”结束。剧情生成计入原有模型预算。</p></section>
       <p id="trpg-notice" role="status" aria-live="polite"></p>
       <details class="trpg-card"><summary>如何开始？</summary><pre class="trpg-pre">/跑团 列表
 /跑团 开团 mist-harbor
 /跑团 加入 traveler
 /跑团 开始
-/跑团 行动 我举起提灯，观察码头上的脚印
+我举起提灯，观察码头上的脚印
 /跑团 状态
 /跑团 暂停
-/跑团 继续</pre><p>世界观决定背景、风格和开场；角色卡决定人物与初始属性、物品。默认以1d20加属性检定，通常难度12；HP归零表示失去行动能力，由剧情决定后续。聊天中的 /跑团 世界 名称 | 设定 和 /跑团 角色 名称 | 描述 可快速建卡。</p></details>
+/跑团 继续
+退出游戏</pre><p>先在上方加入允许开团的群号／QQ号并保存。游戏开始后，在册玩家的普通消息自动作为行动，不需要前缀或@；旁观者不会推进剧情。世界观决定背景、风格和开场；角色卡决定人物与初始属性、物品。默认以1d20加属性检定，通常难度12；HP归零表示失去行动能力，由剧情决定后续。聊天中的 /跑团 世界 名称 | 设定 和 /跑团 角色 名称 | 描述 可快速建卡。</p></details>
       <div class="trpg-grid">${trpgEditor('worlds')}${trpgEditor('characters')}</div><h2>游戏存档</h2><div id="trpg-campaigns" class="trpg-grid"></div>`;
     host.addEventListener('click', (event) => {
       const target = event.target.closest('[data-trpg-action]');
@@ -168,6 +172,8 @@ async function loadTrpgPage() {
     if (!host.dataset.settingsLoaded) {
       $('#trpg-enabled').checked = state.trpgData?.settings?.enabled === true;
       $('#trpg-max').value = state.trpgData?.settings?.maxPlayers || 6;
+      $('#trpg-groups').value = (state.trpgData?.settings?.allowedGroups || []).join('\n');
+      $('#trpg-private').value = (state.trpgData?.settings?.allowedPrivate || []).join('\n');
       host.dataset.settingsLoaded = 'true';
     }
   } catch (error) { trpgNotice(error.message); }

@@ -361,3 +361,22 @@ test('三个带凭据映射的段（asr/tts/imageGen）：手改坏成标量/数
   updateConfig({ asr: { provider: 'tencent', keys: { tencent: { secretId: 'AKID', secretKey: 'SK' } } } });
   assert.deepEqual(getConfig().asr.keys.tencent, { secretId: 'AKID', secretKey: 'SK' });
 });
+
+test('跑团白名单独立持久化，部分设置保留名单，清空即撤销且拒绝非法名单', async () => {
+  const { updateConfig, getConfig } = await import('../src/core/config.js');
+  assert.deepEqual(DEFAULT_CONFIG.trpg.allowedGroups, []);
+  assert.deepEqual(DEFAULT_CONFIG.trpg.allowedPrivate, []);
+  const globalAllow = structuredClone(getConfig().allow);
+  updateConfig({ trpg: { enabled: true, allowedGroups: ['100001'], allowedPrivate: ['123456'] } });
+  updateConfig({ trpg: { maxPlayers: 3 } });
+  assert.deepEqual(getConfig().trpg.allowedGroups, ['100001']);
+  assert.deepEqual(getConfig().allow, globalAllow);
+  updateConfig({ trpg: { allowedGroups: [] } });
+  assert.deepEqual(getConfig().trpg.allowedGroups, []);
+  assert.deepEqual(getConfig().trpg.allowedPrivate, ['123456']);
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
+  assert.deepEqual(saved.trpg.allowedGroups, []);
+  assert.deepEqual(saved.trpg.allowedPrivate, ['123456']);
+  assert.throws(() => updateConfig({ trpg: { allowedPrivate: ['*'] } }), /白名单/);
+  assert.deepEqual(getConfig().trpg.allowedPrivate, ['123456']);
+});

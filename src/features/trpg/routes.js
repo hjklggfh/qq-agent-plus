@@ -32,7 +32,8 @@ export function installTrpgRoutes(app, manager) {
   add('GET', '/api/trpg', () => manager.snapshot());
   add('POST', '/api/trpg/settings', (body) => {
     validateTrpgPatch(body);
-    app.updateConfig({ trpg: { enabled: body.enabled, maxPlayers: body.maxPlayers } });
+    const patch = Object.fromEntries(['enabled', 'maxPlayers', 'allowedGroups', 'allowedPrivate'].filter((key) => Object.hasOwn(body, key)).map((key) => [key, body[key]]));
+    app.updateConfig({ trpg: patch });
     app.enforceTrpgState();
     return { ok: true, settings: manager.settings() };
   });

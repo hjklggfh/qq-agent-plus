@@ -1047,6 +1047,8 @@ export function createApp({
     }
 
     if (!text && !media.length) return;
+    const trpgCommand = !isSelf ? trpg.commandText(chatKey, text) : '';
+    const trpgAction = !isSelf && trpg.isAction(chatKey, String(senderId), text);
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1057,10 +1059,10 @@ export function createApp({
         ? '[表情包]' : '[图片]'),
       reply,
       media,
-      mentionsSelf: mentionsSelf || (!isSelf && trpg.isAction(chatKey, senderId, text)),
+      mentionsSelf: mentionsSelf || trpgAction,
       // 引擎发的游戏私聊（身份/查验结果/行动回执）标成 game-secret：提示词构建时会过滤掉，
       // 模型在私聊里不该是上帝视角（2026-09-29 审查 P2）
-      eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : 'message'
+      eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
       recordOnly: arrivedInactive || !isTimeActive(chatKey)
@@ -1073,15 +1075,15 @@ export function createApp({
         log('[sticker] 自动收藏失败:', error?.message ?? error));
     }
     emit('chat-update', chatKey);
-    // JM 是宿主内置功能：明确的 JM 指令直接交给功能处理，避免先唤醒模型猜测。
-    if (!isSelf && /^\/跑团(?:\s|$)/.test(text.trim())) {
+    // 跑团优先接管本窗口，行动不再落入下载器或普通聊天触发逻辑。
+    if (!isSelf && (trpgCommand || trpg.narratorActive(chatKey))) {
       if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) {
         store.markRead(chatKey, [stored.id]);
         return;
       }
       let result;
       try {
-        result = trpg.command(chatKey, String(senderId), text, stored.id);
+        result = trpgCommand ? trpg.command(chatKey, String(senderId), trpgCommand, stored.id) : trpgAction ? { narrative: true } : null;
         orchestrator.enforceTrpgState();
       } catch (error) {
         result = { reply: String(error.message) };
@@ -1093,6 +1095,8 @@ export function createApp({
         emit('chat-update', chatKey);
         return;
       }
+      orchestrator.onIncoming(chatKey);
+      return;
     }
     // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
     if (!isSelf && jmFeature?.handleMessage) {

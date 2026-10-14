@@ -3289,6 +3289,9 @@ dialog { margin: auto; max-height: 88vh; }
 .trpg-editor textarea { resize: vertical; min-height: 70px; font: inherit; }
 .trpg-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .trpg-actions input[type="number"] { width: 70px; }
+.trpg-allowlists { margin-top: 16px; }
+.trpg-allowlists label { display: flex; flex-direction: column; gap: 6px; }
+.trpg-allowlists textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; }
 .trpg-import { cursor: pointer; position: relative; overflow: hidden; }
 .trpg-import input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
 .trpg-list-item { border-top: 1px solid var(--line, #8893a544); padding: 12px 0; overflow-wrap: anywhere; }

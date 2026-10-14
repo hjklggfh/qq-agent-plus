@@ -451,8 +451,8 @@ export class Orchestrator {
     const manager = this.getTrpg();
     for (const [chatKey, id] of this.trpgRuns) {
       const c = manager?.current(chatKey);
-      if (!manager?.settings().enabled || c?.id !== id || c.status !== 'playing') {
-        this.controllers.get(chatKey)?.abort(new Error('跑团已暂停、结束或关闭'));
+      if (!manager?.narratorActive(chatKey) || c?.id !== id || c.status !== 'playing') {
+        this.controllers.get(chatKey)?.abort(new Error('跑团已暂停、结束、关闭或移出白名单'));
       }
     }
   }
@@ -1533,6 +1533,16 @@ export class Orchestrator {
     const trpg = this.getTrpg();
     const trpgNarrator = trpg?.narratorActive(chatKey) === true;
     session.trpgNarrator = trpgNarrator;
+    const trpgAction = !proactive && !privateProactive ? trpg?.actionContext(chatKey, triggerEntries) : null;
+    // 失效行动不退化成普通聊天；同批次退出游戏后的新聊天仍正常处理。
+    if (!trpgAction && triggerEntries?.some((m) => m.eventKind === 'trpg-action')) {
+      triggerEntries = triggerEntries.filter((m) => m.eventKind !== 'trpg-action');
+      if (!triggerEntries.length) return null;
+    }
+    if (trpgAction) {
+      this.trpgRuns.set(chatKey, trpgAction.campaign.id);
+      session.trpgCampaignId = trpgAction.campaign.id;
+    }
     const chatName = kind === 'group' ? await this.#chatName(chatId) : '';
     const selfNickname = kind === 'group' ? (cfg.persona.selfNickname || this.onebot.selfNickname || cfg.persona.botName) : cfg.persona.botName;
     let thread = conversationCfg.mode !== 'legacy'
@@ -1579,11 +1589,6 @@ export class Orchestrator {
     const selfWakeEnabled = cfg.proactive?.selfWakeEnabled !== false;
     // 图片生成按张计费：没开/没配就不注入工具，否则模型会去调一个必然失败的画图工具
     const imageGenEnabled = imageGenAvailable(cfg);
-    const trpgAction = !proactive && !privateProactive ? trpg?.actionContext(chatKey, triggerEntries) : null;
-    if (trpgAction) {
-      this.trpgRuns.set(chatKey, trpgAction.campaign.id);
-      session.trpgCampaignId = trpgAction.campaign.id;
-    }
     const toolDefs = [...this.toolDefs, ...(trpgAction ? trpgToolDefs() : [])].filter((d) => {
       if (d.feature === 'trpg' && !trpgAction) return false;
       if (trpgAction && !['send_message', 'finish', 'trpg_state', 'trpg_roll', 'trpg_update'].includes(d.name)) return false;
@@ -1620,7 +1625,7 @@ export class Orchestrator {
       if (trpgAction) return {
         ...definition,
         async execute(ctx, args) {
-          if (ctx.signal?.aborted || !trpg.settings().enabled || trpg.current(chatKey)?.id !== trpgAction.campaign.id || trpg.current(chatKey)?.status !== 'playing') {
+          if (ctx.signal?.aborted || !trpg.narratorActive(chatKey) || trpg.current(chatKey)?.id !== trpgAction.campaign.id || trpg.current(chatKey)?.status !== 'playing') {
             throw new Error('跑团已暂停、结束或关闭');
           }
           if (definition.name === 'send_message' && ctx.session.trpgSavedRevision !== trpg.current(chatKey).revision) {
