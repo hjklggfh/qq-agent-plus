@@ -1,4 +1,5 @@
 import { validateTrpgPatch } from './config.js';
+import { PATHWAYS, BUILD_STYLES, TACTICAL_RULESET } from './catalog.js';
 
 async function readBody(req) {
   const chunks = [];
@@ -30,6 +31,7 @@ export function installTrpgRoutes(app, manager) {
     }
   });
   add('GET', '/api/trpg', () => manager.snapshot());
+  add('GET', '/api/trpg/catalog', () => ({ pathways: PATHWAYS, styles: BUILD_STYLES, ruleset: TACTICAL_RULESET, maxSequence: 5 }));
   add('POST', '/api/trpg/settings', (body) => {
     validateTrpgPatch(body);
     const patch = Object.fromEntries(['enabled', 'maxPlayers', 'allowedGroups', 'allowedPrivate'].filter((key) => Object.hasOwn(body, key)).map((key) => [key, body[key]]));

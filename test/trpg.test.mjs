@@ -124,7 +124,7 @@ test('普通闲聊不注入跑团；旧团行动不能用于新团；暂停后�
 
 test('文档中的角色卡和世界观示例可直接验证并保存', (t) => {
   const f = fixture(t);
-  for (const filename of ['character', 'world']) {
+  for (const filename of ['character', 'world', 'tactical-character', 'tactical-world']) {
     const input = JSON.parse(fs.readFileSync(new URL(`../docs/examples/trpg/${filename}.json`, import.meta.url), 'utf8'));
     const saved = f.manager.saveAsset(input.kind, input.asset);
     assert.ok(saved.id);
@@ -167,6 +167,8 @@ test('跑团独立白名单默认拒绝，群与私聊隔离，移出后停止�
   assert.throws(() => f.manager.command(CHAT, HOST, '继续跑团'), /白名单/);
   assert.throws(() => f.manager.manageCampaign(c.id, 'resume', c.revision), /白名单/);
   f.manager.command(CHAT, HOST, '退出游戏');
+  assert.equal(f.manager.current(CHAT).status, 'paused');
+  f.manager.command(CHAT, HOST, '/跑团 结束');
   assert.equal(f.manager.current(CHAT), null);
   assert.equal(f.manager.snapshot().campaigns[0].status, 'ended');
   for (const bad of ['123456', ['*'], [123456], ['group:100001'], [' 100001'], ['1234']]) {
@@ -189,5 +191,7 @@ test('在册玩家普通消息在开局和重启后自动成为行动，控制�
   assert.equal(restored.actionContext('private:123456', [{ ...entries[0], self: true }]), null);
   restored.command('private:123456', HOST, '退出游戏');
   assert.equal(restored.isAction('private:123456', HOST, '我检查门锁'), false);
+  assert.equal(restored.current('private:123456').status, 'paused');
+  restored.command('private:123456', HOST, '/跑团 结束');
   assert.equal(restored.commandText('private:123456', '退出游戏'), '');
 });

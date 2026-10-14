@@ -593,6 +593,7 @@ export class Orchestrator {
 
   /** 自主节奏是否作用于该会话（按 pacing.scope 判定）。 */
   #pacingApplies(chatKey) {
+    if (this.getTrpg()?.narratorActive(chatKey)) return false;
     const p = getConfig().pacing || {};
     if (p.enabled !== true) return false;
     // 硬规则：私聊里每句话都是直接对它说的 —— 永远即时回复，不排队
@@ -1012,6 +1013,7 @@ export class Orchestrator {
   }
 
   async #wake(chatKey, { proactive = false, privateProactive = false, manual = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
+    if (proactive && this.getTrpg()?.narratorActive(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return; }
     if (!canRun(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return; }
     if (!this.#chatRuntimeDecision(chatKey).allowed) {
       if (waitingSessionId) this.#discardWaiting(waitingSessionId);
@@ -1534,6 +1536,7 @@ export class Orchestrator {
     const trpgNarrator = trpg?.narratorActive(chatKey) === true;
     session.trpgNarrator = trpgNarrator;
     const trpgAction = !proactive && !privateProactive ? trpg?.actionContext(chatKey, triggerEntries) : null;
+    if (!trpgAction && trpgNarrator && trpg.current(chatKey)?.ruleset === 'lotm-tactical-v1') return null;
     // 失效行动不退化成普通聊天；同批次退出游戏后的新聊天仍正常处理。
     if (!trpgAction && triggerEntries?.some((m) => m.eventKind === 'trpg-action')) {
       triggerEntries = triggerEntries.filter((m) => m.eventKind !== 'trpg-action');
@@ -1589,9 +1592,10 @@ export class Orchestrator {
     const selfWakeEnabled = cfg.proactive?.selfWakeEnabled !== false;
     // 图片生成按张计费：没开/没配就不注入工具，否则模型会去调一个必然失败的画图工具
     const imageGenEnabled = imageGenAvailable(cfg);
-    const toolDefs = [...this.toolDefs, ...(trpgAction ? trpgToolDefs() : [])].filter((d) => {
+    const tacticalTrpg = trpgAction?.campaign?.ruleset === 'lotm-tactical-v1';
+    const toolDefs = [...this.toolDefs, ...(trpgAction ? trpgToolDefs(tacticalTrpg) : [])].filter((d) => {
       if (d.feature === 'trpg' && !trpgAction) return false;
-      if (trpgAction && !['send_message', 'finish', 'trpg_state', 'trpg_roll', 'trpg_update'].includes(d.name)) return false;
+      if (trpgAction && !['send_message', 'finish'].includes(d.name) && d.feature !== 'trpg') return false;
       if (trpgNarrator && ['send_face', 'send_poke'].includes(d.name)) return false;
       // 主动私信每轮至多一条文本。其它外发工具（含插件工具）不进入这一轮，
       // 避免模型绕开每日额度和“未回复不追发”的记账。
@@ -1631,8 +1635,16 @@ export class Orchestrator {
           if (definition.name === 'send_message' && ctx.session.trpgSavedRevision !== trpg.current(chatKey).revision) {
             throw new Error('请先用trpg_update成功保存本轮最新状态，再发送剧情');
           }
-          const result = await definition.execute(ctx, args);
-          if (definition.name === 'trpg_update' && !result?.isError) ctx.session.trpgSavedRevision = trpg.current(chatKey).revision;
+          let input = args;
+          if (tacticalTrpg && definition.name === 'send_message') {
+            const panel = trpg.panel(chatKey);
+            const messages = Array.isArray(args.messages) ? [...args.messages] : [args.messages];
+            messages[messages.length - 1] = `${messages.at(-1) || ''}\n\n${panel}`;
+            input = { ...args, messages };
+          }
+          const result = await definition.execute(ctx, input);
+          if (definition.name === 'trpg_update' && !result?.isError) ctx.session.trpgHasNarrativeUpdate = true;
+          if (!result?.isError && (definition.name === 'trpg_update' || tacticalTrpg && definition.name.startsWith('trpg_') && ctx.session.trpgHasNarrativeUpdate)) ctx.session.trpgSavedRevision = trpg.current(chatKey).revision;
           return result;
         }
       };

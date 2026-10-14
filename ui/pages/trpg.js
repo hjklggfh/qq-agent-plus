@@ -17,18 +17,35 @@ function trpgDownload(name, value) {
 
 function trpgEditor(kind) {
   const world = kind === 'worlds';
+  const pathways = state.trpgCatalog?.pathways || [];
   return `<form class="trpg-card trpg-editor" data-trpg-form="${kind}">
     <h3>${world ? '世界观' : '角色卡'}</h3>
     <input name="id" type="hidden">
     <label>名称<input name="name" maxlength="60" required placeholder="${world ? '雾港来信' : '你的角色名'}"></label>
     <label>${world ? '背景设定' : '外貌、性格、经历和能力'}<textarea name="description" rows="6" maxlength="12000" required placeholder="直接粘贴设定文本"></textarea></label>
-    ${world ? '<label>开场<textarea name="opening" rows="3" maxlength="4000" placeholder="玩家抵达时发生的第一幕"></textarea></label><label>世界规则与风格<textarea name="rules" rows="3" maxlength="4000" placeholder="时代、魔法边界、禁忌、剧情风格等"></textarea></label>'
-    : '<label>初始生命值<input name="hp" type="number" min="1" max="1000" value="10" required></label><label>属性修正值（JSON，-5至10）<textarea name="attributes" rows="3">{"力量":0,"敏捷":1,"感知":2,"交涉":1}</textarea></label><label>初始物品（每行一项）<textarea name="inventory" rows="3" placeholder="提灯\n绳索"></textarea></label>'}
+    ${world ? '<label>规则模式<select name="ruleset"><option value="narrative">原有轻量叙事</option value="lotm-tactical-v1">诡秘战术长期战役（序列9—5）</option></select></label><label>开场<textarea name="opening" rows="3" maxlength="4000" placeholder="玩家抵达时发生的第一幕"></textarea></label><label>世界规则与风格<textarea name="rules" rows="3" maxlength="4000" placeholder="时代、魔法边界、禁忌、剧情风格等"></textarea></label>'
+    : `<label>途径<select name="pathway"><option value="">旧叙事角色（无结构化途径）</option>${pathways.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} · 序列9 ${esc(p.sequences[0].name)}</option>`).join('')}</select></label><div class="hint">选择途径后：新角色HP10，四属性-1至2且总和≤4，最高成长至序列5。QQ发送 /跑团 建角 可用编号引导，无需填写JSON。</div><label>初始生命值<input name="hp" type="number" min="1" max="1000" value="10" required></label><label>属性修正值（JSON）<textarea name="attributes" rows="3">{"力量":0,"敏捷":1,"感知":2,"交涉":1}</textarea></label><label>初始物品（每行一个单位）<textarea name="inventory" rows="3" placeholder="提灯\n绷带"></textarea></label>`}
     <div class="trpg-actions"><button class="btn btn-primary" type="submit">保存${world ? '世界观' : '角色卡'}</button><button class="btn" type="button" data-trpg-action="new" data-kind="${kind}">新建</button>
     <label class="btn trpg-import">导入 JSON / TXT<input type="file" accept=".json,.txt,.md" data-trpg-import="${kind}"></label></div>
     <div class="hint">支持设定纯文本及本页导出的 JSON。角色卡也可导入酒馆 JSON 的基础描述；不导入脚本、插件或 PNG 卡。</div>
     <div id="trpg-${kind}-list"></div>
   </form>`;
+}
+
+function renderTrpgBattle(c) {
+  const b = c.combat;
+  if (!b) return '';
+  const current = b.units.find((u) => u.id === b.order[b.cursor]);
+  let cells = '';
+  for (let y = 0; y < b.height; y++) for (let x = 0; x < b.width; x++) {
+    const same = (p) => p.x === x && p.y === y;
+    const unit = b.units.find((u) => !u.escaped && u.hp > 0 && same(u.at));
+    const wall = b.walls.some(same), hazard = b.hazards.find((v) => same(v.at));
+    const object = b.objects.find((v) => !v.used && same(v.at)), cover = b.cover.some((v) => same(v.at));
+    const label = `${String.fromCharCode(65 + x)}${y + 1}`;
+    cells += `<div class="trpg-cell ${unit ? unit.side === 'players' ? 'trpg-ally' : 'trpg-enemy' : wall ? 'trpg-wall' : hazard ? 'trpg-hazard' : ''}" title="${esc(label + ' ' + (unit?.name || object?.label || hazard?.label || (cover ? '掩体' : '空地')))}"><small>${label}</small><b>${esc(unit ? unit.name.slice(0, 2) : wall ? '#' : object ? '?' : hazard ? '!' : cover ? '+' : '·')}</b></div>`;
+  }
+  return `<section class="trpg-battle"><p>第${esc(b.round)}轮 · ${esc({ active: '战斗中', won: '胜利', defeated: '全队倒地，可求援', retreated: '已撤离', rescued: '已获救' }[b.status])} · 当前 ${esc(current?.name || '—')}</p><div class="trpg-board" style="grid-template-columns:repeat(${Number(b.width)},minmax(0,1fr))">${cells}</div><p class="hint">蓝色队友／红色敌人 · #墙 · +掩体 · !危险 · ?互动。实际行动由对应QQ玩家选择，工作台不代替玩家操作。</p><div>${b.units.map((u) => `<span class="trpg-unit">${esc(u.name)} HP${esc(u.hp)}/${esc(u.maxHp)}</span>`).join('')}</div></section>`;
 }
 
 function renderTrpgLists() {
@@ -44,7 +61,9 @@ function renderTrpgLists() {
   campaigns.innerHTML = (data.campaigns || []).slice().reverse().map((c) => `<article class="trpg-card"><h3>${esc(c.title)} <span class="muted">${esc(TRPG_STATUS[c.status] || c.status)}</span></h3>
     <div class="hint">${esc(c.chatKey)} · 团主 ${esc(c.hostId)} · 存档 ${esc(c.id)} · 版本 ${esc(c.revision)}</div>
     <p>地点：${esc(c.location || '未定')}</p><p class="trpg-pre">${esc(c.summary || c.world?.opening || '尚未开始')}</p>
-    ${(c.players || []).map((p) => `<p>${esc(p.character.name)}（${esc(p.userId)}） · HP ${esc(p.hp)}/${esc(p.character.hp)} · ${esc(p.condition || '正常')}<br><span class="muted">背包：${esc(p.inventory.join('、') || '无')}</span></p>`).join('')}
+    ${(c.players || []).map((p) => `<p>${esc(p.character.name)}（${esc(p.userId)}） · HP ${esc(p.hp)}/${esc(p.character.hp + (p.progress ? (9 - p.progress.sequence) * 2 : 0))} · ${esc(p.condition || '正常')}
+      ${p.progress ? `<br><b>${p.away ? '暂离 · ' : ''}序列${esc(p.progress.sequence)} · 灵性${esc(p.progress.spirit)}/${6 + (9 - p.progress.sequence) * 2} · 污染${esc(p.progress.pollution)}/6 · 消化${esc(p.progress.digestion)}/${6 + (9 - p.progress.sequence) * 2}</b>` : ''}<br><span class="muted">背包：${esc(p.inventory.join('、') || '无')}</span></p>`).join('')}
+    ${c.ruleset ? `<p class="hint">第${esc(c.chapter)}章 · 游戏内累计${esc(c.clock)}分钟 · 危险累计${esc(c.dangerClock || 0)}分钟${c.clockPaused ? '（暂停）' : ''} · ${c.safe ? '安全休整' : '冒险场景'} · 场景${esc(c.scene?.name || '')}</p>${renderTrpgBattle(c)}<details><summary>任务、NPC与成长证据</summary>${(c.journal || []).map((j) => `<p>${j.status === 'done' ? '✓' : '○'} ${esc(j.text)}</p>`).join('') || '<p>暂无任务日志</p>'}${(c.npcs || []).map((n) => `<p>${esc(n.name)} · ${esc(n.location)} · 态度${esc(n.attitude)}<br><span class="hint">${esc(n.notes)}</span></p>`).join('')}${(c.rewards || []).slice(-10).map((r) => `<p class="hint">${esc(r.userId)} · ${esc(r.kind)} · ${esc(r.evidence)}</p>`).join('')}</details>` : ''}
     <div class="trpg-actions"><button class="btn" data-trpg-action="export-campaign" data-id="${esc(c.id)}">导出存档</button>
     ${c.status === 'playing' ? `<button class="btn" data-trpg-action="pause" data-id="${esc(c.id)}">暂停</button>` : ''}
     ${c.status === 'paused' ? `<button class="btn" data-trpg-action="resume" data-id="${esc(c.id)}">继续</button>` : ''}
@@ -65,6 +84,11 @@ function fillTrpgForm(kind, asset) {
   for (const [key, value] of Object.entries(asset || {})) {
     const input = form.elements.namedItem(key);
     if (input) input.value = key === 'attributes' ? JSON.stringify(value, null, 2) : key === 'inventory' ? value.join('\n') : value;
+  }
+  if (kind === 'characters' && asset?.pathway) {
+    const p = (state.trpgCatalog?.pathways || []).find((p) => p.id === asset.pathway || p.name === asset.pathway);
+    if (!p) throw new Error('无法识别途径，请刷新页面加载22途径目录');
+    form.elements.namedItem('pathway').value = p.id;
   }
   form.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
 }
@@ -102,8 +126,8 @@ async function submitTrpgCard(form) {
   const get = (name) => form.elements.namedItem(name)?.value || '';
   const asset = { name: get('name'), description: get('description') };
   if (get('id')) asset.id = get('id');
-  if (kind === 'worlds') Object.assign(asset, { opening: get('opening'), rules: get('rules') });
-  else Object.assign(asset, { hp: Number(get('hp')), attributes: JSON.parse(get('attributes')), inventory: get('inventory').split('\n').map((s) => s.trim()).filter(Boolean) });
+  if (kind === 'worlds') Object.assign(asset, { opening: get('opening'), rules: get('rules'), ...(get('ruleset') === 'lotm-tactical-v1' ? { ruleset: get('ruleset') } : {}) });
+  else Object.assign(asset, { hp: Number(get('hp')), attributes: JSON.parse(get('attributes')), inventory: get('inventory').split('\n').map((s) => s.trim()).filter(Boolean), ...(get('pathway') ? { pathway: get('pathway'), sequence: 9 } : {}) });
   const saved = await trpgPost('asset', { kind, asset });
   form.elements.namedItem('id').value = saved.id;
   await refreshTrpgData(); trpgNotice(`已保存「${saved.name}」。已有存档使用原快照，新开团才使用新设定。`);
@@ -133,21 +157,24 @@ async function loadTrpgPage() {
   const host = $('#trpg-page');
   if (!host) return;
   if (!host.dataset.ready) {
+    try { state.trpgCatalog = await api('/api/trpg/catalog'); } catch { state.trpgCatalog = null; }
     host.dataset.ready = 'true';
-    host.innerHTML = `<header><h2>跑团工作台</h2><p class="muted">单人或1—6人小团 · 自定义角色与世界 · 真实骰点 · 持久化存档</p></header>
+    host.innerHTML = `<header><h2>跑团工作台</h2><p class="muted">22途径自建 · 序列9—5长期成长 · 多人编号行动 · 战术地图与真实骰点</p></header>
       <section class="trpg-card"><div class="trpg-actions"><label><input type="checkbox" id="trpg-enabled"> 开启跑团</label><label>人数上限 <input type="number" id="trpg-max" min="1" max="6" value="6"></label><button class="btn btn-primary" data-trpg-action="settings">保存设置</button><button class="btn" data-trpg-action="refresh">刷新存档</button></div>
       <div class="trpg-grid trpg-allowlists"><label for="trpg-groups">群聊白名单（群号）<textarea id="trpg-groups" rows="3" placeholder="每行一个群号，也可用逗号分隔"></textarea></label><label for="trpg-private">私聊白名单（QQ号）<textarea id="trpg-private" rows="3" placeholder="每行一个QQ号，也可用逗号分隔"></textarea></label></div>
-      <p class="hint">只有白名单中的群聊／私聊可以开团，还需满足机器人全局授权与运行时段。名单留空表示禁止该类会话开团；移出名单立即停止游戏接管，卡片与存档保留。游戏开始后直接发消息行动，团主可用“退出游戏”结束。剧情生成计入原有模型预算。</p></section>
+      <p class="hint">只有白名单中的群聊／私聊可以开团，还需满足全局授权与时段。空名单禁止开团；移出名单立即停止并保留存档。退出游戏＝保存暂停；结束战役＝团主确认归档。规则引擎接收编号与结算战斗，剧情生成计入原有模型预算。</p></section>
       <p id="trpg-notice" role="status" aria-live="polite"></p>
       <details class="trpg-card"><summary>如何开始？</summary><pre class="trpg-pre">/跑团 列表
-/跑团 开团 mist-harbor
-/跑团 加入 traveler
+/跑团 开团
+/跑团 建角
 /跑团 开始
 我举起提灯，观察码头上的脚印
 /跑团 状态
 /跑团 暂停
 /跑团 继续
-退出游戏</pre><p>先在上方加入允许开团的群号／QQ号并保存。游戏开始后，在册玩家的普通消息自动作为行动，不需要前缀或@；旁观者不会推进剧情。世界观决定背景、风格和开场；角色卡决定人物与初始属性、物品。默认以1d20加属性检定，通常难度12；HP归零表示失去行动能力，由剧情决定后续。聊天中的 /跑团 世界 名称 | 设定 和 /跑团 角色 名称 | 描述 可快速建卡。</p></details>
+/跑团 成长
+/跑团 能力
+退出游戏</pre><p>先保存允许的群号／QQ号。每名玩家发送建角指令，按编号选途径、输入姓名与背景、选择属性并确认；创建后加入当前待开始战役。团主开始后，各自回复本人菜单序号或自由描述。探索收集全员意图，战斗轮到谁由谁行动。原有叙事世界和卡片仍可用指定ID开团；新世界选择战术模式即可使用规则引擎。</p></details>
       <div class="trpg-grid">${trpgEditor('worlds')}${trpgEditor('characters')}</div><h2>游戏存档</h2><div id="trpg-campaigns" class="trpg-grid"></div>`;
     host.addEventListener('click', (event) => {
       const target = event.target.closest('[data-trpg-action]');

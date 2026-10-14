@@ -1049,6 +1049,7 @@ export function createApp({
     if (!text && !media.length) return;
     const trpgCommand = !isSelf ? trpg.commandText(chatKey, text) : '';
     const trpgAction = !isSelf && trpg.isAction(chatKey, String(senderId), text);
+    const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1076,14 +1077,14 @@ export function createApp({
     }
     emit('chat-update', chatKey);
     // 跑团优先接管本窗口，行动不再落入下载器或普通聊天触发逻辑。
-    if (!isSelf && (trpgCommand || trpg.narratorActive(chatKey))) {
+    if (!isSelf && (trpgCommand || trpgManaged || trpg.narratorActive(chatKey))) {
       if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) {
         store.markRead(chatKey, [stored.id]);
         return;
       }
       let result;
       try {
-        result = trpgCommand ? trpg.command(chatKey, String(senderId), trpgCommand, stored.id) : trpgAction ? { narrative: true } : null;
+        result = trpgCommand ? trpg.command(chatKey, String(senderId), trpgCommand, stored.id) : trpgManaged ? trpg.receive(chatKey, String(senderId), text, stored.id) : trpgAction ? { narrative: true } : null;
         orchestrator.enforceTrpgState();
       } catch (error) {
         result = { reply: String(error.message) };

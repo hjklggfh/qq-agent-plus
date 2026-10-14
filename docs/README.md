@@ -28,6 +28,8 @@
 | [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
 | [JM-SUOMINGOR.md](JM-SUOMINGOR.md) | JM 禁漫下载内置功能：设置、工具和受限 OneBot 文件操作 |
 | [TRPG.md](TRPG.md) | 单人/小群轻量跑团：角色卡、世界观、真实骰点、持久化存档与QQ指令 |
+| [TRPG-TACTICAL.md](TRPG-TACTICAL.md) | 诡秘战术长期战役：22途径、序列9—5、编号行动、规则战斗与存档迁移 |
+| [TRPG-CARD-GUIDE.md](TRPG-CARD-GUIDE.md) | 世界观与角色卡字段、模板、AI生成提示词和战术格式补充 |
 
 ## 开发与维护
 

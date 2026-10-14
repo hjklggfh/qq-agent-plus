@@ -1,0 +1,24 @@
+{
+  "format": "qq-agent-trpg",
+  "version": 1,
+  "kind": "characters",
+  "asset": {
+    "name": "林澜",
+    "description": "独立调查员，与灰堤失踪工人相识。谨慎、好奇，愿意与队伍合作，寻找失踪导师的线索。扮演守则：承认占卜盲区，用证据修正判断。",
+    "pathway": "fool",
+    "sequence": 9,
+    "hp": 10,
+    "attributes": {
+      "力量": 0,
+      "敏捷": 1,
+      "感知": 2,
+      "交涉": 1
+    },
+    "inventory": [
+      "笔记本",
+      "灵摆",
+      "提灯",
+      "绷带"
+    ]
+  }
+}

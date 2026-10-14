@@ -3292,6 +3292,16 @@ dialog { margin: auto; max-height: 88vh; }
 .trpg-allowlists { margin-top: 16px; }
 .trpg-allowlists label { display: flex; flex-direction: column; gap: 6px; }
 .trpg-allowlists textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; }
+.trpg-board { display: grid; gap: 3px; max-width: 600px; }
+.trpg-cell { min-width: 0; aspect-ratio: 1; border: 1px solid var(--line, #8893a544); display: flex; flex-direction: column; justify-content: center; align-items: center; border-radius: 4px; overflow: hidden; }
+.trpg-cell small { font-size: 9px; opacity: .7; }
+.trpg-cell b { font-size: clamp(10px, 1.4vw, 16px); }
+.trpg-ally { background: #277ecb44; }
+.trpg-enemy { background: #cb474744; }
+.trpg-wall { background: #88888844; }
+.trpg-hazard { background: #ca8a2044; }
+.trpg-unit { display: inline-block; margin: 5px 12px 5px 0; font-size: 12px; }
+.trpg-battle { margin: 12px 0; }
 .trpg-import { cursor: pointer; position: relative; overflow: hidden; }
 .trpg-import input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
 .trpg-list-item { border-top: 1px solid var(--line, #8893a544); padding: 12px 0; overflow-wrap: anywhere; }

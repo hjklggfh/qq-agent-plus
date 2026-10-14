@@ -245,7 +245,7 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   await message('退出游戏', '234567');
   assert.equal(app.trpg.current('group:200001').status, 'playing', '只有团主可退出整局');
   await message('退出游戏');
-  assert.equal(app.trpg.current('group:200001'), null);
+  assert.equal(app.trpg.current('group:200001').status, 'paused');
   assert.equal(wakes, 2);
   await message('现在正常聊天');
   assert.equal(wakes, 3, '退出后恢复普通聊天路由');
@@ -256,6 +256,78 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   assert.equal(app.trpg.current('private:123456').status, 'playing');
   assert.equal(wakes, 4, '私聊开始后直接发言行动');
   await privateMessage('退出游戏');
-  assert.equal(app.trpg.current('private:123456'), null);
+  assert.equal(app.trpg.current('private:123456').status, 'paused');
   assert.equal(wakes, 4);
+});
+
+test('战术真实入站与模型链路：双人建角、独立编号、合并意图、规则工具与真实菜单自动发送', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
+  cfg.allow.groups = ['300001'];
+  cfg.trpg = { enabled: true, maxPlayers: 6, allowedGroups: ['300001'], allowedPrivate: [] };
+  cfg.sticker.autoCollect = false; cfg.sticker.enabled = false;
+  cfg.api.apiKey = 'test-key'; cfg.api.model = 'mock'; cfg.api.maxRounds = 8;
+  cfg.persona.roleText = '不能注入战役的聊天人设标记';
+  setRuntimeConfig(cfg);
+  const app = createApp({ log: () => {} }), chat = 'group:300001';
+  const oldFetch = globalThis.fetch;
+  t.after(async () => { globalThis.fetch = oldFetch; await app.stop(); });
+  const replies = [];
+  app.sender.sendTextBatch = async (_chat, messages) => { replies.push(...messages); return { sent: messages.map((text) => ({ text })), failed: [] }; };
+  let wakes = 0, mid = 10000;
+  app.orchestrator.onIncoming = () => { wakes++; };
+  const message = (text, user = '123456', id = ++mid) => app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: 300001, user_id: Number(user), message_id: id, time: Math.floor(Date.now() / 1000), message: text });
+  await message('/跑团 开团');
+  await message('/跑团 建角');
+  await message('1'); await message('艾琳');
+  await message('/跑团 建角', '234567');
+  await message('3', '234567'); await message('诺亚', '234567');
+  for (const actor of ['123456', '234567']) {
+    await message('调查员，与失踪工人相识，愿意合作', actor);
+    await message('2', actor); await message('1', actor);
+  }
+  assert.equal(app.trpg.current(chat).players.length, 2);
+  assert.equal(app.trpg.current(chat).players[1].progress.pathway, 'door');
+  await message('/跑团 开始');
+  assert.equal(wakes, 0);
+  await message('1');
+  assert.equal(wakes, 0, '第一人提交后等待其他玩家');
+  await message('2', '234567');
+  assert.equal(wakes, 1);
+  assert.deepEqual(app.trpg.current(chat).resolved.map((v) => v.text), ['观察周围', '与附近人物交谈']);
+  let calls = 0;
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body), names = body.tools.map((v) => v.function.name);
+    for (const tool of ['trpg_options', 'trpg_encounter', 'trpg_reward', 'trpg_scene', 'trpg_battle_action']) assert.ok(names.includes(tool));
+    assert.equal(JSON.stringify(body.messages).includes('不能注入战役的聊天人设标记'), false);
+    assert.match(JSON.stringify(body.messages), /观察周围/);
+    const queue = [
+      ['trpg_update', { checkId: 'tactical-save', expectedRevision: app.trpg.current(chat).revision, summary: '艾琳观察到墨迹，诺亚向乔纳问话；两人各自保留行动选择。', location: '灰堤码头' }],
+      ['trpg_options', { checkId: 'tactical-options', expectedRevision: app.trpg.current(chat).revision, players: ['123456', '234567'].map((userId) => ({ userId, options: [{ label: userId === '123456' ? '比对工资单' : '检查门锁', minutes: 10 }] })) }],
+      ['send_message', { messages: '乔纳指向厂房，纸上墨迹仍未干。' }],
+      ['finish', { summary: '等待玩家下一轮选择' }]
+    ];
+    const [name, args] = queue[calls++];
+    return Response.json({ choices: [{ message: { role: 'assistant', tool_calls: [{ id: `tactical-${calls}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }], usage: { prompt_tokens: 30, completion_tokens: 10 } });
+  };
+  await app.orchestrator.wake(chat);
+  assert.equal(calls, 4);
+  assert.ok(replies.some((r) => /乔纳指向厂房/.test(r) && /1\. 比对工资单/.test(r) && /1\. 检查门锁/.test(r)), '真实程序菜单自动附在发言中，不依赖模型伪造');
+  const before = app.trpg.current(chat);
+  const selectedId = ++mid;
+  await message('1', '123456', selectedId);
+  await message('1', '123456', selectedId);
+  assert.equal(wakes, 1);
+  assert.equal(app.trpg.current(chat).revision, before.revision + 1);
+  await message('退出游戏');
+  assert.equal(app.trpg.current(chat).status, 'paused');
+  const progress = app.trpg.current(chat).players.map((p) => p.progress);
+  await message('继续跑团');
+  assert.deepEqual(app.trpg.current(chat).players.map((p) => p.progress), progress);
+  await message('结束战役');
+  assert.equal(app.trpg.current(chat).status, 'playing');
+  await message('/跑团 确认结束');
+  assert.equal(app.trpg.current(chat), null);
 });
