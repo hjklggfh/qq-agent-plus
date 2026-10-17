@@ -154,6 +154,7 @@ function json(res, status, value) {
 
 function requirePluginId(raw) {
   const id = String(raw ?? '').trim();
+  if (id === PIXIV_PLUGIN_ID) throw new Error('Pixiv 已迁为内置功能，请到“设置 → PID 搜索”管理；旧插件数据仅保留供迁移与回滚。');
   if (!PLUGIN_ID_PATTERN.test(id)) {
     throw new Error(`插件 id 不合法：${JSON.stringify(raw)}（小写字母开头，只含小写字母/数字/短横线）`);
   }
