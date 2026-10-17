@@ -102,7 +102,11 @@ test('PDF独立页数上限超过卡片20页且有序打包，不发送任何图
   assert.deepEqual(captured.inputs.map((p) => p.page), Array.from({ length: 25 }, (_, i) => i + 1));
   assert.equal(f.forwards.length, 0); assert.doesNotMatch(captured.name, /部分/);
   assert.equal(f.manager.history.at(-1).status, 'done');
-  assert.match(f.sends[0][1][0], /分级：safe/);
+  assert.match(f.sends.at(-1)[1][0], /分级：safe/);
+  assert.match(f.sends[0][1][0], /开始处理 PID/);
+  assert.match(f.sends[1][1][0], /下载完成.*正在排队合成 PDF/);
+  assert.match(f.sends[2][1][0], /PDF 已生成.*上传群文件/);
+  assert.doesNotMatch(f.sends.at(-1)[1][0], /包含：|1、2|第\s*\d+\s*页/);
   assert.equal(fs.existsSync(captured.file), false);
 });
 
@@ -112,7 +116,8 @@ test('PDF缺页后仍保留后续页并标注部分，不把页码压缩成完�
   await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'partial-pdf');
   assert.deepEqual(captured.inputs.map((p) => p.page), [1, 2, 4, 5]);
   assert.match(captured.name, /部分/); assert.equal(f.manager.history.at(-1).status, 'partial');
-  assert.match(f.sends[0][1][0], /第3页/); assert.match(f.sends[0][1][0], /不能视为全本/);
+  assert.match(f.sends.at(-1)[1][0], /1 张未取到/);
+  assert.doesNotMatch(f.sends.at(-1)[1][0], /第3页|包含：/);
 });
 
 test('PDF总量限制停止下载并发送部分文件；分级拦截不会下载或生成', async (t) => {
@@ -120,7 +125,7 @@ test('PDF总量限制停止下载并发送部分文件；分级拦截不会下�
   const f = fixture(t, { pdfMaxBytes: png.length * 2 }, { host: pdfHost(captured) });
   await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'limited-pdf');
   assert.deepEqual(captured.inputs.map((p) => p.page), [1, 2]); assert.match(captured.name, /部分/);
-  assert.match(f.sends[0][1][0], /总大小上限/);
+  assert.match(f.sends.at(-1)[1][0], /文件大小上限/);
   const denied = {};
   const g = fixture(t, {}, { restriction: 1, host: pdfHost(denied) });
   assert.equal((await g.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'denied-pdf')).isError, true);
@@ -134,7 +139,8 @@ test('PDF上传未确认只调用一次，不回退卡片或文本；保留文�
   } }) });
   const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'unknown-pdf');
   assert.equal(result.sendUnknown, true); assert.equal(captured.uploads, 1);
-  assert.equal(f.forwards.length, 0); assert.equal(f.sends.length, 0);
+  assert.equal(f.forwards.length, 0); assert.equal(f.sends.length, 3);
+  assert.doesNotMatch(f.sends.at(-1)[1][0], /✅|已上传到本群/);
   assert.equal(f.manager.history.at(-1).status, 'send-unknown'); assert.ok(fs.existsSync(captured.file));
 });
 
@@ -147,6 +153,35 @@ test('PDF生成取消后不上传，临时目录清理', async (t) => {
   const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cancel-pdf');
   assert.equal(result.isError, true); assert.equal(captured.uploads, undefined);
   assert.deepEqual(fs.readdirSync(path.join(f.dir, 'pixiv', 'pdf')), []);
+});
+
+test('开始提示未确认时不启动下载、不继续提示或发送文件', async (t) => {
+  let calls = 0;
+  const f = fixture(t, {}, { host: { file: async () => assert.fail('不应上传'), send: async () => { calls++; throw new Error('timeout'); } } });
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'unknown-start');
+  assert.equal(result.sendUnknown, true);
+  assert.equal(calls, 1); assert.equal(f.requests.length, 0); assert.equal(f.forwards.length, 0);
+});
+
+test('私聊PDF按阶段提示，最终不枚举页码；上传前提示失败不上传', async (t) => {
+  const captured = {}, stages = [];
+  const host = pdfHost(captured);
+  const f = fixture(t, {}, { host: { ...host,
+    send: async (_chat, messages) => stages.push(messages[0]),
+    buildPdf: async (options) => { stages.push('生成文件'); return host.buildPdf(options); },
+    file: async (...args) => { stages.push('发送文件'); return host.file(...args); }
+  } });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'private:100001', 'private-pdf');
+  assert.match(stages[0], /开始处理/); assert.match(stages[1], /下载完成/);
+  assert.equal(stages[2], '生成文件'); assert.match(stages[3], /正在发送私聊文件/);
+  assert.equal(stages[4], '发送文件'); assert.match(stages[5], /✅.*处理完成/);
+  assert.doesNotMatch(stages[5], /包含：|第\s*\d+\s*页|1、2/);
+  let uploads = 0;
+  const g = fixture(t, {}, { host: { ...pdfHost({}), file: async () => { uploads++; },
+    send: async (_chat, messages) => { if (messages[0].includes('PDF 已生成')) throw new Error('timeout'); }
+  } });
+  assert.equal((await g.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'pre-upload')).sendUnknown, true);
+  assert.equal(uploads, 0);
 });
 
 const pdfPython = process.platform === 'win32' ? 'python' : 'python3';
@@ -224,7 +259,8 @@ test('读取真实页列表：五页按2+2+1分批，顺序完整且不重复首
   const f = fixture(t);
   assert.equal((await f.manager.start({ pid }, 'group:100001', 1)).isError, undefined);
   assert.equal(f.forwards.length, 3); assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 3 页', '第 4 页', '第 5 页']);
-  assert.equal(f.manager.history[0].status, 'done'); assert.equal(f.sends.length, 0);
+  assert.equal(f.manager.history[0].status, 'done'); assert.match(f.sends[0][1][0], /开始处理/);
+  assert.match(f.sends.at(-1)[1][0], /✅.*已发送 5 张图片/);
   assert.equal(f.requests.filter((r) => r.url.includes('/pages')).length, 1);
 });
 test('无官方详情时沿用pixiv.re直取、多页后缀及未知分级标记，不请求pixiv.net', async (t) => {
@@ -256,7 +292,7 @@ test('已知页数中间缺页，继续发送后续页并明确缺页，非整�
   const f = fixture(t, { pageRetryOnce: 0 }, { missing: [3] });
   await f.manager.start({ pid }, 'group:100001', 1);
   assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 4 页', '第 5 页']);
-  assert.deepEqual(f.manager.history[0].failedPages.map((p) => p.page), [3]); assert.match(f.sends[0][1][0], /第3页/);
+  assert.deepEqual(f.manager.history[0].failedPages.map((p) => p.page), [3]); assert.match(f.sends.at(-1)[1][0], /1 张未取到/);
 });
 test('指定页范围只取所需页，超出每次上限明确拒绝', async (t) => {
   const f = fixture(t, { maxPages: 3 });
@@ -267,7 +303,7 @@ test('指定页范围只取所需页，超出每次上限明确拒绝', async (t
 test('发送未确认立即停止剩余批次，不逐张回退、不补发文字', async (t) => {
   const f = fixture(t, {}, { forward: async () => { throw new Error('timeout after remote received'); } });
   const result = await f.manager.start({ pid }, 'group:100001', 1);
-  assert.equal(result.sendUnknown, true); assert.equal(f.forwards.length, 1); assert.equal(f.sends.length, 0);
+  assert.equal(result.sendUnknown, true); assert.equal(f.forwards.length, 1); assert.equal(f.sends.length, 1);
   assert.equal(f.manager.history[0].status, 'send-unknown');
 });
 test('功能关闭或宿主权限撤销取消任务，后续不发送', async (t) => {
