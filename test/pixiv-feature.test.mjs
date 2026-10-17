@@ -15,6 +15,8 @@ import { sanitizeConfigSecrets } from '../src/core/secret-keys.js';
 import { pixivFetch } from '../src/features/pixiv/network.js';
 import { MockAgent } from 'undici';
 import { describePlugins } from '../plugins/console-routes.js';
+import { buildPixivPdf } from '../src/features/pixiv/pdf.js';
+import { spawnSync } from 'node:child_process';
 
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
 const pid = '12345678';
@@ -69,6 +71,100 @@ test('PID 明确指令识别与页范围；不吞普通数字或聊天', () => {
   assert.deepEqual(pixivCommand('PID 12345678 21-40'), { pid, startPage: 21, endPage: 40 });
   assert.equal(pixivCommand(`https://www.pixiv.net/artworks/${pid}`).pid, pid);
   for (const input of [pid, '我的QQ是12345678', '帮我看看pid是什么', 'https://evil.test/artworks/12345678']) assert.equal(pixivCommand(input), null);
+});
+
+test('PDF明确指令支持范围和作品链接；图片可覆盖默认方式', () => {
+  assert.deepEqual(pixivCommand(`PID ${pid} 21-40 PDF`), { pid, startPage: 21, endPage: 40, outputFormat: 'pdf' });
+  assert.equal(pixivCommand(`https://www.pixiv.net/artworks/${pid} PDF`).outputFormat, 'pdf');
+  assert.equal(pixivCommand(`PID ${pid} 图片`).outputFormat, 'images');
+  assert.equal(pixivCommand('请做一个 PDF'), null);
+});
+
+function pdfHost(captured, extra = {}) {
+  return {
+    buildPdf: async ({ files, output, signal }) => {
+      signal.throwIfAborted();
+      captured.inputs = files.map((p) => ({ page: p.page, bytes: fs.statSync(p.file).size }));
+      fs.writeFileSync(output, '%PDF-1.4\nmock');
+      return { file: output, pages: files.map((p) => p.page), bytes: 13 };
+    },
+    file: async (_chat, file) => { captured.uploads = (captured.uploads || 0) + 1; captured.name = file.name; captured.file = file.file; assert.ok(fs.existsSync(file.file)); },
+    ...extra
+  };
+}
+
+test('PDF独立页数上限超过卡片20页且有序打包，不发送任何图片卡片', async (t) => {
+  const captured = {};
+  const f = fixture(t, { maxPages: 20, outputFormat: 'pdf' }, { pages: 25, host: pdfHost(captured) });
+  const result = await f.manager.start({ pid }, 'group:100001', 'pdf');
+  assert.equal(result.isError, undefined, result.content);
+  assert.equal(captured.uploads, 1); assert.equal(captured.inputs.length, 25);
+  assert.deepEqual(captured.inputs.map((p) => p.page), Array.from({ length: 25 }, (_, i) => i + 1));
+  assert.equal(f.forwards.length, 0); assert.doesNotMatch(captured.name, /部分/);
+  assert.equal(f.manager.history.at(-1).status, 'done');
+  assert.match(f.sends[0][1][0], /分级：safe/);
+  assert.equal(fs.existsSync(captured.file), false);
+});
+
+test('PDF缺页后仍保留后续页并标注部分，不把页码压缩成完整作品', async (t) => {
+  const captured = {};
+  const f = fixture(t, {}, { missing: [3], host: pdfHost(captured) });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'partial-pdf');
+  assert.deepEqual(captured.inputs.map((p) => p.page), [1, 2, 4, 5]);
+  assert.match(captured.name, /部分/); assert.equal(f.manager.history.at(-1).status, 'partial');
+  assert.match(f.sends[0][1][0], /第3页/); assert.match(f.sends[0][1][0], /不能视为全本/);
+});
+
+test('PDF总量限制停止下载并发送部分文件；分级拦截不会下载或生成', async (t) => {
+  const captured = {};
+  const f = fixture(t, { pdfMaxBytes: png.length * 2 }, { host: pdfHost(captured) });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'limited-pdf');
+  assert.deepEqual(captured.inputs.map((p) => p.page), [1, 2]); assert.match(captured.name, /部分/);
+  assert.match(f.sends[0][1][0], /总大小上限/);
+  const denied = {};
+  const g = fixture(t, {}, { restriction: 1, host: pdfHost(denied) });
+  assert.equal((await g.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'denied-pdf')).isError, true);
+  assert.equal(denied.inputs, undefined); assert.equal(denied.uploads, undefined);
+});
+
+test('PDF上传未确认只调用一次，不回退卡片或文本；保留文件供协议端读取', async (t) => {
+  const captured = {};
+  const f = fixture(t, {}, { host: pdfHost(captured, { file: async (_chat, payload) => {
+    captured.uploads = (captured.uploads || 0) + 1; captured.file = payload.file; throw new Error('timeout');
+  } }) });
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'unknown-pdf');
+  assert.equal(result.sendUnknown, true); assert.equal(captured.uploads, 1);
+  assert.equal(f.forwards.length, 0); assert.equal(f.sends.length, 0);
+  assert.equal(f.manager.history.at(-1).status, 'send-unknown'); assert.ok(fs.existsSync(captured.file));
+});
+
+test('PDF生成取消后不上传，临时目录清理', async (t) => {
+  const captured = {};
+  let f;
+  f = fixture(t, {}, { host: pdfHost(captured, { buildPdf: async ({ signal }) => {
+    f.manager.active.controller.abort(); signal.throwIfAborted();
+  } }) });
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cancel-pdf');
+  assert.equal(result.isError, true); assert.equal(captured.uploads, undefined);
+  assert.deepEqual(fs.readdirSync(path.join(f.dir, 'pixiv', 'pdf')), []);
+});
+
+const pdfPython = process.platform === 'win32' ? 'python' : 'python3';
+const hasPillow = spawnSync(pdfPython, ['-c', 'from PIL import Image'], { timeout: 10000 }).status === 0;
+test('真实逐页PDF包含所有页面；坏图片拒绝上传；PDF超限拒绝', { skip: !hasPillow && 'Pillow unavailable' }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixiv-pdf-worker-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const image = path.join(dir, 'input.png');
+  const generated = spawnSync(pdfPython, ['-c', 'from PIL import Image; import sys; Image.new("RGB", (800, 1200), (80, 140, 210)).save(sys.argv[1])', image]);
+  assert.equal(generated.status, 0);
+  const files = [1, 2, 4].map((page) => ({ page, file: image }));
+  const options = { files, output: path.join(dir, 'result.pdf'), signal: new AbortController().signal, maxBytes: 10485760, pythonPath: pdfPython };
+  const result = await buildPixivPdf(options);
+  assert.deepEqual(result.pages, [1, 2, 4]);
+  assert.match(fs.readFileSync(result.file, 'latin1'), /\/Count 3/);
+  await assert.rejects(buildPixivPdf({ ...options, maxBytes: 1 }), /文件大小上限/);
+  const bad = path.join(dir, 'bad.png'); fs.writeFileSync(bad, Buffer.alloc(1024));
+  await assert.rejects(buildPixivPdf({ ...options, files: [files[0], { page: 2, file: bad }] }), /未上传/);
 });
 test('旧去重与会话分级仅复制，原件保留，已有新文件不覆盖', async (t) => {
   const f = fixture(t);

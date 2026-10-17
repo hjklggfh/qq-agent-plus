@@ -5,6 +5,7 @@ import { pixivConfig, validRatings } from './config.js';
 import { createPixivEngine } from './engine.js';
 import { registerBuiltinFeature } from '../feature-registry.js';
 import { imageType } from '../../core/image-type.js';
+import { buildPixivPdf, sweepPdfJobs } from './pdf.js';
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 function writeJson(file, value) {
@@ -136,14 +137,26 @@ export class PixivManager {
   }
   async run(args, chatKey, runId, controller, parentSignal) {
     const s = this.settings();
+    const format = args.outputFormat || s.outputFormat;
+    const pdf = format === 'pdf';
+    const pageLimit = pdf ? s.maxPdfPages : s.maxPages;
     const signal = AbortSignal.any([controller.signal, ...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(s.taskTimeoutSeconds * 1000)]);
-    const record = { id: randomUUID(), chatKey, startedAt: new Date().toISOString(), status: 'running', pages: [], failedPages: [] };
+    const record = { id: randomUUID(), chatKey, format, startedAt: new Date().toISOString(), status: 'running', pages: [], failedPages: [] };
     this.history.push(record); this.history = this.history.slice(-50);
     const save = () => writeJson(path.join(this.dir, 'history.json'), this.history);
     const guard = setInterval(() => this.enforce(), 500);
     this.engine.setSignal(signal);
     let sending = false;
+    let jobDir;
     try {
+      if (!['images', 'pdf'].includes(format)) throw new Error('发送方式无效');
+      if (pdf) {
+        if (!this.options.file) throw new Error('当前宿主不支持文件发送');
+        const root = path.join(this.dir, 'pdf');
+        sweepPdfJobs(root);
+        jobDir = fs.mkdtempSync(path.join(root, 'job-'));
+        fs.chmodSync(jobDir, 0o700);
+      }
       this.migrateState(); this.engine.sweepTemp?.(); save();
       const pid = this.engine.extractPid(args.pid) || this.engine.extractPid(args.url);
       let works;
@@ -160,11 +173,12 @@ export class PixivManager {
         if (!pid && new Set(record.pages.map((p) => p.pid)).size >= Math.min(s.maxCount, Number(args.count) || 1)) break;
         const rating = this.checkRating(item, chatKey);
         const from = Number(args.startPage || 1);
-        const to = args.endPage === undefined ? from + s.maxPages - 1 : Number(args.endPage);
-        if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from || to > 10000 || to - from + 1 > s.maxPages) throw new Error(`页码无效；每次最多 ${s.maxPages} 页，可用“PID ${item.pid} 21-40”指定范围。`);
+        const to = args.endPage === undefined ? Math.min(10000, from + pageLimit - 1) : Number(args.endPage);
+        if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from || to > 10000 || to - from + 1 > pageLimit) throw new Error(`页码无效；每次最多 ${pageLimit} 页，可用“PID ${item.pid} 21-40${pdf ? ' PDF' : ''}”指定范围。`);
         const last = item.pageCount ? Math.min(item.pageCount, to) : to;
         if (from > last) throw new Error(`作品只有 ${item.pageCount} 页，请检查起始页。`);
         let batch = [], bytes = 0, seed = item, stopped = '', missingWork = false;
+        const pdfFiles = [];
         const flush = async () => {
           if (!batch.length) return;
           signal.throwIfAborted(); this.enforce(); signal.throwIfAborted();
@@ -194,6 +208,21 @@ export class PixivManager {
             const got = await this.engine.fetchImage({ ...item, imageUrl: '', imageUrls: urls, thumbnail: '' }, this.engine.settings(), { allowTemplate: page === 1 && !urls.length });
             seed = { ...item, imageUrl: got.usedUrl || got.url || urls[0] || seed.imageUrl, imageUrls: [got.usedUrl || got.url || urls[0]].filter(Boolean) };
             const buffer = fs.readFileSync(got.file);
+            if (pdf) {
+              try {
+                if (!imageType(buffer)) throw new Error('返回内容不是图片');
+                if (bytes + buffer.length > s.pdfMaxBytes) {
+                  stopped = '已到 PDF 图片总大小上限，后续页面未下载；请指定后续页码继续';
+                  break;
+                }
+                const file = path.join(jobDir, `${item.pid}-${page}.img`);
+                fs.renameSync(got.file, file);
+                pdfFiles.push({ page, file }); bytes += buffer.length;
+              } finally {
+                try { fs.unlinkSync(got.file); } catch { /* 已移动或已删除。 */ }
+              }
+              continue;
+            }
             try { fs.unlinkSync(got.file); } catch { /* 下次清理临时目录。 */ }
             if (!imageType(buffer)) throw new Error('返回内容不是图片');
             if (batch.length && (batch.length >= s.pagesPerBatch || bytes + buffer.length > s.forwardBudgetBytes)) await flush();
@@ -207,12 +236,33 @@ export class PixivManager {
             if (!item.pageCount) { stopped = `第 ${page} 页暂时取不到，后续页数未确认`; break; }
           }
         }
-        await flush();
+        const incomplete = stopped || from > 1 || (item.pageCount ? last < item.pageCount : true) || record.failedPages.some((p) => p.pid === item.pid);
+        if (pdf && incomplete) record.partial = true;
+        if (pdf && pdfFiles.length) {
+          signal.throwIfAborted();
+          const name = `Pixiv-${item.pid}-${pdfFiles[0].page}-${pdfFiles.at(-1).page}${incomplete ? '-部分' : ''}.pdf`;
+          const result = await (this.options.buildPdf || buildPixivPdf)({ files: pdfFiles,
+            output: path.join(jobDir, name), signal, maxBytes: s.pdfMaxBytes,
+            pythonPath: this.options.getConfig().jm?.pythonPath });
+          this.enforce(); signal.throwIfAborted();
+          sending = true;
+          await this.options.file(chatKey, { file: result.file, name, bytes: result.bytes }, { runId, signal });
+          sending = false;
+          record.pages.push(...result.pages.map((page) => ({ pid: item.pid, page })));
+          try { save(); } catch (error) { error.checkpoint = true; throw error; }
+          try {
+            for (const page of pdfFiles) fs.rmSync(page.file, { force: true });
+            fs.rmSync(result.file, { force: true });
+          } catch { /* 文件已发送；清理失败不改变发送结果。 */ }
+        } else await flush();
         if (record.pages.some((p) => p.pid === item.pid)) this.engine.markSeen(item.pid);
         else if (missingWork) this.engine.markDead(item.pid);
-        record.note = stopped || (item.pageCount && last < item.pageCount ? `作品还有后续页，可发送“PID ${item.pid} ${last + 1}-${Math.min(item.pageCount, last + s.maxPages)}”继续` : !item.pageCount ? '总页数未知，已到本次页数上限，可指定下一页继续' : '');
+        record.note = stopped || (item.pageCount && last < item.pageCount ? `作品还有后续页，可发送“PID ${item.pid} ${last + 1}-${Math.min(item.pageCount, last + pageLimit)}${pdf ? ' PDF' : ''}”继续` : !item.pageCount ? '总页数未知，已到本次页数上限，可指定下一页继续' : '');
+        if (pdf) {
+          record.note = `Pixiv ${item.pid} · ${titleText(item.title)} · 分级：${rating}\nhttps://www.pixiv.net/artworks/${item.pid}\nPDF 按原页码排序，包含：${pdfFiles.map((p) => p.page).join('、') || '无'}。${incomplete ? '这是部分页面，不能视为全本。' : ''}${record.note}`;
+        }
       }
-      record.status = record.failedPages.length || record.note ? 'partial' : record.pages.length ? 'done' : 'failed';
+      record.status = record.failedPages.length || (pdf ? record.partial : record.note) ? 'partial' : record.pages.length ? 'done' : 'failed';
       signal.throwIfAborted();
       if (!record.pages.length) throw new Error('本次未能发送图片，请检查作品分级、图片接口及页码。');
       if (record.failedPages.length || record.note) {
@@ -228,11 +278,12 @@ export class PixivManager {
       record.finishedAt = new Date().toISOString();
       try { save(); } catch { /* 落盘失败不能触发重复外发。 */ }
       this.engine.setSignal(undefined); clearInterval(guard);
+      if (jobDir && !sending) { try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch { /* 下次任务清理。 */ } }
     }
   }
   toolDefs() {
-    return [{ name: 'pixiv_image', feature: 'pixiv', description: 'PID 搜索：按作品号、Pixiv链接或关键词发送插画；支持指定起止页，多页分批发送。遵守本会话分级；失败后不要重复调用或编造已发送。',
-      parameters: { type: 'object', properties: { pid: { type: 'string' }, url: { type: 'string' }, keyword: { type: 'string' }, count: { type: 'integer' }, startPage: { type: 'integer' }, endPage: { type: 'integer' } } },
+    return [{ name: 'pixiv_image', feature: 'pixiv', description: 'PID 搜索：按作品号、Pixiv链接或关键词发送插画；支持指定起止页、多页分批图片或打包 PDF 文件（outputFormat:pdf）。遵守本会话分级；失败后不要重复调用或编造已发送。',
+      parameters: { type: 'object', properties: { pid: { type: 'string' }, url: { type: 'string' }, keyword: { type: 'string' }, count: { type: 'integer' }, startPage: { type: 'integer' }, endPage: { type: 'integer' }, outputFormat: { type: 'string', enum: ['images', 'pdf'], description: 'pdf 将作品各页打包为文件，避免合并卡片限制' } } },
       execute: (ctx, args) => this.start(args, ctx.chatKey, ctx.session?.leaseId || randomUUID(), ctx.signal) },
     { name: 'pixiv_set_rating', feature: 'pixiv', description: '查看当前会话的 Pixiv 分级；仅全局管理员可修改本会话允许的 safe/r18/r18g 分级。不得修改其他会话。',
       parameters: { type: 'object', properties: { action: { type: 'string', enum: ['get', 'set', 'clear'] }, ratings: { type: 'array', items: { type: 'string', enum: ['safe', 'r18', 'r18g'] } } } },

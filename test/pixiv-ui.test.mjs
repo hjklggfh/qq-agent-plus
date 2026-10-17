@@ -21,11 +21,16 @@ test('独立PID设置呈现会话分级、多页分批、核实作品入口，�
   assert.equal(doc.querySelector('.pixiv-chat-id').value, '100001');
   assert.equal(doc.querySelector('#pixiv-cookie').type, 'password'); assert.equal(doc.querySelector('#pixiv-cookie').value, '');
   assert.ok(doc.querySelector('#pixiv-mark-save')); assert.ok(doc.querySelector('#pixiv-batch-pages'));
+  assert.equal(doc.querySelector('#pixiv-output').value, 'images');
+  assert.equal(doc.querySelector('#pixiv-pdf-pages').value, '500');
 });
 test('保存只发PID设置，空凭据保留；非法群号不得显示保存成功', { skip }, async (t) => {
   const { doc, calls, context } = page(t);
+  doc.querySelector('#pixiv-output').value = 'pdf';
+  doc.querySelector('#pixiv-pdf-pages').value = '800';
   await vm.runInContext('savePixivSettings()', context);
   const patch = JSON.parse(calls[0].options.body);
+  assert.equal(patch.outputFormat, 'pdf'); assert.equal(patch.maxPdfPages, 800);
   assert.equal(calls[0].url, '/api/pixiv/settings'); assert.equal('cookie' in patch, false); assert.equal('proxyUrl' in patch, false);
   doc.querySelector('.pixiv-chat-id').value = 'invalid';
   await assert.rejects(vm.runInContext('savePixivSettings()', context));

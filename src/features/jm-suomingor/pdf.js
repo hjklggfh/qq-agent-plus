@@ -34,12 +34,12 @@ export function findPython(configured = '') {
   const conf = String(configured || '').trim();
   const candidates = [];
   if (conf) candidates.push(conf);
-  candidates.push('py', 'python', ...EXTRA_CANDIDATES);
+  candidates.push('py', 'python', 'python3', ...EXTRA_CANDIDATES);
 
   const configuredMissing = Boolean(conf) && !fs.existsSync(conf);
 
   for (const cand of candidates) {
-    if (cand !== 'py' && cand !== 'python' && !fs.existsSync(cand)) {
+    if (!['py', 'python', 'python3'].includes(cand) && !fs.existsSync(cand)) {
       tried.push(`${cand}（不存在）`);
       continue;
     }

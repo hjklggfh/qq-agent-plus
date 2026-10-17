@@ -541,6 +541,28 @@ export class SendQueue {
     });
   }
 
+  /** 宿主生成的文件；只记录文件名和大小，外发仍经统一 outbox。 */
+  file(chatKey, { file, name, bytes = 0 } = {}, options = {}) {
+    const [kind, id] = String(chatKey).split(':');
+    return this.#chain(chatKey)(async () => {
+      if (!['group', 'private'].includes(kind) || !/^\d+$/.test(id)) throw new Error('文件发送目标无效');
+      if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
+      this.#checkRate(chatKey);
+      const data = await this.#deliver(chatKey, options, { type: 'file', name, bytes }, () =>
+        this.onebot.call(kind === 'group' ? 'upload_group_file' : 'upload_private_file', {
+          [kind === 'group' ? 'group_id' : 'user_id']: Number(id), file, name,
+          ...(kind === 'group' ? { folder: '' } : {}), upload_file: true
+        }, options.timeoutMs || 120000, options.signal));
+      const text = `[文件:${String(name || '').slice(0, 120)}]`;
+      this.#afterSent(() => {
+        this.store.appendSelf(chatKey, { text, ts: Date.now(), mid: data?.message_id ?? null,
+          targetUserId: kind === 'private' ? id : '', eventKind: 'message' });
+        this.onSent?.({ chatKey, text, messageId: data?.message_id ?? null });
+      });
+      return data;
+    });
+  }
+
   /** 拍一拍。发送成功后留档（self 记录），否则下一次运行不知道自己拍过。 */
   poke(chatKey, targetUserId, options = {}) {
     const [kind, id] = String(chatKey).split(':');

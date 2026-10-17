@@ -2,6 +2,7 @@ export const PIXIV_TOOL_NAMES = Object.freeze(['pixiv_image', 'pixiv_set_rating'
 export const DEFAULT_PIXIV_CONFIG = Object.freeze({
   enabled: false, ratings: ['safe'], chatRatings: {}, chatRatingsMigrated: false, unknownRatingPolicy: 'deny',
   imageSize: 'regular', maxCount: 1, maxPages: 100, timeoutMs: 15000,
+  outputFormat: 'images', maxPdfPages: 500, pdfMaxBytes: 256 * 1024 * 1024,
   taskTimeoutSeconds: 300, forwardBudgetBytes: 4 * 1024 * 1024,
   maxImageBytes: 5 * 1024 * 1024, pagesPerBatch: 10,
   downsampleOverBytes: 800 * 1024, downsampleMaxEdge: 1200,
@@ -28,6 +29,7 @@ export function validatePixivPatch(patch) {
       || Object.entries(chats).some(([chat, ratings]) => !/^(group|private):\d{5,15}$/.test(chat) || !validRatings(ratings)))) throw new Error('会话分级格式无效');
     if (key === 'unknownRatingPolicy' && !['deny', 'adult-only'].includes(value)) throw new Error('未知分级策略无效');
     if (key === 'imageSize' && !['original', 'regular', 'small', 'thumb', 'mini'].includes(value)) throw new Error('图片尺寸无效');
+    if (key === 'outputFormat' && !['images', 'pdf'].includes(value)) throw new Error('发送方式无效');
     if (key === 'searchBackend' && !['auto', 'builtin', 'pixiv'].includes(value)) throw new Error('检索方式无效');
     if (typeof DEFAULT_PIXIV_CONFIG[key] === 'string' && (typeof value !== 'string' || value.length > 4096 || /[\r\n]/.test(value))) throw new Error('设置文本格式无效');
     if (['metadataUrlTemplate', 'loliconApiUrl', 'searchUrlTemplate', 'imageUrlTemplate', 'proxyUrl'].includes(key) && value) {
@@ -37,6 +39,7 @@ export function validatePixivPatch(patch) {
     }
   }
   for (const [key, min, max] of [
+    ['maxPdfPages', 1, 1000], ['pdfMaxBytes', 1048576, 536870912],
     ['maxPages', 1, 100], ['maxCount', 1, 5], ['pagesPerBatch', 1, 20], ['timeoutMs', 3000, 60000],
     ['taskTimeoutSeconds', 30, 600], ['forwardBudgetBytes', 256 * 1024, 8 * 1024 * 1024],
     ['maxImageBytes', 64 * 1024, 16 * 1024 * 1024], ['downsampleOverBytes', 0, 16 * 1024 * 1024],

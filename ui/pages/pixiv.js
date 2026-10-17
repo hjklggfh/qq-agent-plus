@@ -10,6 +10,10 @@ function renderPixivSection(config) {
   const s = config.pixiv || {};
   return `<h3>PID 搜索</h3><p class="hint">Agent 内置 Pixiv 功能。发送“PID 作品号”或完整作品链接，无需聊天模型；“PID 作品号 21-40”取指定页。关键词请求仍可由模型调用。</p>
   <div class="field"><label><input id="pixiv-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用 PID 搜索</label></div>
+  <div class="field-row"><div class="field"><label>默认发送方式</label><select id="pixiv-output"><option value="images" ${s.outputFormat !== 'pdf' ? 'selected' : ''}>图片合并卡片</option><option value="pdf" ${s.outputFormat === 'pdf' ? 'selected' : ''}>作品图片打包为 PDF 文件</option></select></div>
+  <div class="field"><label>PDF 每次最多页数</label><input id="pixiv-pdf-pages" type="number" min="1" max="1000" value="${esc(s.maxPdfPages ?? 500)}"></div>
+  <div class="field"><label>PDF 图片总量／文件上限（MB）</label><input id="pixiv-pdf-mb" type="number" min="1" max="512" value="${esc((s.pdfMaxBytes ?? 268435456) / 1048576)}"></div></div>
+  <p class="hint">发送“PID 作品号 PDF”打包作品，或“PID 作品号 21-40 PDF”指定页；末尾加“图片”可临时改回卡片。PDF 不受卡片批次大小限制，分级与下载限制仍生效。需要 Python 3、Pillow，与 JM 共用逐页处理队列；缺页或总页数未知会标为部分页面。PDF 会转为高质量 JPEG，沿用下方尺寸与压缩设置，不能保证无损原图。</p>
   <div class="field"><label>默认允许分级</label>${['safe', 'r18', 'r18g'].map((r) => `<label><input id="pixiv-rating-${r}" type="checkbox" ${(s.ratings || ['safe']).includes(r) ? 'checked' : ''}> ${esc({ safe: '全年龄', r18: 'R18', r18g: 'R18G' }[r])}</label>`).join(' ')}</div>
   <div class="field"><label>按会话设置分级</label><div id="pixiv-chat-ratings">${Object.entries(s.chatRatings || {}).map(([chat, ratings]) => pixivRatingRow(chat, ratings)).join('')}</div><button class="btn" type="button" id="pixiv-chat-add">添加群聊／私聊覆盖</button><div class="hint">没有单独设置的会话沿用默认。删除覆盖后点击保存，恢复默认分级。仍受宿主聊天白名单约束；旧会话分级自动带入，保存立即生效。</div></div>
   <div class="field"><label>无法确认作品分级时</label><select id="pixiv-unknown"><option value="deny" ${s.unknownRatingPolicy !== 'adult-only' ? 'selected' : ''}>拒绝发送，提示核实作品</option><option value="adult-only" ${s.unknownRatingPolicy === 'adult-only' ? 'selected' : ''}>仅在同时允许 R18、R18G 的会话发送，并标明未知</option></select></div>
@@ -47,7 +51,8 @@ async function savePixivSettings() {
       chatRatings[chat] = ratings;
     }
     const patch = { enabled: $('#pixiv-enabled').checked, ratings: ['safe', 'r18', 'r18g'].filter((r) => $(`#pixiv-rating-${r}`).checked),
-      chatRatings, unknownRatingPolicy: $('#pixiv-unknown').value, maxPages: Number($('#pixiv-max-pages').value), pagesPerBatch: Number($('#pixiv-batch-pages').value),
+      chatRatings, outputFormat: $('#pixiv-output').value, maxPdfPages: Number($('#pixiv-pdf-pages').value), pdfMaxBytes: Math.round(Number($('#pixiv-pdf-mb').value) * 1048576),
+      unknownRatingPolicy: $('#pixiv-unknown').value, maxPages: Number($('#pixiv-max-pages').value), pagesPerBatch: Number($('#pixiv-batch-pages').value),
       forwardBudgetBytes: Math.round(Number($('#pixiv-batch-mb').value) * 1048576), taskTimeoutSeconds: Number($('#pixiv-timeout').value), imageSize: $('#pixiv-size').value,
       metadataUrlTemplate: $('#pixiv-metadata').value.trim(), loliconApiUrl: $('#pixiv-search').value.trim(), imageUrlTemplate: $('#pixiv-image-template').value.trim(),
       maxImageBytes: Math.round(Number($('#pixiv-max-image').value) * 1048576), downsampleOverBytes: Math.round(Number($('#pixiv-compress').value) * 1024), downsampleMaxEdge: Number($('#pixiv-edge').value) };

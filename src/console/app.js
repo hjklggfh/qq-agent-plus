@@ -581,6 +581,7 @@ export function createApp({
   });
   const pixiv = new PixivManager({
     dataDir: DATA_DIR, getConfig, updateConfig, canRun, onebot, log: moduleLog('pixiv'),
+    file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });

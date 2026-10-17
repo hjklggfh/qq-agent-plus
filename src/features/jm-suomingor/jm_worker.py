@@ -169,6 +169,7 @@ def run_task(task):
     scramble_id = task.get("scramble_id") or 0
     album_id = str(task.get("album_id") or "0")
     do_descramble = task.get("descramble") is not False
+    max_output_bytes = max(0, int(task.get("max_output_bytes") or 0))
     chapters = task.get("chapters") or []
 
     # 图片的 mode 必须是 RGB 才能进 PDF；RGBA/P 等一律转 RGB
@@ -224,6 +225,8 @@ def run_task(task):
                 failed.append({"page": os.path.basename(path), "error": f"{type(exc).__name__}: {exc}"})
             else:
                 pdf.append_jpeg(jpeg_path, *jpeg_size)
+                if max_output_bytes and pdf.file.tell() > max_output_bytes:
+                    raise ValueError("PDF 超过文件大小上限，请缩小页码范围")
                 if do_descramble and segmentation_num(scramble_id, album_id, filename_stem(path)) > 0:
                     restored += 1
                 ok_count += 1
