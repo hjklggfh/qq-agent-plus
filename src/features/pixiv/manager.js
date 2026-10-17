@@ -31,6 +31,18 @@ function downloadFailure(error) {
   if (/不是图片/.test(message)) return '图片接口返回的内容不是支持的图片。';
   return '图片下载失败，请稍后再试；详细原因请查看任务记录。';
 }
+function metadataImageUrl(raw) {
+  try {
+    const url = new URL(raw);
+    // 此接口的 /image/ 反代需要另行申请 Key；仅取公开详情，图片仍走现有完整路径反代。
+    if (url.hostname === 'pixiv.yuki.sh' && url.pathname.startsWith('/image/')) {
+      url.hostname = 'i.pixiv.re';
+      url.pathname = url.pathname.slice('/image'.length);
+      url.search = ''; url.hash = '';
+    }
+    return url.href;
+  } catch { return raw; }
+}
 
 export class PixivManager {
   constructor(options) {
@@ -95,22 +107,21 @@ export class PixivManager {
   async detail(pid, signal) {
     const cached = this.metadata[pid];
     if (cached && Date.now() - cached.cachedAt < 86400000) return cached;
-    if (this.overrides[pid]) return { pid };
     const s = this.settings();
     const template = s.metadataUrlTemplate || 'https://www.pixiv.net/ajax/illust/{pid}';
     // 默认图片链路是国内可用的 Lolicon + pixiv.re，不把官方直连当必需依赖。
     if (!s.metadataUrlTemplate && !s.proxyUrl) return { pid };
     try {
       const raw = await this.engine.requestJson(template.replaceAll('{pid}', pid));
-      const body = raw?.illust || raw?.body?.illust || raw?.body || raw;
+      const body = raw?.illust || raw?.body?.illust || raw?.body || (raw?.success === true ? raw.data : raw);
       if (raw.error || String(body?.id ?? body?.illust_id) !== pid) throw new Error('作品详情无效');
       const item = this.engine.normalizeItem(body);
       if (!item) throw new Error('作品详情无效');
       const count = Number(body.pageCount ?? body.page_count);
       if (Number.isInteger(count) && count > 0) item.pageCount = Math.min(10000, count);
-      item.imageUrls = this.engine.pickSizeUrls(body.urls || body.image_urls || {}, s.imageSize);
+      item.imageUrls = this.engine.pickSizeUrls(body.urls || body.image_urls || {}, s.imageSize).map(metadataImageUrl);
       const appPages = body.meta_pages || body.pages;
-      if (Array.isArray(appPages)) item.pages = appPages.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.image_urls || p.urls || {}, s.imageSize));
+      if (Array.isArray(appPages)) item.pages = appPages.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.image_urls || p.urls || {}, s.imageSize).map(metadataImageUrl));
       if (!item.pageCount && item.pages?.length) item.pageCount = item.pages.length;
       if (!item.pages?.length && item.pageCount > 1 && (!s.metadataUrlTemplate || template.startsWith('https://www.pixiv.net/ajax/illust/'))) {
         try {

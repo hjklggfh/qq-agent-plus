@@ -63,6 +63,31 @@ test('默认PID链路不依赖pixiv.net直连；保留pixiv.re模板与小尺寸
   assert.deepEqual(await f.manager.detail(pid, new AbortController().signal), { pid });
   assert.equal(f.requests.length, 0); f.manager.options.fetchImpl = originalFetch;
 });
+
+test('公开data详情格式取得真实路径，Yuki图片改用既有反代，缺少分级绝不默认为safe', async (t) => {
+  const f = fixture(t, { metadataUrlTemplate: 'https://pixiv.yuki.sh/api/illust?id={pid}', maxPdfPages: 1 }, {
+    host: pdfHost({}),
+    fetchImpl: async (url) => {
+      if (url.includes('pixiv.yuki.sh/api/illust')) return Response.json({ success: true, data: {
+        id: pid, title: '旧作品', user: { name: '作者' }, tags: [],
+        urls: { regular: `https://pixiv.yuki.sh/image/img-master/img/2011/02/20/01/05/18/${pid}_p0_master1200.jpg` }
+      } });
+      assert.equal(new URL(url).hostname, 'i.pixiv.re');
+      return new Response(png, { headers: { 'content-type': 'image/png' } });
+    }
+  });
+  const item = await f.manager.detail(pid, new AbortController().signal);
+  assert.equal(item.title, '旧作品'); assert.equal(item.author, '作者');
+  assert.equal(f.manager.engine.ratingKnown(item), false);
+  assert.equal(item.imageUrls[0], `https://i.pixiv.re/img-master/img/2011/02/20/01/05/18/${pid}_p0_master1200.jpg`);
+  assert.throws(() => f.manager.checkRating(item, 'group:100001'), /无法确认/);
+  assert.equal(f.manager.metadata[pid], undefined);
+  f.manager.setRating(pid, 'safe');
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'real-path');
+  assert.equal(result.isError, undefined, result.content);
+  assert.ok(f.requests.some((r) => r.url.startsWith('https://i.pixiv.re/')));
+  assert.equal(f.requests.some((r) => r.url === `https://pixiv.re/${pid}.png`), false);
+});
 test('设置校验拒绝坏分级、空分级、超量和未知字段', () => {
   for (const patch of [{ ratings: [] }, { ratings: ['unknown'] }, { enabled: 'yes' }, { maxPages: 101 }, { pagesPerBatch: 21 }, { chatRatings: { 'group:abc': ['safe'] } }, { cookie: 'a\nb' }, { metadataUrlTemplate: 'http://user:pass@host/{pid}' }, { unknown: true }]) assert.throws(() => validatePixivPatch(patch));
   validatePixivPatch({ chatRatings: { __replace__: {} }, metadataUrlTemplate: 'https://api.example/illust/{pid}' });
