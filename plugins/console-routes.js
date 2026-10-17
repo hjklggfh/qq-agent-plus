@@ -192,6 +192,7 @@ export function describePlugins({
 
   for (const root of roots) {
     for (const item of listPluginDirs(root)) {
+      if (item.id === PIXIV_PLUGIN_ID) continue; // 已迁入宿主设置，旧目录只留作回滚。
       if (seen.has(item.id)) continue;
       seen.add(item.id);
       out.push(describeOne({
@@ -210,6 +211,7 @@ export function describePlugins({
   // 已启用却没扫到：这类"配置里写着、盘上没有"最容易让人以为"启用了但没生效"。
   // 单独列出来并点名，比让它在页面上凭空消失好得多。
   for (const id of enabledSet) {
+    if (id === PIXIV_PLUGIN_ID) continue;
     if (seen.has(id)) continue;
     out.push({
       id,

@@ -14,6 +14,7 @@ import { builtinFeatureToolDefs, registerBuiltinFeature } from '../src/features/
 import { sanitizeConfigSecrets } from '../src/core/secret-keys.js';
 import { pixivFetch } from '../src/features/pixiv/network.js';
 import { MockAgent } from 'undici';
+import { describePlugins } from '../plugins/console-routes.js';
 
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
 const pid = '12345678';
@@ -78,6 +79,13 @@ test('旧去重与会话分级仅复制，原件保留，已有新文件不覆�
   assert.equal(f.manager.engine.seenSet().has(pid), true);
   fs.writeFileSync(path.join(old, 'chat-ratings.json'), '{}'); f.manager.migrateState();
   assert.deepEqual(f.manager.ratings('group:100001'), ['r18']); assert.ok(fs.existsSync(path.join(old, 'state.json')));
+});
+test('插件中心也忽略已迁入宿主的旧Pixiv目录，不删除目录或状态', (t) => {
+  const f = fixture(t); const root = path.join(f.dir, 'old-plugins'); const plugin = path.join(root, 'pixiv-illust');
+  fs.mkdirSync(plugin, { recursive: true }); fs.writeFileSync(path.join(plugin, 'plugin.json'), '{}');
+  const result = describePlugins({ dataDir: f.dir, config: { plugins: { enabled: ['pixiv-illust'], roots: [root] } } });
+  assert.equal(result.plugins.some((p) => p.id === 'pixiv-illust'), false);
+  assert.ok(fs.existsSync(path.join(plugin, 'plugin.json')));
 });
 test('关闭时不创建状态目录，不下载，不发送，且与JM工具表互不覆盖', async (t) => {
   registerBuiltinFeature({ toolDefs: [{ name: 'jm_test', execute() {} }] });
