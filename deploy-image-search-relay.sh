@@ -70,7 +70,9 @@ RestartSec=5
 TimeoutStopSec=15
 MemoryMax=900M
 UMask=0077
-PrivateTmp=true
+# systemd 用户服务的 PrivateTmp 在 Ubuntu 24.04 上会阻止 Chrome 沙箱启动。
+# Chrome 使用模块创建的 0700 临时目录，并继续保留自身沙箱。
+PrivateTmp=false
 
 [Install]
 WantedBy=default.target

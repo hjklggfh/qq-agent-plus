@@ -57,6 +57,8 @@ bash deploy-image-search-relay.sh --chrome /usr/bin/google-chrome-stable
 
 浏览器通过 Chrome DevTools Protocol 自动上传临时图片，使用独立的一次性浏览器资料，不读取个人浏览器 Cookie、账号或密码。只运行一个搜索任务，浏览器任务串行，服务内存上限 900MB。
 
+在 Ubuntu 24.04 上，systemd 用户服务的 `PrivateTmp=true` 会使 Chrome 的沙箱无法启动，即使同一用户在 SSH 终端能正常运行浏览器。安装器因此使用 `PrivateTmp=false`；模块仍通过 `mkdtemp` 创建 0700 临时目录并在任务结束后删除，Chrome 自身沙箱保持开启。2026-10-17 已通过实际用户服务的失败/成功对比核验，不需要全局关闭 AppArmor 或使用 `--no-sandbox`。
+
 Ubuntu 24.04 的 AppArmor 可能阻止便携 Chrome 的用户命名空间沙箱，表现为 `No usable sandbox`。应为受信任的浏览器按 Chromium 官方说明配置沙箱/系统策略，或使用带适当隔离的专用运行环境。生产代码不会自动加 `--no-sandbox`，也不会修改系统策略。未配置或无法启动浏览器时 Google 不可用，自动模式会尝试其他平台。
 
 参考：[Chrome for Testing](https://googlechromelabs.github.io/chrome-for-testing/)、[Ubuntu AppArmor 与 Chromium 沙箱](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md)。
