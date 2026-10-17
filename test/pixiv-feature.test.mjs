@@ -163,6 +163,36 @@ test('开始提示未确认时不启动下载、不继续提示或发送文件',
   assert.equal(calls, 1); assert.equal(f.requests.length, 0); assert.equal(f.forwards.length, 0);
 });
 
+test('群聊和私聊分别报告HTTP500、超时及超限，不把下载失败说成分级或白名单问题', async (t) => {
+  for (const chat of ['group:100001', 'private:100001']) {
+    for (const [error, expected] of [
+      [Object.assign(new Error('upstream https://host.test/?token=private-secret'), { status: 500 }), /图片接口暂时异常（HTTP 500）/],
+      [Object.assign(new Error('请求超时'), { netError: true }), /图片下载超时/],
+      [Object.assign(new Error('too big'), { tooBig: true }), /超过单张下载上限/]
+    ]) {
+      let uploaded = false;
+      const f = fixture(t, {}, { host: { file: async () => { uploaded = true; } } });
+      f.manager.engine.fetchImage = async () => { throw error; };
+      const result = await f.manager.start({ pid, outputFormat: 'pdf' }, chat, 'diagnostic');
+      assert.equal(result.isError, true); assert.match(result.content, expected);
+      assert.doesNotMatch(result.content, /检查作品分级|白名单|private-secret/);
+      assert.equal(uploaded, false); assert.equal(f.sends.length, 1);
+      assert.match(f.manager.history[0].failedPages[0].reason, expected);
+      assert.equal(f.manager.history[0].error, result.content);
+      assert.doesNotMatch(fs.readFileSync(path.join(f.dir, 'pixiv', 'history.json'), 'utf8'), /private-secret/);
+    }
+  }
+});
+
+test('总页数未知且首页404时记录真实失败原因，不把后续页探测404当成缺页', async (t) => {
+  const f = fixture(t, { metadataUrlTemplate: '' }, { host: { file: async () => assert.fail('不应上传') } });
+  f.manager.setRating(pid, 'safe');
+  f.manager.engine.fetchImage = async () => { throw Object.assign(new Error('HTTP 404'), { status: 404 }); };
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'missing-first');
+  assert.match(result.content, /HTTP 404/); assert.match(result.content, /不能据此确认作品已删除/);
+  assert.equal(f.manager.history[0].failedPages[0].status, 404);
+});
+
 test('私聊PDF按阶段提示，最终不枚举页码；上传前提示失败不上传', async (t) => {
   const captured = {}, stages = [];
   const host = pdfHost(captured);

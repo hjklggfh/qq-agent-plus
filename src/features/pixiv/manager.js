@@ -16,6 +16,21 @@ function writeJson(file, value) {
 }
 const titleText = (s) => String(s || '').replace(/\[CQ:[^\]]*\]/gi, '').replace(/[\x00-\x1f]/g, ' ').slice(0, 180);
 const fileSize = (bytes) => bytes < 1048576 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
+function downloadFailure(error) {
+  const status = Number(error?.status);
+  if (status >= 500 && status <= 599) return `图片接口暂时异常（HTTP ${status}），请稍后再试。`;
+  if (status === 429) return '图片接口限流（HTTP 429），请稍后再试。';
+  if (status === 403) return '图片接口拒绝访问（HTTP 403）。';
+  if ([404, 410].includes(status)) return `图片接口返回 HTTP ${status}，当前无法取得图片；不能据此确认作品已删除。`;
+  if (error?.tooBig) return '图片超过单张下载上限，可在 PID 设置调整下载大小或图片尺寸。';
+  const message = String(error?.message || '');
+  if (/超时|timeout|timed out|abort/i.test(message)) return '图片下载超时，请稍后再试或调大单次请求超时。';
+  if (error?.code === 'ENOSPC') return '服务器磁盘空间不足，无法保存图片。';
+  if (['EACCES', 'EPERM'].includes(error?.code)) return '服务器无法写入图片临时目录。';
+  if (error?.netError) return '图片接口连接失败，请稍后再试。';
+  if (/不是图片/.test(message)) return '图片接口返回的内容不是支持的图片。';
+  return '图片下载失败，请稍后再试；详细原因请查看任务记录。';
+}
 
 export class PixivManager {
   constructor(options) {
@@ -248,8 +263,13 @@ export class PixivManager {
           } catch (error) {
             if (sending || error.checkpoint) throw error;
             signal.throwIfAborted();
-            if (!item.pageCount && [404, 410].includes(Number(error.status))) { missingWork = page === 1; stopped = '未知总页数，遇到不存在的页面后停止探测'; break; }
-            record.failedPages.push({ pid: item.pid, page, reason: '图片下载失败或超限' });
+            if (!item.pageCount && [404, 410].includes(Number(error.status))) {
+              missingWork = page === 1;
+              if (missingWork) record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error), status: Number(error.status) });
+              stopped = '未知总页数，遇到不存在的页面后停止探测'; break;
+            }
+            record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error),
+              ...(Number.isInteger(Number(error.status)) ? { status: Number(error.status) } : {}) });
             if (!item.pageCount) { stopped = `第 ${page} 页暂时取不到，后续页数未确认`; break; }
           }
         }
@@ -298,12 +318,17 @@ export class PixivManager {
       }
       record.status = record.failedPages.length || (pdf ? record.partial : record.note) ? 'partial' : record.pages.length ? 'done' : 'failed';
       signal.throwIfAborted();
-      if (!record.pages.length) throw new Error('本次未能发送图片，请检查作品分级、图片接口及页码。');
+      if (!record.pages.length) {
+        const failure = record.failedPages[0];
+        throw new Error(failure ? `PID ${failure.pid} 取图失败：${failure.reason}` : '本次没有取得可发送的图片，请检查图片接口及指定范围。');
+      }
       await notify(summaries.join('\n\n'));
       return { content: `已发送 ${record.pages.length} 张图片${pdf ? '（PDF）' : ''}，完成提示已发到会话，不要重复发送。` };
     } catch (error) {
       record.status = sending ? 'send-unknown' : signal.aborted ? 'cancelled' : record.pages.length ? 'partial' : 'failed';
-      return { content: sending ? '发送结果未确认，已停止后续发送，请先检查 QQ 会话。' : signal.aborted ? 'PID 任务已取消或超时，已发送页面保留，不自动重试。' : String(error.message).slice(0, 350), isError: true, sendUnknown: sending };
+      const content = sending ? '发送结果未确认，已停止后续发送，请先检查 QQ 会话。' : signal.aborted ? 'PID 任务已取消或超时，已发送页面保留，不自动重试。' : String(error.message).slice(0, 350);
+      record.error = content;
+      return { content, isError: true, sendUnknown: sending };
     } finally {
       record.finishedAt = new Date().toISOString();
       try { save(); } catch { /* 落盘失败不能触发重复外发。 */ }
