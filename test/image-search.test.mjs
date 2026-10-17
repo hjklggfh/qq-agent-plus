@@ -14,6 +14,8 @@ import { createImageSearchRelay } from '../src/features/image-search/relay.js';
 import { installImageSearchRoutes } from '../src/features/image-search/routes.js';
 import { createRouter } from '../src/console/router.js';
 import { sanitizeConfigSecrets } from '../src/core/secret-keys.js';
+import { safeFetchPublicBinary } from '../src/llm/safe-fetch.js';
+import { searchResultNodes } from '../src/features/image-search/result-images.js';
 
 const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
 const imageMessage = (text = '搜图') => [{ type: 'text', data: { text } }, { type: 'image', data: { url: 'https://qq.example/image' } }];
@@ -72,17 +74,21 @@ test('Yandex 只提取来源网页、去重、解码实体并限制数量', () =
 });
 
 test('trace 过滤低相似度及无效动画ID，同一集不同片源去重', () => {
-  const row = { anilist: { id: 21034, title: { chinese: '点兔' } }, episode: 1, from: 272, to: 283, similarity: 0.99 };
+  const row = { anilist: { id: 21034, title: { chinese: '点兔' } }, image: 'https://api.trace.moe/preview.jpg', episode: 1, from: 272, to: 283, similarity: 0.99 };
   const results = parseTrace({ result: [row, { ...row, filename: '不同片源' }, { ...row, episode: 2, similarity: 0.78 }, { ...row, anilist: 'invalid' }] });
   assert.equal(results.length, 1);
   assert.equal(results[0].url, 'https://anilist.co/anime/21034');
   assert.equal(results[0].title, '点兔');
+  assert.equal(results[0].image, row.image);
 });
 
 test('Google 来源结果排除站内导航、重复与非法协议', () => {
   const results = googleResultRows([{ title: 'Google', url: 'https://accounts.google.com/' }, { title: '原网页', url: 'https://www.google.com/url?q=https%3A%2F%2Fa.test%2Fpage' }, { title: '重复', url: 'https://a.test/page' }, { title: '坏链接', url: 'javascript:alert(1)' }]);
   assert.equal(results.length, 1);
   assert.equal(results[0].url, 'https://a.test/page');
+  const image = googleResultRows([{ title: '图片来源', url: 'https://www.google.com/imgres?imgurl=https%3A%2F%2Fa.test%2Foriginal.png&imgrefurl=https%3A%2F%2Fa.test%2Fsource' }])[0];
+  assert.equal(image.image, 'https://a.test/original.png');
+  assert.equal(image.url, 'https://a.test/source');
 });
 
 test('Google 未配置浏览器可降级，不假装返回结果', async () => {
@@ -326,4 +332,78 @@ test('控制台搜图 API 复用鉴权，部分保存不清空令牌和白名单
   assert.equal(f.config.imageSearch.relayToken, 'a'.repeat(40));
   assert.deepEqual(f.config.imageSearch.allowedGroups, ['100001']);
   assert.equal((await fetch(`${base}/api/image-search/settings`, { method: 'POST', headers, body: JSON.stringify({ relayUrl: 'http://evil.test' }) })).status, 400);
+});
+
+test('匹配图中转只认短期搜索凭证，返回图片而非任意代理', async (t) => {
+  const requests = [];
+  const server = createImageSearchRelay({ token: 'x'.repeat(40), search: async () => ({ ...okReport('yandex'), results: [{ title: '来源', url: 'https://a.test/', image: 'https://a.test/full.png' }] }),
+    download: async (...args) => { requests.push(args); return { buffer: png }; } });
+  const base = await listen(t, server);
+  const headers = { authorization: `Bearer ${'x'.repeat(40)}`, 'x-search-platform': 'yandex' };
+  assert.equal((await fetch(`${base}/v1/image`, { method: 'POST', body: '{}' })).status, 401);
+  assert.equal((await fetch(`${base}/v1/image`, { method: 'POST', headers, body: JSON.stringify({ url: 'http://127.0.0.1/' }) })).status, 404);
+  const report = await (await fetch(`${base}/v1/search`, { method: 'POST', headers, body: png })).json();
+  const response = await fetch(`${base}/v1/image`, { method: 'POST', headers, body: JSON.stringify({ key: report.results[0].imageKey }) });
+  assert.equal(response.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+  assert.equal(requests[0][0], 'https://a.test/full.png');
+  assert.equal(requests.length, 1);
+});
+
+test('中转图片下载始终拒绝内网、凭据及本机，不受宿主图片例外影响', async () => {
+  for (const url of ['http://127.0.0.1/config', 'http://169.254.169.254/', 'http://[::1]/', 'http://localhost/', 'https://user:pass@example.com/', 'file:///etc/passwd']) {
+    await assert.rejects(safeFetchPublicBinary(url, 100, AbortSignal.timeout(1000)));
+  }
+});
+
+test('合并卡片原图失败回退缩略图，链接逐图对应且最多3张', async () => {
+  const reports = [{ ...okReport('yandex'), results: Array.from({ length: 4 }, (_, i) => ({ title: `图${i}`, url: `https://a.test/${i}`, imageKey: `${i}0000000-0000-0000-0000-000000000000`, thumbnailKey: `${i}0000000-0000-0000-0000-000000000001` })) }];
+  let requests = 0;
+  const nodes = await searchResultNodes(reports, imageSearchConfig({ limit: 4 }), { signal: new AbortController().signal, selfId: '123456', fetch: async (_url, options) => {
+    requests++;
+    return JSON.parse(options.body).key.endsWith('1') ? new Response(png) : new Response('denied', { status: 403 });
+  } });
+  assert.equal(nodes.length, 5);
+  assert.equal(requests, 6);
+  for (let i = 0; i < 3; i++) {
+    assert.match(nodes[i + 1].data.content[0].data.text, new RegExp(`https://a.test/${i}`));
+    assert.match(nodes[i + 1].data.content[1].data.text, /缩略图/);
+    assert.equal(nodes[i + 1].data.content[2].data.file, `base64://${png.toString('base64')}`);
+  }
+  assert.match(nodes[4].data.content[1].data.text, /未附图/);
+});
+
+test('附图阶段拒绝超限和非图片响应，取消时不返回待发卡片', async () => {
+  const report = { ...okReport('trace'), results: [{ title: '动画', url: 'https://anilist.co/anime/1', imageKey: '00000000-0000-0000-0000-000000000000' }] };
+  const config = imageSearchConfig();
+  const controller = new AbortController();
+  const nodes = await searchResultNodes([report], config, { signal: controller.signal, fetch: async () => new Response(Buffer.alloc(8 * 1024 * 1024 + 1)) });
+  assert.equal(nodes[1].data.content.some((s) => s.type === 'image'), false);
+  await assert.rejects(searchResultNodes([report], config, { signal: controller.signal, fetch: async () => { controller.abort(); throw new Error('cancelled'); } }));
+});
+
+test('合并卡片发送未知不补发文字，历史不落盘图片或凭证', async (t) => {
+  let forwards = 0;
+  const f = fixture(t, { forward: async () => { forwards++; throw new Error('unknown send'); },
+    fetchImpl: async (url) => url.endsWith('/v1/image') ? new Response(png) : Response.json({ ...okReport(), results: [{ title: '来源', url: 'https://a.test/', imageKey: '00000000-0000-0000-0000-000000000000' }] }) });
+  f.config.imageSearch.sendImages = true;
+  await f.manager.start(imageSearchCommand(imageMessage()), 'group:100001', 333);
+  await f.manager.task;
+  assert.equal(forwards, 1);
+  assert.equal(f.sends.length, 0);
+  assert.equal(f.manager.history[0].status, 'send-unknown');
+  assert.doesNotMatch(fs.readFileSync(f.manager.file, 'utf8'), /base64|imageKey|a\.test/);
+});
+
+test('Google 验证后冷却不继续访问，其他平台仍可使用', async (t) => {
+  const calls = [];
+  const server = createImageSearchRelay({ token: 'x'.repeat(40), search: async (platform) => {
+    calls.push(platform);
+    return { platform, status: platform === 'google' ? 'blocked' : 'ok', results: [] };
+  } });
+  const base = await listen(t, server);
+  for (const platform of ['google', 'google', 'yandex']) {
+    await fetch(`${base}/v1/search`, { method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(40)}`, 'x-search-platform': platform }, body: png });
+  }
+  assert.deepEqual(calls, ['google', 'yandex']);
 });

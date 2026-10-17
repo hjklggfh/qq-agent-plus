@@ -2,7 +2,7 @@ export const IMAGE_SEARCH_PLATFORMS = Object.freeze(['google', 'yandex', 'trace'
 export const DEFAULT_IMAGE_SEARCH_CONFIG = Object.freeze({
   enabled: false, relayUrl: '', relayToken: '', defaultPlatform: 'google',
   platforms: Object.freeze({ google: true, yandex: true, trace: true }),
-  fallback: true, allowPrivate: false, allowedGroups: Object.freeze([]),
+  fallback: true, sendImages: false, allowPrivate: false, allowedGroups: Object.freeze([]),
   timeoutSeconds: 45, limit: 3, cooldownSeconds: 15, traceMinSimilarity: 0.9
 });
 
@@ -22,7 +22,7 @@ export function validateImageSearchPatch(raw) {
   for (const key of Object.keys(raw)) {
     if (!Object.hasOwn(DEFAULT_IMAGE_SEARCH_CONFIG, key) && !key.startsWith('has')) throw new Error(`未知搜图设置：${key}`);
   }
-  for (const key of ['enabled', 'fallback', 'allowPrivate']) {
+  for (const key of ['enabled', 'fallback', 'sendImages', 'allowPrivate']) {
     if (Object.hasOwn(raw, key) && typeof raw[key] !== 'boolean') throw new Error('搜图开关必须为布尔值');
   }
   if (Object.hasOwn(raw, 'relayUrl')) {

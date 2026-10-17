@@ -39,9 +39,11 @@ test('搜图独立设置渲染默认关闭和三个平台，群名单语义明�
 test('搜图保存仅发自己的补丁，留空保留令牌、显式清除才发空值', { skip }, async (t) => {
   const { doc, context, calls } = page(t);
   doc.querySelector('#image-search-groups').value = '100001\n100001\n100002';
+  doc.querySelector('#image-search-images').checked = true;
   await vm.runInContext('saveImageSearchSettings()', context);
   const patch = JSON.parse(calls[0].options.body);
   assert.equal(Object.hasOwn(patch, 'relayToken'), false);
+  assert.equal(patch.sendImages, true);
   assert.deepEqual(patch.allowedGroups, ['100001', '100002']);
   assert.equal(Object.hasOwn(patch, 'api'), false);
   assert.equal(calls[0].url, '/api/image-search/settings');

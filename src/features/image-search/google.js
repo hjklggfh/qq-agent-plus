@@ -14,6 +14,11 @@ export function googleResultRows(rows, limit = 3) {
     let url = publicLink(row.url);
     if (!url) continue;
     const parsed = new URL(url);
+    let image = '';
+    if (parsed.hostname === 'www.google.com' && parsed.pathname === '/imgres') {
+      image = publicLink(parsed.searchParams.get('imgurl'));
+      url = publicLink(parsed.searchParams.get('imgrefurl'));
+    }
     if (parsed.hostname === 'www.google.com' && parsed.pathname === '/url') url = publicLink(parsed.searchParams.get('q') || parsed.searchParams.get('url'));
     if (!url) continue;
     const host = new URL(url).hostname;
@@ -21,7 +26,7 @@ export function googleResultRows(rows, limit = 3) {
     const title = cleanTitle(row.title);
     if (title.length < 3) continue;
     seen.add(url);
-    results.push({ title, url, thumbnail: publicLink(row.thumbnail) });
+    results.push({ title, url, image, thumbnail: publicLink(row.thumbnail) });
     if (results.length >= limit) break;
   }
   return results;

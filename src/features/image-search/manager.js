@@ -5,6 +5,7 @@ import { imageSearchConfig, IMAGE_SEARCH_PLATFORMS } from './config.js';
 import { MAX_IMAGE_BYTES, boundedBody, formatSearchReply } from './common.js';
 import { searchSegments } from './command.js';
 import { imageType } from '../../core/image-type.js';
+import { searchResultNodes } from './result-images.js';
 
 export class ImageSearchManager {
   constructor(options) {
@@ -12,6 +13,7 @@ export class ImageSearchManager {
     this.canRun = options.canRun;
     this.download = options.download;
     this.send = options.send;
+    this.forward = options.forward;
     this.onebot = options.onebot;
     this.store = options.store;
     this.fetch = options.fetchImpl || globalThis.fetch;
@@ -101,7 +103,7 @@ export class ImageSearchManager {
     const record = { id: randomUUID(), chatKey, startedAt: new Date().toISOString(), status: 'running', platforms: [] };
     this.history.push(record);
     this.history = this.history.slice(-50);
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(settings.timeoutSeconds * 3000 + 15000)]);
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(settings.timeoutSeconds * 3000 + 60000)]);
     const guard = setInterval(() => {
       try { this.enforce(); } catch { controller.abort(); }
     }, 500);
@@ -136,10 +138,15 @@ export class ImageSearchManager {
       record.status = reports.some((r) => r.status === 'ok' && r.results.length) ? 'done' : 'no-result';
       record.finishedAt = new Date().toISOString();
       this.save();
+      const nodes = settings.sendImages && this.forward && reports.some((r) => r.status === 'ok' && r.results.length)
+        ? await searchResultNodes(reports, settings, { signal, fetch: this.fetch, selfId: this.onebot.selfId, name: this.onebot.selfNickname }) : null;
+      this.enforce();
       if (this.settings().enabled && this.canRun(chatKey) && !signal.aborted) {
         // 发送结果未知时由既有 outbox 管理，不重试或自动重跑搜索。
         try {
-          const sent = await this.send(chatKey, [formatSearchReply(reports, settings.limit)], { runId, preserveCode: false, signal });
+          const sent = nodes
+            ? await this.forward(chatKey, { nodes, label: '以图搜图结果' }, { runId, signal })
+            : await this.send(chatKey, [formatSearchReply(reports, settings.limit)], { runId, preserveCode: false, signal });
           if (sent?.failed?.length) throw new Error('部分发送未确认');
         } catch {
           record.status = 'send-unknown';

@@ -16,6 +16,7 @@ function renderImageSearchSection(config) {
     <div class="field">${Object.entries(SEARCH_LABELS).map(([key, label]) => `<label><input id="image-search-platform-${key}" type="checkbox" ${s.platforms?.[key] !== false ? 'checked' : ''}> ${label}</label>`).join(' ')}</div>
     <div class="field"><label>允许使用的群号（每行一个，空名单表示所有群均不允许）</label><textarea id="image-search-groups" rows="3">${esc((s.allowedGroups || []).join('\n'))}</textarea></div>
     <div class="field"><label><input id="image-search-private" type="checkbox" ${s.allowPrivate ? 'checked' : ''}> 允许私聊搜图（仍受宿主私聊白名单限制）</label></div>
+    <div class="field"><label><input id="image-search-images" type="checkbox" ${s.sendImages ? 'checked' : ''}> 返回匹配图片及来源链接（合并转发，最多3张）</label><div class="hint">优先匹配图原文件，失败时尝试缩略图并标明；动画返回预览帧。图片总计最多8MB，原图防盗链或过大时仍保留链接。</div></div>
     <div class="field-row"><div class="field"><label>每个平台超时（秒）</label><input id="image-search-timeout" type="number" min="10" max="90" value="${esc(s.timeoutSeconds ?? 45)}"></div>
     <div class="field"><label>每个平台最多返回</label><input id="image-search-limit" type="number" min="1" max="5" value="${esc(s.limit ?? 3)}"></div>
     <div class="field"><label>同会话冷却（秒）</label><input id="image-search-cooldown" type="number" min="0" max="3600" value="${esc(s.cooldownSeconds ?? 15)}"></div>
@@ -33,6 +34,7 @@ async function saveImageSearchSettings() {
     defaultPlatform: $('#image-search-default').value,
     fallback: $('#image-search-fallback').checked,
     allowPrivate: $('#image-search-private').checked,
+    sendImages: $('#image-search-images').checked,
     allowedGroups: [...new Set($('#image-search-groups').value.split(/[\s,，]+/).filter(Boolean))],
     platforms: Object.fromEntries(Object.keys(SEARCH_LABELS).map((key) => [key, $(`#image-search-platform-${key}`).checked])),
     timeoutSeconds: Number($('#image-search-timeout').value),

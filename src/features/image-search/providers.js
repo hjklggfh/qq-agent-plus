@@ -37,7 +37,7 @@ export function parseTrace(data, limit = 3, minSimilarity = 0.9) {
     const key = `${id}:${row.episode}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    results.push({ title: cleanTitle(anime?.title?.chinese || anime?.title?.native || anime?.title?.romaji || row.filename), url: `https://anilist.co/anime/${id}`, episode: row.episode, similarity: row.similarity, from: row.from, to: row.to, version: cleanTitle(row.filename) });
+    results.push({ title: cleanTitle(anime?.title?.chinese || anime?.title?.native || anime?.title?.romaji || row.filename), url: `https://anilist.co/anime/${id}`, image: publicLink(row.image), episode: row.episode, similarity: row.similarity, from: row.from, to: row.to, version: cleanTitle(row.filename) });
     if (results.length >= limit) break;
   }
   return results;

@@ -573,6 +573,7 @@ export function createApp({
   const imageSearch = new ImageSearchManager({
     dataDir: DATA_DIR, getConfig, canRun, onebot, store,
     download: safeFetchBinary,
+    forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const jmFeature = initJmFeature({

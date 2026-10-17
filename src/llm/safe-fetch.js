@@ -261,6 +261,15 @@ export async function safeFetch(urlString) {
 /** 下载二进制（图片，≤maxBytes 字节），返回 { buffer, contentType }。 */
 export async function safeFetchBinary(urlString, maxBytes = 12 * 1024 * 1024, signal, headers = {}) {
   const allowPrivate = getConfig().security?.allowPrivateImageHosts === true;
+  return fetchBinary(urlString, maxBytes, signal, headers, allowPrivate);
+}
+
+/** 独立中转使用：始终禁止内网，不读取宿主配置。 */
+export async function safeFetchPublicBinary(urlString, maxBytes, signal, headers = {}) {
+  return fetchBinary(urlString, maxBytes, signal, headers, false);
+}
+
+async function fetchBinary(urlString, maxBytes, signal, headers, allowPrivate) {
   let { url, ip } = await validateFetchUrl(urlString, { allowPrivate });
   for (let i = 0; i <= MAX_REDIRECTS; i++) {
     signal?.throwIfAborted();
