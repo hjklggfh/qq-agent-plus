@@ -6,9 +6,9 @@ PID 默认使用已有国内图片入口。需要海外线路时，可以单独�
 
 杭州 Agent → 杭州 `127.0.0.1:3222` → 专用 SSH 隧道 → 东京 `127.0.0.1:3222` → 指定 Pixiv 相关域名。
 
-代理源码：`src/features/pixiv/connect_proxy.py`，仅依赖 Python 3 标准库。只接受指定主机的443端口 CONNECT：`www.pixiv.net`、`app-api.pixiv.net`、`i.pximg.net`、`s.pximg.net`、`pixiv.re`、`i.pixiv.re`、`api.lolicon.app`。其他目标、私网 DNS 结果和普通 HTTP 转发被拒绝。两个监听端口都只绑定127.0.0.1，不开放公网代理。
+代理源码：`src/features/pixiv/connect_proxy.py`，CONNECT 使用 Python 3 标准库，图片压缩另需系统 Pillow（Ubuntu 安装 python3-pil）。只接受指定主机的443端口 CONNECT：`www.pixiv.net`、`app-api.pixiv.net`、`i.pximg.net`、`s.pximg.net`、`pixiv.re`、`i.pixiv.re`、`api.lolicon.app`。其他目标、私网 DNS 结果和普通 HTTP 转发被拒绝。两个监听端口都只绑定127.0.0.1，不开放公网代理。
 
-HTTPS 仍由杭州 Agent 与目标网站直接协商，东京只转发加密字节，不解密 Cookie、不记录图片或请求内容。仅改变 PID 独立配置里的 `proxyUrl`，不设置系统代理或聊天模型代理。最多同时转发8条连接，空闲120秒断开。
+CONNECT 的 HTTPS 仍由杭州 Agent 与目标网站直接协商，东京只转发加密字节，不解密 Cookie、不记录图片或请求内容。仅改变 PID 独立配置里的 `proxyUrl`，不设置系统代理或聊天模型代理。最多同时转发8条连接，空闲120秒断开。
 
 ## 部署前准备
 
@@ -38,7 +38,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-MemoryMax=128M
+MemoryMax=384M
 TasksMax=32
 UMask=0077
 [Install]
@@ -74,3 +74,11 @@ ssh -NT -i ~/.ssh/pixiv_tokyo_ed25519 \
 现有分级、大小、页数、超时和取消限制继续生效。中转不能保证所有作品都可取，也不能把缺失的图片地址或HTTP200误当成整本成功。分级已核实且首次取得真实图片路径后，会缓存该路径，后续相同PID减少短链接查询。
 
 回退时，在控制台显式清除PID代理，恢复原详情接口；确认没有PID任务运行后，停止并禁用两端专用用户服务。不会删除聊天、存档、分级、作品历史或以图搜图数据。需要撤销访问时再单独移除对应专用公钥授权，保留其他SSH密钥。
+
+## 减少跨区图片回传
+
+若 SSH 回传大图较慢，可通过设置接口配置 `imageRelayUrl: "http://127.0.0.1:3222/image"`。网页保存其他设置会保留它。该端点只接受官方 `i.pximg.net` 图片路径，不接收 Cookie、认证头、任意主机或重定向。东京通过 HTTPS 下载公开 CDN 图片，在内存中缩放后转为 JPEG（质量75、透明处填白、动图取首帧），经 SSH 返回杭州生成 PDF。长边由现有 `downsampleMaxEdge` 控制，默认1200；这会损失一些清晰度，不属于原图无损传输。
+
+每次最多处理一张图片，原文件受 `maxImageBytes` 限制（最大16MiB），像素上限2400万，用户服务内存上限384MiB。不保存图片、不记录请求内容。官方详情仍通过 CONNECT 保持端到端 HTTPS。若作品需要登录，Cookie仍只发给官方详情接口。
+
+显式清空 `imageRelayUrl` 可关闭东京压缩，继续使用普通代理下载；完整回退还需清空 `proxyUrl` 并恢复原详情接口。先完成隔离的整本下载测试，再启用生产设置。

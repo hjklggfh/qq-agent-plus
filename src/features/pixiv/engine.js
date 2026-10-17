@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pixivFetch } from './network.js';
+import { fetchRelayedImage } from './image-relay.js';
 
 export function createPixivEngine(options) {
   let operationSignal;
@@ -840,10 +841,15 @@ export function createPixivEngine(options) {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), ms);
     try {
-      const resp = await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', ms, { controller: ac });
+      const s = settings();
+      const relayed = s.imageRelayUrl && new URL(url).hostname === 'i.pximg.net';
+      const resp = relayed ? await fetchRelayedImage(url, s, { fetchImpl: options.fetchImpl,
+        signal: operationSignal ? AbortSignal.any([ac.signal, operationSignal]) : ac.signal })
+        : await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', ms, { controller: ac });
       if (!resp.ok) {
         const e = new Error(describeImageHttp(resp.status));
         e.status = resp.status;
+        if (relayed && resp.status === 413) e.tooBig = true;
         try { await resp.body?.cancel(); } catch { /* 保留HTTP错误，释放本次响应。 */ }
         throw e;
       }
