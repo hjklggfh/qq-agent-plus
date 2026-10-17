@@ -636,6 +636,8 @@ export function createPixivEngine(options) {
     if (error.tooBig) return false;
     const status = Number(error.status) || 0;
     if (status === 404 || status === 410) return false;
+    // 这里只用于幂等的图片 GET；上游偶发 5xx 可以按 pageRetryOnce 有限重试。
+    if ([500, 502, 503, 504].includes(status)) return true;
     if (status >= 400) return false;
     return error.netError === true || isNetError(error);
   }
@@ -840,6 +842,7 @@ export function createPixivEngine(options) {
       if (!resp.ok) {
         const e = new Error(describeImageHttp(resp.status));
         e.status = resp.status;
+        try { await resp.body?.cancel(); } catch { /* 保留HTTP错误，释放本次响应。 */ }
         throw e;
       }
       const declared = Number(resp.headers.get('content-length')) || 0;
@@ -870,7 +873,22 @@ export function createPixivEngine(options) {
       const ext = MIME_EXT[mime] || '.jpg';
       const file = path.join(tempDir(), `pixiv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`);
       fs.writeFileSync(file, buf);
-      return { file, bytes: buf.length };
+      let sourceUrl;
+      try {
+        const requested = new URL(url);
+        const source = new URL(resp.headers.get('x-origin-url') || '');
+        const parsed = parseOriginalPath(source.href);
+        const page = parseSuffixPath(requested.href)?.page;
+        const requestedPage = page ? page - 1 : Number(parseOriginalPath(requested.href)?.page || 0);
+        if (['pixiv.re', 'pixiv.cat', 'pixiv.nl', 'i.pixiv.re'].includes(requested.hostname)
+          && source.protocol === 'https:' && source.hostname === 'i.pximg.net'
+          && !source.username && !source.password && !source.port && !source.search && !source.hash
+          && parsed?.pid === extractPid(requested.href) && Number(parsed.page) === requestedPage) {
+          if (!resolveProxyUrl(settings())) source.hostname = 'i.pixiv.re';
+          sourceUrl = source.href;
+        }
+      } catch { /* 响应头仅作优化；无效或不匹配时继续沿用请求地址。 */ }
+      return { file, bytes: buf.length, ...(sourceUrl ? { sourceUrl } : {}) };
     } finally {
       clearTimeout(timer);
     }
@@ -1061,7 +1079,7 @@ export function createPixivEngine(options) {
         } else if (final.reason) {
           say(`[pixiv] ${item.pid} 降采样跳过（${final.reason}），按原图 ${Math.round(final.bytes / 1024)}KB 继续`);
         }
-        return { ...got, file: final.file, bytes: final.bytes, downsized: final.downsized, url: urls[i] };
+        return { ...got, file: final.file, bytes: final.bytes, downsized: final.downsized, url: got.sourceUrl || urls[i] };
       } catch (error) {
           last = error;
           if (error?.hardNetError) { hardFail = true; break; }

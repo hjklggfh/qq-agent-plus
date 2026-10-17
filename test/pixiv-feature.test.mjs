@@ -64,6 +64,42 @@ test('默认PID链路不依赖pixiv.net直连；保留pixiv.re模板与小尺寸
   assert.equal(f.requests.length, 0); f.manager.options.fetchImpl = originalFetch;
 });
 
+test('参考原插件PID入口：临时500有限重试，成功后按X-Origin-URL直接续页，不重复解析PID', async (t) => {
+  let attempts = 0;
+  const f = fixture(t, { metadataUrlTemplate: '', ratings: ['r18', 'r18g'], unknownRatingPolicy: 'adult-only', maxPages: 3 }, {
+    fetchImpl: async (url, init) => {
+      if (init.redirect === 'manual') return new Response('', { status: 301, headers: { location: `/${pid}-1.png` } });
+      if (url === `https://pixiv.re/${pid}.png`) {
+        if (++attempts === 1) return new Response('', { status: 500 });
+        return new Response(png, { headers: { 'content-type': 'image/png', 'x-origin-url': `https://i.pximg.net/img-original/img/2026/10/03/21/44/15/${pid}_p0.jpg` } });
+      }
+      assert.match(url, new RegExp(`^https://i\\.pixiv\\.re/img-master/img/2026/10/03/21/44/15/${pid}_p[12]_master1200\\.jpg$`));
+      return new Response(png, { headers: { 'content-type': 'image/png' } });
+    }
+  });
+  const result = await f.manager.start({ pid }, 'group:100001', 'origin-header');
+  assert.equal(result.isError, undefined, result.content); assert.equal(attempts, 2);
+  assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 3 页']);
+  assert.equal(f.requests.filter((r) => r.url.startsWith('https://i.pixiv.re/')).length, 2);
+});
+
+test('X-Origin-URL不信任任意域名、凭据或不同作品和页号；404不作为临时错误重试', async (t) => {
+  for (const source of ['https://127.0.0.1/a.png',
+    `https://evil.test/img-original/img/2026/10/03/21/44/15/${pid}_p0.jpg`,
+    `https://u:secret@i.pximg.net/img-original/img/2026/10/03/21/44/15/${pid}_p0.jpg`,
+    'https://i.pximg.net/img-original/img/2026/10/03/21/44/15/98765432_p0.jpg',
+    `https://i.pximg.net/img-original/img/2026/10/03/21/44/15/${pid}_p1.jpg`]) {
+    const f = fixture(t, {}, { fetchImpl: async () => new Response(png, { headers: { 'x-origin-url': source } }) });
+    const got = await f.manager.engine.fetchImage({ pid }, f.manager.engine.settings());
+    assert.equal(got.url, `https://pixiv.re/${pid}.png`);
+  }
+  const f = fixture(t, { pageRetryOnce: 2 }, { fetchImpl: async () => new Response('', { status: 404 }) });
+  await assert.rejects(f.manager.engine.fetchImage({ pid, imageUrls: ['https://img.test/page.png'] }, f.manager.engine.settings(), { allowTemplate: false }));
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.manager.engine.isTransientFetchError({ status: 403 }), false);
+  assert.equal(f.manager.engine.isTransientFetchError({ status: 429 }), false);
+});
+
 test('公开data详情格式取得真实路径，Yuki图片改用既有反代，缺少分级绝不默认为safe', async (t) => {
   const f = fixture(t, { metadataUrlTemplate: 'https://pixiv.yuki.sh/api/illust?id={pid}', maxPdfPages: 1 }, {
     host: pdfHost({}),
