@@ -7,6 +7,7 @@
 // administrator configuration source.
 import * as legacy from './config-legacy.js';
 import { validateTrpgPatch } from '../features/trpg/config.js';
+import { validateImageSearchPatch } from '../features/image-search/config.js';
 import {
   ASR_DEFAULT_PROVIDER, ASR_PROVIDERS,
   asrLocalModel, findWhisperBinSync
@@ -300,6 +301,7 @@ export function updateConfig(patch) {
   );
   const requestedAdmin = normalizedRequestedAdmin(rawPatch, current);
   if (Object.hasOwn(rawPatch, 'trpg')) validateTrpgPatch(rawPatch.trpg);
+  if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   const autoUpdateEnabled = hasOwn(rawPatch?.autoUpdate, 'enabled')
     ? rawPatch.autoUpdate.enabled === true
     : current.autoUpdate?.enabled === true;

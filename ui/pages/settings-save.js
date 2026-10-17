@@ -20,6 +20,7 @@ import { pickedGroups, state } from '../core/state.js';
 import { currentPersonaId } from './persona.js';
 import { captureTimeControlRule } from './settings-bind.js';
 import { syncThinkingUi } from './settings.js';
+import { saveImageSearchSettings } from './image-search.js';
 async function saveConfig({ quiet = false } = {}) {
   const c = state.config;
   // 只在当前区块的元素存在时才读取，避免“每个区块保存时读取其他区块元素”导致的 null 报错。
@@ -35,6 +36,7 @@ async function saveConfig({ quiet = false } = {}) {
   const sec = state.settingsSection || 'api';
 
   const patch = {};
+  if (sec === 'image-search') return saveImageSearchSettings();
 
   if (sec === 'jm') {
     const settings = {

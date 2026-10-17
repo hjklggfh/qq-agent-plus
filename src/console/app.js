@@ -29,6 +29,9 @@ import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
 import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
+import { ImageSearchManager } from '../features/image-search/manager.js';
+import { imageSearchCommand } from '../features/image-search/command.js';
+import { installImageSearchRoutes } from '../features/image-search/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
 import { TrpgManager } from '../features/trpg/manager.js';
 import { installTrpgRoutes } from '../features/trpg/routes.js';
@@ -567,6 +570,11 @@ export function createApp({
     sender,
     log: moduleLog('bilibili')
   });
+  const imageSearch = new ImageSearchManager({
+    dataDir: DATA_DIR, getConfig, canRun, onebot, store,
+    download: safeFetchBinary,
+    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
+  });
   const jmFeature = initJmFeature({
     dataDir: DATA_DIR,
     getConfig,
@@ -1050,6 +1058,7 @@ export function createApp({
     const trpgCommand = !isSelf ? trpg.commandText(chatKey, text) : '';
     const trpgAction = !isSelf && trpg.isAction(chatKey, String(senderId), text);
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
+    const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1066,7 +1075,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey)
+      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean(searchCommand && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1097,6 +1106,14 @@ export function createApp({
         return;
       }
       orchestrator.onIncoming(chatKey);
+      return;
+    }
+    // 明确搜图指令在入库时即消费，防止同群其他模型任务或重启重新领取。
+    if (searchCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        await imageSearch.start(searchCommand, chatKey, stored.id);
+      }
       return;
     }
     // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
@@ -3631,6 +3648,7 @@ export function createApp({
     store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
     orchestrator.enforceTrpgState();
     let closedThreads = 0;
+    imageSearch.enforce();
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
         if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
@@ -4364,6 +4382,7 @@ export function createApp({
     await incidentPilot?.stop();
     incidentPilot = null;
     await jmFeature?.deactivate?.();
+    await imageSearch.stop();
     onebot.close();
     await orchestrator.abortAll();
     await Promise.allSettled([...ingress.values()]);
@@ -4392,10 +4411,16 @@ export function createApp({
     enforceTrpgState: () => orchestrator.enforceTrpgState(),
     auditWrite
   }, trpg);
+  installImageSearchRoutes({
+    addRoute: (method, routePath, handler) => router.add(method, routePath, handler),
+    updateConfig,
+    auditWrite
+  }, imageSearch);
 
   return {
     server,
     trpg,
+    imageSearch,
     onebot,
     store,
     memory,

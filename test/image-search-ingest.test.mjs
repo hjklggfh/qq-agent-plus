@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-image-search-ingest-'));
+process.env.QQ_AGENT_DATA_DIR = root;
+process.on('exit', () => { try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* Windows SQLite handles may close at exit. */ } });
+
+test('真实 QQ 入口：搜图先消费、重复不重搜、无模型调用，普通消息照常唤醒', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
+  cfg.allow.groups = ['100001'];
+  cfg.sticker.autoCollect = false;
+  cfg.imageSearch = { ...cfg.imageSearch, enabled: true, allowedGroups: ['100001'], relayUrl: 'http://127.0.0.1:3220', relayToken: 't'.repeat(40), cooldownSeconds: 0 };
+  setRuntimeConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(() => app.stop());
+  let wakes = 0, searches = 0;
+  const replies = [];
+  app.orchestrator.onIncoming = () => { wakes++; };
+  app.sender.sendTextBatch = async (_chat, messages) => { replies.push(...messages); return { sent: [], failed: [] }; };
+  app.imageSearch.download = async () => ({ buffer: Buffer.from('89504e470d0a1a0a00000000', 'hex') });
+  app.imageSearch.fetch = async (_url, options) => {
+    searches++;
+    assert.equal(app.store.unreadCount('group:100001'), 0, '发起查询前必须已消费指令');
+    return Response.json({ platform: options.headers['x-search-platform'], status: 'ok', results: [{ title: '结果', url: 'https://example.com/source' }] });
+  };
+  const event = (mid, message, group = 100001) => app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: group, user_id: 123456, message_id: mid, time: Math.floor(Date.now() / 1000), sender: { nickname: '用户' }, message });
+  const command = [{ type: 'text', data: { text: '搜图' } }, { type: 'image', data: { url: 'https://qq.example/image' } }];
+  await event(10, command);
+  await app.imageSearch.task;
+  await event(10, command);
+  assert.equal(searches, 1);
+  assert.equal(wakes, 0);
+  assert.equal(replies.length, 1);
+  await event(11, '[CQ:image,url=https://qq.example/image]搜图 Yandex');
+  await app.imageSearch.task;
+  assert.equal(searches, 2, 'CQ 字符串形态也必须走确定性入口');
+  cfg.runtime.paused = true;
+  await event(12, command);
+  assert.equal(searches, 2);
+  assert.equal(app.store.unreadCount('group:100001'), 0, '暂停时搜图指令不能留待模型消费');
+  cfg.runtime.paused = false;
+  await event(13, '正常聊天');
+  assert.equal(wakes, 1);
+  await event(14, command, 100002);
+  assert.equal(searches, 2, '宿主白名单外不进入搜图');
+});
