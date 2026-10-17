@@ -3,7 +3,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { validateFetchUrl } from '../../llm/safe-fetch.js';
 
 const agents = new Map();
-// 与旧下载链路独立运行，既不读取搜图中转配置，也不访问东京。
+// PID 的可选代理独立配置；不读取或复用以图搜图中转配置。
 export async function pixivFetch(raw, init = {}) {
   let target = String(raw);
   let headers = { ...init.headers };

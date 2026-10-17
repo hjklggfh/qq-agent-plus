@@ -577,6 +577,7 @@ export function createPixivEngine(options) {
     const url = String(proxyUrl || '').trim();
     if (!url) return null;
     if (proxyAgent && proxyAgentKey === url) return proxyAgent;
+    if (proxyAgent) await proxyAgent.destroy();
     try {
       const { ProxyAgent } = await import('undici');
       const AgentClass = ProxyAgent;
@@ -676,7 +677,8 @@ export function createPixivEngine(options) {
   }
   async function doFetch(url, accept, timeoutMs, { minimal = false, controller = null, method = 'GET', redirect = 'follow', quiet = false } = {}) {
     const s = settings();
-    const proxyUrl = resolveProxyUrl(s);
+    const official = /(^|\.)(pixiv\.net|pximg\.net)$/.test(new URL(url).hostname);
+    const proxyUrl = s.proxyScope === 'official' && !official ? '' : resolveProxyUrl(s);
     const dispatcher = await dispatcherFor(proxyUrl);
     const ms = Math.max(3000, Number(timeoutMs) || 15000);
     const ac = controller ?? new AbortController();
@@ -1102,7 +1104,7 @@ export function createPixivEngine(options) {
   api = { log: options.log || {} };
   setStateDir(options.stateDir);
   function setSignal(signal) { operationSignal = signal; }
-  function dispose() { return proxyAgent?.close(); }
+  function dispose() { return proxyAgent?.destroy(); }
   function seenSet() { return new Set(seen.keys()); }
   return { setStateDir, __setSettingsForTest, deadSet, normalizeItem, parseSearchJson, LOLICON_SIZE_LADDER, sizeLadderFrom, buildLoliconUrl, pickSizeUrls, mapLoliconItems, ratingOf, ratingKnown, isR18, resolveRatings, allowedRatings, ratingLabel, filterByRating, normalizeRatingTokens, loadChatRatings, __resetChatRatingsCache, chatRatingOf, ratingsForChat, setChatRating, clearChatRating, ownerIdSet, adminIdSet, latestCaller, callerMayChangeRating, pickUnseen, buildTryList, formatNote, buildSearchUrl, buildImageUrl, imageCandidates, parseOriginalPath, sizeUrlsFromOriginal, parseSuffixPath, pageUrlsOf, describeImageHttp, extractPid, resolveProxyUrl, breakerState, pixivDirectCoolingDown, describeFetchError, isTransientFetchError, needsPixivReferer, searchHttpError, __setLogSinkForTest, __resetFfmpegProbe, __setSpawnForTest, resolveFfmpeg, buildDownsampleArgs, downsampleToJpeg, searchIllusts, fetchImage, requestJson, sweepTemp, markSeen, markDead, loadState, saveState, settings, setSignal, dispose, seenSet };
 }

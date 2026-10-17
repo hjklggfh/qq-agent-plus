@@ -248,6 +248,10 @@ export class PixivManager {
           try {
             const got = await this.engine.fetchImage({ ...item, imageUrl: '', imageUrls: urls, thumbnail: '' }, this.engine.settings(), { allowTemplate: page === 1 && !urls.length });
             seed = { ...item, imageUrl: got.usedUrl || got.url || urls[0] || seed.imageUrl, imageUrls: [got.usedUrl || got.url || urls[0]].filter(Boolean) };
+            if (page === 1 && this.engine.ratingKnown(item) && this.engine.parseOriginalPath(seed.imageUrl)) {
+              item.imageUrls = this.engine.sizeUrlsFromOriginal(seed.imageUrl, s.imageSize);
+              this.cache(item); // 已核实分级的作品记住真实路径，后续请求无需重复查询PID短链。
+            }
             const buffer = fs.readFileSync(got.file);
             if (pdf) {
               try {

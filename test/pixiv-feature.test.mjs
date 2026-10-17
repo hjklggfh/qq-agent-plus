@@ -64,6 +64,13 @@ test('默认PID链路不依赖pixiv.net直连；保留pixiv.re模板与小尺寸
   assert.equal(f.requests.length, 0); f.manager.options.fetchImpl = originalFetch;
 });
 
+test('可选官方代理范围：官网详情和原图走代理，国内图床和关键词仍直连', async (t) => {
+  const f = fixture(t, { proxyUrl: 'http://127.0.0.1:3222', proxyScope: 'official' }, { fetchImpl: async () => Response.json({ ok: true }) });
+  for (const url of ['https://www.pixiv.net/ajax/illust/12345678', 'https://i.pximg.net/image.jpg', 'https://pixiv.re/12345678.png', 'https://api.lolicon.app/setu/v2']) await f.manager.engine.requestJson(url);
+  assert.deepEqual(f.requests.map((r) => Boolean(r.init.dispatcher)), [true, true, false, false]);
+  assert.throws(() => validatePixivPatch({ proxyScope: 'invalid' }));
+});
+
 test('参考原插件PID入口：临时500有限重试，成功后按X-Origin-URL直接续页，不重复解析PID', async (t) => {
   let attempts = 0;
   const f = fixture(t, { metadataUrlTemplate: '', ratings: ['r18', 'r18g'], unknownRatingPolicy: 'adult-only', maxPages: 3 }, {

@@ -9,7 +9,7 @@ export const DEFAULT_PIXIV_CONFIG = Object.freeze({
   downsampleQuality: 5, cooldownSeconds: 10, metadataUrlTemplate: '',
   searchBackend: 'auto', loliconApiUrl: 'https://api.lolicon.app/setu/v2',
   searchUrlTemplate: 'https://www.pixiv.net/ajax/search/artworks/{kw}?word={kw}&order=date_d&mode=all&p={page}&s_mode=s_tag&type=all&lang=zh',
-  imageUrlTemplate: 'https://pixiv.re/{pid}.png', proxyUrl: '', cookie: '',
+  imageUrlTemplate: 'https://pixiv.re/{pid}.png', proxyUrl: '', proxyScope: 'all', cookie: '',
   userAgent: '', excludeAI: false, stateCap: 2000, retryCandidates: 3,
   deadTtlDays: 7, poolSize: 5, pageRetryOnce: 1
 });
@@ -30,6 +30,7 @@ export function validatePixivPatch(patch) {
     if (key === 'unknownRatingPolicy' && !['deny', 'adult-only'].includes(value)) throw new Error('未知分级策略无效');
     if (key === 'imageSize' && !['original', 'regular', 'small', 'thumb', 'mini'].includes(value)) throw new Error('图片尺寸无效');
     if (key === 'outputFormat' && !['images', 'pdf'].includes(value)) throw new Error('发送方式无效');
+    if (key === 'proxyScope' && !['all', 'official'].includes(value)) throw new Error('代理范围无效');
     if (key === 'searchBackend' && !['auto', 'builtin', 'pixiv'].includes(value)) throw new Error('检索方式无效');
     if (typeof DEFAULT_PIXIV_CONFIG[key] === 'string' && (typeof value !== 'string' || value.length > 4096 || /[\r\n]/.test(value))) throw new Error('设置文本格式无效');
     if (['metadataUrlTemplate', 'loliconApiUrl', 'searchUrlTemplate', 'imageUrlTemplate', 'proxyUrl'].includes(key) && value) {
