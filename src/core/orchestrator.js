@@ -1624,6 +1624,7 @@ export class Orchestrator {
       if (d.feature === 'identityPilot' && !identityAvailable) return false;
       if (d.feature === 'friendProposal' && !friendProposalAvailable) return false;
       if (d.feature === 'jm' && cfg.jm?.enabled === false) return false;
+      if (d.feature === 'pixiv' && cfg.pixiv?.enabled !== true) return false;
       return true;
     }).map((definition) => {
       if (trpgAction) return {

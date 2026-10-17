@@ -1,18 +1,15 @@
-let currentTools = [];
-let currentPrompts = [];
+const features = new Map();
 
-export function registerBuiltinFeature({ toolDefs = [], promptSections = [] } = {}) {
-  currentTools = Array.isArray(toolDefs) ? toolDefs : [];
-  currentPrompts = Array.isArray(promptSections) ? promptSections : [];
+export function registerBuiltinFeature({ id = 'jm', toolDefs = [], promptSections = [] } = {}) {
+  features.set(id, { toolDefs: Array.isArray(toolDefs) ? toolDefs : [], promptSections: Array.isArray(promptSections) ? promptSections : [] });
 }
 
 export function builtinFeatureToolDefs() {
-  return currentTools;
+  return [...features.values()].flatMap((f) => f.toolDefs);
 }
 
 export function builtinPromptSections() {
-  return currentPrompts
-    .slice()
+  return [...features.values()].flatMap((f) => f.promptSections)
     .sort((a, b) => Number(a?.priority || 50) - Number(b?.priority || 50))
     .map((item) => item?.title ? `【${item.title}】\n${item.content}` : String(item?.content || ''))
     .filter(Boolean)

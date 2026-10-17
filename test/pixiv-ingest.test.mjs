@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pid-ingest-'));
+process.env.QQ_AGENT_DATA_DIR = dir;
+process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* SQLite句柄随进程退出。 */ } });
+test('真实QQ入口：明确PID不唤醒模型，重复事件不重复取图，暂停和白名单有效', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG); cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
+  cfg.allow.groups = ['100001']; cfg.pixiv.enabled = true; cfg.sticker.autoCollect = false;
+  setRuntimeConfig(cfg);
+  const app = createApp({ log: () => {} }); t.after(() => app.stop());
+  let runs = 0, wakes = 0;
+  app.orchestrator.onIncoming = () => { wakes++; };
+  app.pixiv.start = async () => { runs++; assert.equal(app.store.unreadCount('group:100001'), 0); return { content: 'ok' }; };
+  const event = (mid, text, group = 100001) => app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: group, user_id: 123456, message_id: mid, time: Math.floor(Date.now() / 1000), sender: { nickname: '用户' }, message: text });
+  await event(10, 'PID 12345678'); await event(10, 'PID 12345678');
+  assert.equal(runs, 1); assert.equal(wakes, 0);
+  await event(11, 'https://www.pixiv.net/artworks/12345678'); assert.equal(runs, 2);
+  cfg.runtime.paused = true; await event(12, 'PID 12345678'); assert.equal(runs, 2);
+  assert.equal(app.store.unreadCount('group:100001'), 0);
+  cfg.runtime.paused = false; await event(13, 'PID 12345678', 100002); assert.equal(runs, 2);
+  await event(14, '12345678'); assert.equal(wakes, 1, '普通数字不得误识别为命令');
+});

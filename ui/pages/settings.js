@@ -31,6 +31,7 @@ import { renderAsrSection } from './settings-voice.js';
 import { refreshAutoUpdateStatus, timeControlTargetOptions } from './status.js';
 import { loadUsageView } from './usage.js';
 import { renderImageSearchSection, bindImageSearchSection } from './image-search.js';
+import { renderPixivSection, bindPixivSection } from './pixiv.js';
 /** 把设置解析成实际要应用的主题名。 */
 function resolveTheme(pref) {
   if (THEME_VALUES.includes(pref) && pref !== 'system') return pref;
@@ -64,6 +65,7 @@ function renderSettingsSidebar() {
     ['api', '模型 API'],
     ['search', '搜索服务'],
     ['image-search', '以图搜图'],
+    ['pixiv', 'PID 搜索'],
     ['media', 'B站媒体'],
     ['jm', 'JM 禁漫下载'],
     ['asr', '语音转文字'],
@@ -108,6 +110,7 @@ function renderSettingsImpl() {
   bindSettingsEvents(c);
   bindCrossSectionControls();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
+  if (state.settingsSection === 'pixiv') bindPixivSection();
 }
 
 function renderJmSection(c) {
@@ -172,6 +175,7 @@ function renderSettingsSection(c) {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
     'image-search': () => renderImageSearchSection(c),
+    'pixiv': () => renderPixivSection(c),
     media: () => renderBilibiliSection(c),
     jm: () => renderJmSection(c),
     asr: () => renderAsrSection(c),

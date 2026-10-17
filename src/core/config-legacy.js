@@ -15,6 +15,7 @@ import { normalizeTokenSaverMode } from './token-saver.js';   // 零依赖模块
 import { normalizeMomentWindows } from '../features/moment-schedule.js';
 import { DEFAULT_TRPG_CONFIG } from '../features/trpg/config.js';
 import { DEFAULT_IMAGE_SEARCH_CONFIG } from '../features/image-search/config.js';
+import { DEFAULT_PIXIV_CONFIG, migratePixivConfig } from '../features/pixiv/config.js';
 // 插件 id 的规则只有一处定义（plugins/_host/manifest.js 是零依赖的叶子模块，不会引回 core/）。
 // 在配置里重抄一份正则，就会埋下"配置认为合法、装载器认为不合法"的两套口径。
 import { PLUGIN_ID_PATTERN } from '../../plugins/_host/manifest.js';
@@ -32,6 +33,7 @@ export const MAX_PLUGINS_ENABLED = 50;
 export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
+  pixiv: structuredClone(DEFAULT_PIXIV_CONFIG),
   imageSearch: structuredClone(DEFAULT_IMAGE_SEARCH_CONFIG),
   trpg: { ...DEFAULT_TRPG_CONFIG },
   // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。
@@ -968,6 +970,7 @@ function migrateConfig(parsed) {
   // 被 loadConfig 的 catch 吞掉后静默退回默认值、还会被持久化 —— 用户配置整份没了。
   if (!isPlainObject(parsed)) parsed = {};
   const out = structuredClone(parsed);
+  migratePixivConfig(out);
   // 旧版 JM 适配曾把配置放在 plugins.settings.jm-suomingor。
   // 首次启动时迁移到宿主顶层；顶层已有配置优先，避免覆盖用户新设置。
   const legacyJm = out.plugins?.settings?.['jm-suomingor'];

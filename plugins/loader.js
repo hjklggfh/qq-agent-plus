@@ -433,6 +433,7 @@ export async function initPlugins({
 
   for (const root of roots) {
     for (const item of listPluginDirs(root)) {
+      if (item.id === 'pixiv-illust') continue; // 已迁为宿主 PID 搜索，旧目录仅保留回滚。
       if (seen.has(item.id)) {
         log?.warn?.(`[plugin] 插件 id ${item.id} 在多个根目录里出现，已忽略 ${item.dir}`);
         continue;

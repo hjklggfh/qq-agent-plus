@@ -1,0 +1,224 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { PixivManager } from '../src/features/pixiv/manager.js';
+import { createPixivEngine } from '../src/features/pixiv/engine.js';
+import { DEFAULT_PIXIV_CONFIG, pixivConfig, migratePixivConfig, validatePixivPatch } from '../src/features/pixiv/config.js';
+import { pixivCommand } from '../src/features/pixiv/command.js';
+import { installPixivRoutes } from '../src/features/pixiv/routes.js';
+import { createRouter } from '../src/console/router.js';
+import { builtinFeatureToolDefs, registerBuiltinFeature } from '../src/features/feature-registry.js';
+import { sanitizeConfigSecrets } from '../src/core/secret-keys.js';
+import { pixivFetch } from '../src/features/pixiv/network.js';
+import { MockAgent } from 'undici';
+
+const png = Buffer.from('89504e470d0a1a0a00000000', 'hex');
+const pid = '12345678';
+function fixture(t, settings = {}, options = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-pixiv-'));
+  const cfg = { pixiv: pixivConfig({ enabled: true, metadataUrlTemplate: 'https://www.pixiv.net/ajax/illust/{pid}', cooldownSeconds: 0, maxPages: 100, pagesPerBatch: 2, ...settings }), admin: { ownerUin: '111111' } };
+  const requests = [], forwards = [], sends = [];
+  const count = options.pages || 5;
+  const urls = (page) => ({ regular: `https://img.test/${pid}-${page}.png` });
+  const fetchImpl = async (url, init) => {
+    const value = String(url); requests.push({ url: value, init });
+    if (options.fetchImpl) return options.fetchImpl(value, init);
+    if (value.endsWith('/pages')) return Response.json({ body: Array.from({ length: count }, (_, i) => ({ urls: urls(i + 1) })) });
+    if (value.includes('/ajax/illust/')) return Response.json({ body: { id: pid, xRestrict: options.restriction ?? 0, pageCount: count, title: '测试作品', userName: '作者', urls: urls(1) } });
+    if (options.missing?.some((p) => value.includes(`-${p}.png`))) return new Response('', { status: 404 });
+    return new Response(png, { headers: { 'content-type': 'image/png' } });
+  };
+  const updateConfig = (patch) => {
+    const p = patch.pixiv;
+    cfg.pixiv = { ...cfg.pixiv, ...p, ...(p.chatRatings ? { chatRatings: p.chatRatings.__replace__ || p.chatRatings } : {}) };
+  };
+  const manager = new PixivManager({ dataDir: dir, getConfig: () => cfg, updateConfig, canRun: () => options.allowed !== false,
+    onebot: { selfId: '999999' }, fetchImpl, forward: async (...args) => { forwards.push(args); return options.forward?.(...args); },
+    send: async (...args) => sends.push(args), ...options.host });
+  t.after(async () => { await manager.stop(); fs.rmSync(dir, { recursive: true, force: true }); });
+  return { manager, cfg, dir, requests, forwards, sends, updateConfig };
+}
+const pageNames = (f) => f.forwards.flatMap((r) => r[1].nodes.slice(1).map((n) => n.data.name));
+
+test('新实例默认关闭；旧插件启用与配置迁入宿主，不保留插件启用状态', () => {
+  assert.equal(DEFAULT_PIXIV_CONFIG.enabled, false);
+  const c = { plugins: { enabled: ['pixiv-illust', 'other'], settings: { 'pixiv-illust': { imageSize: 'small', ratings: ['safe'], maxPages: 20, cookie: 'private' } } } };
+  migratePixivConfig(c);
+  assert.equal(c.pixiv.enabled, true); assert.equal(c.pixiv.imageSize, 'small'); assert.equal(c.pixiv.cookie, 'private');
+  assert.deepEqual(c.plugins.enabled, ['other']); assert.equal(c.plugins.settings['pixiv-illust'].cookie, 'private');
+  c.pixiv.enabled = false; migratePixivConfig(c); assert.equal(c.pixiv.enabled, false);
+});
+test('默认PID链路不依赖pixiv.net直连；保留pixiv.re模板与小尺寸推导', async (t) => {
+  const f = fixture(t, { metadataUrlTemplate: '' });
+  const engine = createPixivEngine({ stateDir: f.manager.stateDir, getSettings: () => f.cfg.pixiv });
+  assert.equal(engine.settings().imageUrlTemplate, 'https://pixiv.re/{pid}.png');
+  assert.equal(engine.pageUrlsOf({ imageUrl: `https://pixiv.re/${pid}-1.png` }, 2)[0], `https://pixiv.re/${pid}-3.png`);
+  const originalFetch = f.manager.options.fetchImpl; delete f.manager.options.fetchImpl;
+  assert.deepEqual(await f.manager.detail(pid, new AbortController().signal), { pid });
+  assert.equal(f.requests.length, 0); f.manager.options.fetchImpl = originalFetch;
+});
+test('设置校验拒绝坏分级、空分级、超量和未知字段', () => {
+  for (const patch of [{ ratings: [] }, { ratings: ['unknown'] }, { enabled: 'yes' }, { maxPages: 101 }, { pagesPerBatch: 21 }, { chatRatings: { 'group:abc': ['safe'] } }, { cookie: 'a\nb' }, { metadataUrlTemplate: 'http://user:pass@host/{pid}' }, { unknown: true }]) assert.throws(() => validatePixivPatch(patch));
+  validatePixivPatch({ chatRatings: { __replace__: {} }, metadataUrlTemplate: 'https://api.example/illust/{pid}' });
+});
+test('PID 明确指令识别与页范围；不吞普通数字或聊天', () => {
+  assert.deepEqual(pixivCommand('PID 12345678 21-40'), { pid, startPage: 21, endPage: 40 });
+  assert.equal(pixivCommand(`https://www.pixiv.net/artworks/${pid}`).pid, pid);
+  for (const input of [pid, '我的QQ是12345678', '帮我看看pid是什么', 'https://evil.test/artworks/12345678']) assert.equal(pixivCommand(input), null);
+});
+test('旧去重与会话分级仅复制，原件保留，已有新文件不覆盖', async (t) => {
+  const f = fixture(t);
+  const old = path.join(f.dir, 'plugin-state', 'pixiv-illust'); fs.mkdirSync(old, { recursive: true });
+  fs.writeFileSync(path.join(old, 'state.json'), JSON.stringify({ seen: { [pid]: Date.now() }, dead: {} }));
+  fs.writeFileSync(path.join(old, 'chat-ratings.json'), JSON.stringify({ 'group:100001': ['r18'] }));
+  f.manager.migrateState(); assert.deepEqual(f.manager.ratings('group:100001'), ['r18']);
+  assert.equal(f.manager.engine.seenSet().has(pid), true);
+  fs.writeFileSync(path.join(old, 'chat-ratings.json'), '{}'); f.manager.migrateState();
+  assert.deepEqual(f.manager.ratings('group:100001'), ['r18']); assert.ok(fs.existsSync(path.join(old, 'state.json')));
+});
+test('关闭时不创建状态目录，不下载，不发送，且与JM工具表互不覆盖', async (t) => {
+  registerBuiltinFeature({ toolDefs: [{ name: 'jm_test', execute() {} }] });
+  const f = fixture(t, { enabled: false });
+  assert.equal((await f.manager.start({ pid }, 'group:100001', 1)).isError, true);
+  assert.equal(fs.existsSync(f.manager.dir), false); assert.equal(f.requests.length, 0);
+  assert.ok(builtinFeatureToolDefs().some((d) => d.name === 'jm_test'));
+  assert.ok(builtinFeatureToolDefs().some((d) => d.name === 'pixiv_image'));
+  registerBuiltinFeature({ toolDefs: [] }); assert.ok(builtinFeatureToolDefs().some((d) => d.name === 'pixiv_image'));
+});
+test('分级字段缺失、非法、空值或仅sl不得被误认成全年龄', (t) => {
+  const f = fixture(t);
+  for (const raw of [{ id: pid }, { id: pid, xRestrict: 'bad' }, { id: pid, xRestrict: '' }, { id: pid, xRestrict: false }, { id: pid, sl: 0 }, { id: pid, r18: 2 }]) assert.equal(f.manager.engine.ratingKnown(f.manager.engine.normalizeItem(raw)), false);
+  assert.equal(f.manager.engine.ratingKnown(f.manager.engine.normalizeItem({ id: pid, xRestrict: 0 })), true);
+  assert.equal(f.manager.engine.ratingOf(f.manager.engine.normalizeItem({ id: pid, xRestrict: 0, tags: ['R-18G'] })), 2);
+});
+test('关闭图片压缩时保持原文件，不尝试调用ffmpeg', async (t) => {
+  const f = fixture(t); const file = path.join(f.dir, 'image.png'); fs.writeFileSync(file, png);
+  const result = await f.manager.engine.downsampleToJpeg(file, { overBytes: 0, ffmpegPath: '/not-installed/ffmpeg' });
+  assert.deepEqual(result, { file, bytes: png.length, downsized: false });
+});
+test('查明分级后按会话过滤，不因点名PID绕过；成人档区分R18与R18G', async (t) => {
+  const f = fixture(t, { ratings: ['safe', 'r18'] }, { restriction: 2 });
+  const result = await f.manager.start({ pid }, 'group:100001', 1);
+  assert.equal(result.isError, true); assert.match(result.content, /r18g/); assert.equal(f.forwards.length, 0);
+});
+test('未知分级默认拒绝；人工核实只影响该PID，仍受会话过滤', async (t) => {
+  const f = fixture(t, {}, { fetchImpl: async () => { throw new Error('offline'); } });
+  assert.match((await f.manager.start({ pid }, 'group:100001', 1)).content, /无法确认/);
+  f.manager.setRating(pid, 'r18'); assert.throws(() => f.manager.checkRating({ pid }, 'group:100001'), /不允许/);
+  f.manager.setRating(pid, 'safe'); assert.match(f.manager.checkRating({ pid }, 'group:100001'), /管理员标记/);
+  assert.throws(() => f.manager.checkRating({ pid: '98765432' }, 'group:100001'), /无法确认/);
+});
+test('未知分级兼容策略仅在明确允许R18及R18G时生效，绝不当safe', (t) => {
+  const f = fixture(t, { unknownRatingPolicy: 'adult-only', ratings: ['r18'] });
+  assert.throws(() => f.manager.checkRating({ pid }, 'group:100001'));
+  f.cfg.pixiv.ratings = ['r18', 'r18g']; assert.match(f.manager.checkRating({ pid }, 'group:100001'), /未知分级/);
+});
+test('读取真实页列表：五页按2+2+1分批，顺序完整且不重复首页', async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.manager.start({ pid }, 'group:100001', 1)).isError, undefined);
+  assert.equal(f.forwards.length, 3); assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 3 页', '第 4 页', '第 5 页']);
+  assert.equal(f.manager.history[0].status, 'done'); assert.equal(f.sends.length, 0);
+  assert.equal(f.requests.filter((r) => r.url.includes('/pages')).length, 1);
+});
+test('无官方详情时沿用pixiv.re直取、多页后缀及未知分级标记，不请求pixiv.net', async (t) => {
+  const f = fixture(t, { metadataUrlTemplate: '', ratings: ['r18', 'r18g'], unknownRatingPolicy: 'adult-only', maxPages: 5, pageRetryOnce: 0 }, {
+    fetchImpl: async (url, init) => {
+      assert.equal(new URL(url).hostname, 'pixiv.re');
+      if (init.redirect === 'manual') return new Response('', { status: 301, headers: { location: `https://pixiv.re/${pid}-1.png` } });
+      if (url.includes('-3.png')) return new Response('', { status: 404 });
+      return new Response(png, { headers: { 'content-type': 'image/png' } });
+    }
+  });
+  await f.manager.start({ pid }, 'group:100001', 1);
+  assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页']);
+  assert.match(f.forwards[0][1].nodes[0].data.content[0].data.text, /未知分级/);
+  assert.match(f.manager.history[0].note, /未知总页数/);
+});
+test('批次按图片总大小收手再继续下载，不因单卡预算截掉后续页', async (t) => {
+  const large = Buffer.concat([png, Buffer.alloc(180 * 1024)]);
+  const f = fixture(t, { forwardBudgetBytes: 256 * 1024, pagesPerBatch: 10 });
+  const original = f.manager.engine.fetchImage;
+  f.manager.engine.fetchImage = async (...args) => {
+    const got = await original(...args); fs.writeFileSync(got.file, large); return { ...got, bytes: large.length };
+  };
+  await f.manager.start({ pid }, 'group:100001', 1);
+  assert.equal(f.forwards.length, 5);
+  assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 3 页', '第 4 页', '第 5 页']);
+});
+test('已知页数中间缺页，继续发送后续页并明确缺页，非整作失败', async (t) => {
+  const f = fixture(t, { pageRetryOnce: 0 }, { missing: [3] });
+  await f.manager.start({ pid }, 'group:100001', 1);
+  assert.deepEqual(pageNames(f), ['第 1 页', '第 2 页', '第 4 页', '第 5 页']);
+  assert.deepEqual(f.manager.history[0].failedPages.map((p) => p.page), [3]); assert.match(f.sends[0][1][0], /第3页/);
+});
+test('指定页范围只取所需页，超出每次上限明确拒绝', async (t) => {
+  const f = fixture(t, { maxPages: 3 });
+  await f.manager.start({ pid, startPage: 3, endPage: 5 }, 'group:100001', 1);
+  assert.deepEqual(pageNames(f), ['第 3 页', '第 4 页', '第 5 页']);
+  assert.match((await f.manager.start({ pid, startPage: 1, endPage: 5 }, 'group:100001', 2)).content, /页码无效/);
+});
+test('发送未确认立即停止剩余批次，不逐张回退、不补发文字', async (t) => {
+  const f = fixture(t, {}, { forward: async () => { throw new Error('timeout after remote received'); } });
+  const result = await f.manager.start({ pid }, 'group:100001', 1);
+  assert.equal(result.sendUnknown, true); assert.equal(f.forwards.length, 1); assert.equal(f.sends.length, 0);
+  assert.equal(f.manager.history[0].status, 'send-unknown');
+});
+test('功能关闭或宿主权限撤销取消任务，后续不发送', async (t) => {
+  let started;
+  const ready = new Promise((resolve) => { started = resolve; });
+  const f = fixture(t, {}, { fetchImpl: async (_url, init) => { started(); await new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })); } });
+  const task = f.manager.start({ pid }, 'group:100001', 1); await ready;
+  f.cfg.pixiv.enabled = false; f.manager.enforce(); await task;
+  assert.equal(f.manager.history[0].status, 'cancelled'); assert.equal(f.forwards.length, 0);
+});
+test('同时仅执行一个任务，忙碌拒绝不创建第二个网络请求', async (t) => {
+  const f = fixture(t);
+  const first = f.manager.start({ pid }, 'group:100001', 1);
+  assert.match((await f.manager.start({ pid }, 'group:100001', 2)).content, /正忙/); await first;
+});
+test('分级缓存可用于下一次PID直取；任务历史不写图片或Cookie', async (t) => {
+  const f = fixture(t, { cookie: 'PRIVATE_COOKIE' });
+  await f.manager.start({ pid }, 'group:100001', 1); const count = f.requests.filter((r) => r.url.includes('/ajax/')).length;
+  await f.manager.start({ pid }, 'group:100001', 2);
+  assert.equal(f.requests.filter((r) => r.url.includes('/ajax/')).length, count);
+  const history = fs.readFileSync(path.join(f.manager.dir, 'history.json'), 'utf8'); assert.doesNotMatch(history, /base64|PRIVATE_COOKIE/);
+  assert.equal(f.manager.snapshot().settings.cookie, undefined);
+  assert.equal(sanitizeConfigSecrets({ pixiv: { cookie: 'SECRET', proxyUrl: 'SECRET_PROXY' } }).pixiv.proxyUrl, undefined);
+});
+test('分级工具读任何会话只限本会话，修改只认可信触发者的全局管理员身份', async (t) => {
+  const f = fixture(t);
+  const tool = f.manager.toolDefs().find((d) => d.name === 'pixiv_set_rating');
+  const ctx = { chatKey: 'group:100001', triggerEntries: [{ senderId: '222222', self: false }] };
+  assert.equal((await tool.execute(ctx, { action: 'set', ratings: ['r18'] })).isError, true);
+  ctx.triggerEntries[0].senderId = '111111'; await tool.execute(ctx, { action: 'set', ratings: ['r18'] });
+  assert.deepEqual(f.manager.ratings('group:100001'), ['r18']); assert.deepEqual(f.manager.ratings('group:100002'), ['safe']);
+});
+test('下载公共地址防护拒绝内网、凭据与非HTTP，不接入任何搜图中转', async () => {
+  for (const url of ['http://127.0.0.1/', 'http://169.254.169.254/', 'file:///etc/passwd', 'https://user:pass@example.com/']) await assert.rejects(pixivFetch(url));
+});
+test('网络层fetch与dispatcher使用同一undici版本，保留状态及图片响应', async (t) => {
+  const dispatcher = new MockAgent(); dispatcher.disableNetConnect();
+  t.after(() => dispatcher.close());
+  dispatcher.get('https://8.8.8.8').intercept({ path: '/image' }).reply(200, png, { headers: { 'content-type': 'image/png' } });
+  const response = await pixivFetch('https://8.8.8.8/image', { dispatcher });
+  assert.equal(response.status, 200); assert.deepEqual(Buffer.from(await response.arrayBuffer()), png);
+});
+test('真实API复用鉴权，清空会话覆盖不复活旧名单，密码留空不覆盖', async (t) => {
+  const f = fixture(t, { cookie: 'saved' });
+  const json = (res, code, data) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+  const router = createRouter({ authorize: (req) => req.headers['x-test'] === 'yes', json });
+  installPixivRoutes({ addRoute: (...args) => router.add(...args), updateConfig: f.updateConfig }, f.manager);
+  const server = http.createServer((req, res) => router.handle(req, res));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  assert.equal((await fetch(`${base}/api/pixiv`)).status, 401);
+  const headers = { 'x-test': 'yes', 'content-type': 'application/json' };
+  assert.equal((await fetch(`${base}/api/pixiv/settings`, { method: 'POST', headers, body: JSON.stringify({ chatRatings: {} }) })).status, 200);
+  assert.equal(f.cfg.pixiv.chatRatingsMigrated, true); assert.equal(f.cfg.pixiv.cookie, 'saved');
+  const result = await fetch(`${base}/api/pixiv/rating`, { method: 'POST', headers, body: JSON.stringify({ pid, rating: 'safe' }) });
+  assert.equal(result.status, 200); assert.equal(f.manager.overrides[pid].rating, 'safe');
+});

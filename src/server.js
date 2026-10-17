@@ -5,6 +5,7 @@ import { createApp } from './console/app.js';
 import { installManualFriendReviewRoute } from './console/manual-friend-review-route.js';
 import { installExperimentalMultimodalContextPilot } from './pilots/experimental-multimodal-context.js';
 import { initPlugins } from '../plugins/loader.js';
+import { PIXIV_TOOL_NAMES } from './features/pixiv/config.js';
 import { installPluginRoutes } from '../plugins/console-routes.js';
 import { initMarketExtensions } from '../plugins/market-loader.js';
 import { buildToolDefs as buildBuiltinToolDefs } from './tools/tools-core.js';
@@ -108,7 +109,7 @@ installExperimentalMultimodalContextPilot();
 // 宿主内置 feature 必须先注册，插件装载器才能把它们当作保留工具名，
 // 同时 JM 不会进入插件状态、启用或能力审批列表。
 initJmFeature({ dataDir: DATA_DIR, getConfig, log });
-const builtinToolNames = [...buildBuiltinToolDefs(), ...trpgToolDefs(true)].map((def) => String(def.name));
+const builtinToolNames = [...buildBuiltinToolDefs(), ...trpgToolDefs(true)].map((def) => String(def.name)).concat(PIXIV_TOOL_NAMES);
 try {
   await initPlugins({ dataDir: DATA_DIR, log, builtinToolNames });
   await initMarketExtensions({ dataDir: DATA_DIR, log });

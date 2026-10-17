@@ -75,6 +75,10 @@ export function sanitizeConfigSecrets(cfg) {
     }
   };
   walk(out);
+  if (out.pixiv && 'proxyUrl' in out.pixiv) {
+    out.pixiv.hasProxyUrl = Boolean(out.pixiv.proxyUrl);
+    delete out.pixiv.proxyUrl;
+  }
 
   // 密钥集合整体清空（不逐 key 暴露存在性）
   if (out.providerKeys && typeof out.providerKeys === 'object') {

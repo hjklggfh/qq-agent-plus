@@ -32,6 +32,9 @@ import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
 import { ImageSearchManager } from '../features/image-search/manager.js';
 import { imageSearchCommand } from '../features/image-search/command.js';
 import { installImageSearchRoutes } from '../features/image-search/routes.js';
+import { PixivManager } from '../features/pixiv/manager.js';
+import { pixivCommand } from '../features/pixiv/command.js';
+import { installPixivRoutes } from '../features/pixiv/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
 import { TrpgManager } from '../features/trpg/manager.js';
 import { installTrpgRoutes } from '../features/trpg/routes.js';
@@ -576,6 +579,11 @@ export function createApp({
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
+  const pixiv = new PixivManager({
+    dataDir: DATA_DIR, getConfig, updateConfig, canRun, onebot, log: moduleLog('pixiv'),
+    forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
+    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
+  });
   const jmFeature = initJmFeature({
     dataDir: DATA_DIR,
     getConfig,
@@ -1060,6 +1068,7 @@ export function createApp({
     const trpgAction = !isSelf && trpg.isAction(chatKey, String(senderId), text);
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
+    const pidCommand = !isSelf && pixivCommand(text);
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1076,7 +1085,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean(searchCommand && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1110,6 +1119,17 @@ export function createApp({
       return;
     }
     // 明确搜图指令在入库时即消费，防止同群其他模型任务或重启重新领取。
+    if (pidCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void pixiv.start(pidCommand, chatKey, stored.id).then(async (result) => {
+          if (result?.isError && !result.sendUnknown && canRun(chatKey) && !orchestrator.paused && (result.immediate || getConfig().pixiv?.enabled)) {
+            await sender.sendTextBatch(chatKey, [result.content], { runId: `pixiv-hint-${stored.id}`, preserveCode: false });
+          }
+        }).catch((error) => log('[pixiv] PID 任务异常:', error?.name || 'Error'));
+      }
+      return;
+    }
     if (searchCommand) {
       store.markRead(chatKey, [stored.id]);
       if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
@@ -1582,6 +1602,7 @@ export function createApp({
   /** 脱敏后的配置 + asr 的运行时结论（GET 与 POST 共用，界面拿到的永远是最新结论）。 */
   function safeConfigWithAsrStatus(cfgNow) {
     const safe = sanitizeConfig(cfgNow);
+    safe.pixiv = { ...(safe.pixiv || {}), chatRatings: pixiv.snapshot().settings.chatRatings };
     safe.asr = { ...(safe.asr || {}), ...asrStatusOf(cfgNow) };
     // tts 的 Key 被 sanitize 删掉了，用派生标志告诉界面"哪几家已存"（按供应商显示掩码）
     safe.tts = {
@@ -3650,6 +3671,7 @@ export function createApp({
     orchestrator.enforceTrpgState();
     let closedThreads = 0;
     imageSearch.enforce();
+    pixiv.enforce();
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
         if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
@@ -4384,6 +4406,7 @@ export function createApp({
     incidentPilot = null;
     await jmFeature?.deactivate?.();
     await imageSearch.stop();
+    await pixiv.stop();
     onebot.close();
     await orchestrator.abortAll();
     await Promise.allSettled([...ingress.values()]);
@@ -4417,11 +4440,13 @@ export function createApp({
     updateConfig,
     auditWrite
   }, imageSearch);
+  installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
 
   return {
     server,
     trpg,
     imageSearch,
+    pixiv,
     onebot,
     store,
     memory,
