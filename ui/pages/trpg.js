@@ -26,7 +26,11 @@ function trpgEditor(kind) {
     ${world ? `<label>规则模式<select name="ruleset"><option value="narrative">通用轻量叙事（按世界建角）</option><option value="lotm-tactical-v1">诡秘战术长期战役（序列9—5）</option></select></label><label>开场<textarea name="opening" rows="3" maxlength="4000" placeholder="玩家抵达时发生的第一幕"></textarea></label><label>世界规则与风格<textarea name="rules" rows="3" maxlength="4000" placeholder="时代、魔法边界、禁忌、剧情风格等"></textarea></label>
       <label>建角说明（选填，公开给玩家）<textarea name="creationPrompt" rows="2" maxlength="1200" placeholder="例如：普通现代人，无超能力，说明为何来到超市。"></textarea></label>
       <label>可选职业／身份（选填，每行一个）<textarea name="creationRoles" rows="3" placeholder="收银员\n保安\n顾客"></textarea></label>
-      <details><summary>建角初始属性与物品（通用叙事，选填）</summary><label>初始配置（JSON）<textarea name="creationDefaults" rows="4" placeholder='{"hp":10,"inventory":["手机"],"backgroundPrompt":"填写人物经历和与队伍的联系"}'></textarea></label><p class="hint">可配置hp、inventory、backgroundPrompt、attributePresets。默认HP10、通用四属性方案、空背包；不会自动生成诡秘途径或灵性。诡秘战术模式使用固定建角规则，请留空这些自定义项。</p></details>`
+      <label>属性分配方式<select name="allocationMode"><option value="none">不使用自由加点（高级区可配固定方案）</option><option value="points">按本世界总点数自由分配</option></select></label>
+      <label>自由加点属性（每行一个）<textarea name="allocationAttributes" rows="3" placeholder="力量\n敏捷\n防御"></textarea></label>
+      <div class="trpg-grid"><label>总属性点<input name="allocationPoints" type="number" min="1" max="120" value="10"></label><label>单项最小值<input name="allocationMin" type="number" min="0" max="10" value="0"></label><label>单项最大值<input name="allocationMax" type="number" min="0" max="10" value="10"></label></div>
+      <p class="hint">自由加点按本世界配置校验，并替代高级区的固定属性方案。未配置分配规则或固定方案时，新角色没有数值属性。诡秘战术仍使用原途径和序列规则。</p>
+      <details><summary>建角初始属性与物品（通用叙事，选填）</summary><label>初始配置（JSON）<textarea name="creationDefaults" rows="4" placeholder='{"hp":10,"inventory":["手机"],"backgroundPrompt":"填写人物经历和与队伍的联系"}'></textarea></label><p class="hint">可配置hp、inventory、backgroundPrompt、attributePresets；固定属性方案与自由加点二选一。默认HP10、空背包。诡秘战术模式使用固定建角规则，请留空这些自定义项。</p></details>`
     : `<label>途径<select name="pathway"><option value="">旧叙事角色（无结构化途径）</option>${pathways.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} · 序列9 ${esc(p.sequences[0].name)}</option>`).join('')}</select></label><div class="hint">选择途径后：新角色HP10，四属性-1至2且总和≤4，最高成长至序列5。QQ发送 /跑团 建角 可用编号引导，无需填写JSON。</div><label>初始生命值<input name="hp" type="number" min="1" max="1000" value="10" required></label><label>属性修正值（JSON）<textarea name="attributes" rows="3">{"力量":0,"敏捷":1,"感知":2,"交涉":1}</textarea></label><label>初始物品（每行一个单位）<textarea name="inventory" rows="3" placeholder="提灯\n绷带"></textarea></label>`}
     <div class="trpg-actions"><button class="btn btn-primary" type="submit">保存${world ? '世界观' : '角色卡'}</button><button class="btn" type="button" data-trpg-action="new" data-kind="${kind}">新建</button>
     <label class="btn trpg-import">导入 JSON / TXT<input type="file" accept=".json,.txt,.md" data-trpg-import="${kind}"></label></div>
@@ -89,10 +93,16 @@ function fillTrpgForm(kind, asset) {
     if (input) input.value = key === 'attributes' ? JSON.stringify(value, null, 2) : key === 'inventory' ? value.join('\n') : value;
   }
   if (kind === 'worlds') {
-    const { prompt = '', roles = [], ...defaults } = asset?.characterCreation || {};
+    const { prompt = '', roles = [], attributeAllocation = null, ...defaults } = asset?.characterCreation || {};
     form.elements.namedItem('creationPrompt').value = prompt;
     form.elements.namedItem('creationRoles').value = roles.join('\n');
     form.elements.namedItem('creationDefaults').value = Object.keys(defaults).length ? JSON.stringify(defaults, null, 2) : '';
+    form.elements.namedItem('allocationMode').value = attributeAllocation ? 'points' : 'none';
+    form.elements.namedItem('allocationAttributes').value = attributeAllocation?.attributes.join('\n') || '';
+    form.elements.namedItem('allocationPoints').value = attributeAllocation?.points ?? 10;
+    form.elements.namedItem('allocationMin').value = attributeAllocation?.min ?? 0;
+    form.elements.namedItem('allocationMax').value = attributeAllocation?.max ?? 10;
+    form.dataset.allocationExplicit = String(Object.hasOwn(asset?.characterCreation || {}, 'attributeAllocation'));
   }
   if (kind === 'characters' && asset?.pathway) {
     const p = (state.trpgCatalog?.pathways || []).find((p) => p.id === asset.pathway || p.name === asset.pathway);
@@ -138,13 +148,17 @@ async function submitTrpgCard(form) {
   if (kind === 'worlds') {
     const defaults = get('creationDefaults').trim() ? JSON.parse(get('creationDefaults')) : {};
     if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) throw new Error('建角初始配置需为JSON对象');
-    if (Object.hasOwn(defaults, 'prompt') || Object.hasOwn(defaults, 'roles')) throw new Error('建角说明和职业请填写上方专用字段');
+    if (['prompt', 'roles', 'attributeAllocation'].some((k) => Object.hasOwn(defaults, k))) throw new Error('建角说明、职业和自由加点请填写上方专用字段');
+    if (get('allocationMode') === 'points') delete defaults.attributePresets;
     const profile = { ...defaults, ...(get('creationPrompt').trim() ? { prompt: get('creationPrompt').trim() } : {}), ...(get('creationRoles').trim() ? { roles: get('creationRoles').split('\n').map((s) => s.trim()).filter(Boolean) } : {}) };
+    if (get('allocationMode') === 'points') profile.attributeAllocation = { attributes: get('allocationAttributes').split('\n').map((s) => s.trim()).filter(Boolean), points: Number(get('allocationPoints')), min: Number(get('allocationMin')), max: Number(get('allocationMax')) };
+    else if (form.dataset.allocationExplicit === 'true' && get('ruleset') !== 'lotm-tactical-v1') profile.attributeAllocation = null;
     Object.assign(asset, { opening: get('opening'), rules: get('rules'), ...(get('ruleset') === 'lotm-tactical-v1' ? { ruleset: get('ruleset') } : {}), ...(Object.keys(profile).length ? { characterCreation: profile } : {}) });
   }
   else Object.assign(asset, { hp: Number(get('hp')), attributes: JSON.parse(get('attributes')), inventory: get('inventory').split('\n').map((s) => s.trim()).filter(Boolean), ...(get('pathway') ? { pathway: get('pathway'), sequence: 9 } : {}) });
   const saved = await trpgPost('asset', { kind, asset });
   form.elements.namedItem('id').value = saved.id;
+  if (kind === 'worlds') form.dataset.allocationExplicit = String(Object.hasOwn(saved.characterCreation || {}, 'attributeAllocation'));
   await refreshTrpgData(); trpgNotice(`已保存「${saved.name}」。已有存档使用原快照，新开团才使用新设定。`);
 }
 

@@ -4,12 +4,12 @@ import { randomInt, randomUUID } from 'node:crypto';
 import { trpgConfig } from './config.js';
 import { TACTICAL_RULESET, TACTICAL_WORLD, pathwayOf, validateBuild, abilitiesOf, limitsOf } from './catalog.js';
 import { tactical, createPlayer, initializeCampaign, receiveAdventure, ensureMenus, adventurePanel, statusText, adventureCommand, tacticalTool } from './adventure.js';
-import { validateCharacterCreation, hasWizard, startWizard, wizardInput, clearWizards } from './character-creation.js';
+import { validateCharacterCreation, characterProfile, validateWorldAttributes, hasWizard, startWizard, startReallocation, wizardInput, clearWizards } from './character-creation.js';
 
 const MAX_FILE = 16 * 1024 * 1024;
 const clone = (value) => structuredClone(value);
 const plain = (value) => value && typeof value === 'object' && !Array.isArray(value);
-const HELP = '跑团指令：\n/跑团 开团（默认诡秘战术战役，也可指定世界ID）\n/跑团 建角（按当前世界填写身份，诡秘战术选择途径）\n/跑团 加入 角色ID\n/跑团 开始\n开始后直接回复本人行动序号或自由描述，无需前缀或@。\n/跑团 菜单、能力、成长、晋升、休整、待命\n/跑团 状态、暂停、继续、下一章\n退出游戏＝保存暂停；结束战役＝团主确认后归档。\n旧叙事卡可用 /跑团 列表、世界、角色、掷骰。';
+const HELP = '跑团指令：\n/跑团 开团（默认诡秘战术战役，也可指定世界ID）\n/跑团 建角（按当前世界填写身份，诡秘战术选择途径）\n/跑团 加入 角色ID\n/跑团 重新加点（待开始或暂停的通用团）\n/跑团 设置加点 属性名列表 | 总点数（团主）\n/跑团 开始\n开始后直接回复本人行动序号或自由描述，无需前缀或@。\n/跑团 菜单、能力、成长、晋升、休整、待命\n/跑团 状态、暂停、继续、下一章\n退出游戏＝保存暂停；结束战役＝团主确认后归档。\n旧叙事卡可用 /跑团 列表、世界、角色、掷骰。';
 const CONTROL_ALIASES = { 退出游戏: '暂停', 退出跑团: '暂停', 结束跑团: '结束战役', 结束战役: '结束战役', 暂停跑团: '暂停', 继续跑团: '继续', 跑团状态: '状态' };
 
 function text(value, label, max = 12000, required = false) {
@@ -84,7 +84,15 @@ function modelCampaign(campaign) {
   const { receipts: _receipts, ...out } = campaign;
   out.events = out.events.slice(-12).map((e) => ({ ...e, content: String(e.content).slice(0, 500) }));
   if (tactical(campaign)) out.players = out.players.map((p) => ({ ...p, abilities: abilitiesOf(p), limits: limitsOf(p) }));
+  else out.world = { ...out.world, characterCreation: characterProfile(out.world) };
   return out;
+}
+
+function validatePartyAttributes(c) {
+  for (const p of c.players) {
+    try { validateWorldAttributes(c, p.character.attributes); }
+    catch (error) { throw new Error(`${p.character.name}属性不符合当前世界：${error.message}。请本人 /跑团 重新加点`); }
+  }
 }
 
 export class TrpgManager {
@@ -138,7 +146,14 @@ export class TrpgManager {
     return clone(result);
   }
 
-  snapshot() { return { settings: this.settings(), ...clone(this.#read()) }; }
+  snapshot() {
+    const data = clone(this.#read());
+    data.worlds = data.worlds.map((w) => {
+      const profile = characterProfile(w);
+      return Object.keys(profile).length ? { ...w, characterCreation: profile } : w;
+    });
+    return { settings: this.settings(), ...data };
+  }
 
   panel(chatKey) { const c = this.current(chatKey); return c ? adventurePanel(c) : ''; }
 
@@ -245,6 +260,7 @@ export class TrpgManager {
     const arg = words.join(' ');
     if (verb === '帮助') return { reply: HELP };
     if (verb === '建角') return this.#commit((data) => startWizard(data, chatKey, actorId, data.campaigns.find((c) => c.chatKey === chatKey && c.status !== 'ended'), this.settings().maxPlayers));
+    if (verb === '重新加点') return this.#commit((data) => startReallocation(data, chatKey, actorId, data.campaigns.find((c) => c.chatKey === chatKey && c.status !== 'ended')));
     if (verb === '取消建角' && hasWizard(this.#read(), chatKey, actorId)) return this.receive(chatKey, actorId, '/跑团 取消建角', messageId);
     if (verb === '列表') return { reply: ['世界观：', ...this.assets('worlds', chatKey).map((a) => `${a.id} · ${a.name}`), '角色卡：', ...this.assets('characters', chatKey).filter((a) => !a.ownerId || a.ownerId === actorId).map((a) => `${a.id} · ${a.name}`)].join('\n') };
     if (verb === '世界' || verb === '角色') {
@@ -276,6 +292,18 @@ export class TrpgManager {
         return { reply: `已创建「${c.title}」，存档 ${c.id}。\n每位玩家发送 /跑团 建角，按当前世界完成角色后自动加入；也可 /跑团 加入 角色ID。团主随后 /跑团 开始。` };
       }
       const c = this.#campaign(data, chatKey);
+      if (verb === '设置加点') {
+        this.#host(c, actorId);
+        if (tactical(c) || !['recruiting', 'paused'].includes(c.status)) throw new Error('只能在待开始或已暂停的通用叙事团设置加点规则');
+        const parts = arg.split('|');
+        if (parts.length !== 2) throw new Error('示例：/跑团 设置加点 力量 敏捷 防御 | 10');
+        const profile = characterProfile(c.world);
+        delete profile.attributePresets;
+        profile.attributeAllocation = { attributes: parts[0].trim().split(/[\s,，、]+/).filter(Boolean), points: Number(parts[1].trim()) };
+        c.world.characterCreation = validateCharacterCreation(profile);
+        this.#event(c, 'creation-rules', JSON.stringify(c.world.characterCreation.attributeAllocation), actorId);
+        return { reply: '已设置当前战役的自由加点规则。未完成建角者继续输入会收到新规则；已入团者发送 /跑团 重新加点。未来新团请在世界模板保存相同规则。' };
+      }
       if (verb === '加入') {
         if (c.status !== 'recruiting' && !(tactical(c) && c.status === 'paused' && c.combat?.status !== 'active')) throw new Error('仅开场前或战术战役非战斗暂停期间可以加入');
         if (c.players.some((p) => p.userId === actorId)) throw new Error('你已经加入了本团');
@@ -283,6 +311,7 @@ export class TrpgManager {
         const card = data.characters.find((a) => a.id === arg && (!a.scope || a.scope === chatKey) && (!a.ownerId || a.ownerId === actorId));
         if (!card) throw new Error('找不到可用的角色卡（只能使用自己的卡或公共卡）');
         if (tactical(c) && !card.pathway) throw new Error('战术战役需选择途径，请先 /跑团 建角 或在网页补全角色途径');
+        validateWorldAttributes(c, card.attributes);
         c.players.push(tactical(c) ? createPlayer(card, actorId) : { userId: actorId, character: clone(card), hp: card.hp, inventory: clone(card.inventory), condition: '' });
         this.#event(c, 'join', card.name, actorId);
         return { reply: `已以「${card.name}」加入（${c.players.length}人）。` };
@@ -314,9 +343,14 @@ export class TrpgManager {
         c.chapter++; c.choices = {}; c.intents = {}; c.resolved = [];
       } else if (verb === '开始') {
         if (c.status !== 'recruiting' || !c.players.length) throw new Error('至少一人加入后才能开始');
+        validatePartyAttributes(c);
         c.status = 'playing';
       } else if (verb === '暂停' && ['playing', 'paused'].includes(c.status)) c.status = 'paused';
-      else if (verb === '继续' && c.status === 'paused') c.status = 'playing';
+      else if (verb === '继续' && c.status === 'paused') {
+        if (Object.entries(data.wizards || {}).some(([key, w]) => key.startsWith(`${chatKey}|`) && w.campaignId === c.id && w.reallocate)) throw new Error('仍有玩家重新加点待确认，请先完成或取消');
+        validatePartyAttributes(c);
+        c.status = 'playing';
+      }
       else if (verb === '结束') c.status = 'ended';
       else throw new Error('指令或当前状态不匹配。使用 /跑团 帮助');
       this.#event(c, 'status', c.status, actorId);
@@ -426,6 +460,8 @@ export class TrpgManager {
       else if (action === 'pause' && c.status === 'playing') c.status = 'paused';
       else if (action === 'resume' && c.status === 'paused') {
         this.#enabled(c.chatKey);
+        if (Object.entries(data.wizards || {}).some(([key, w]) => key.startsWith(`${c.chatKey}|`) && w.campaignId === c.id && w.reallocate)) throw new Error('仍有玩家重新加点待确认，请先完成或取消');
+        validatePartyAttributes(c);
         c.status = 'playing';
         c.startedMessageId = 0;
         c.startedAt = Date.now();

@@ -12,11 +12,11 @@ function fixture(t, profile) {
   const cfg = { trpg: { enabled: true, allowedGroups: ['100001'], allowedPrivate: ['123456'], maxPlayers: 6 } };
   const restore = () => new TrpgManager({ dataDir: dir, getConfig: () => cfg, canRun: () => true });
   const manager = restore();
-  const world = manager.saveAsset('worlds', { name: '临江最后一日·万佳福超市', description: '现代末日生存。主持秘密：SECRET_UNDISCOVERED_TRUTH', opening: '你们滞留超市，门外响起警报。', ...(profile ? { characterCreation: profile } : {}) });
+  const world = manager.saveAsset('worlds', { name: '临江超市·生存测试', description: '现代末日生存。主持秘密：SECRET_UNDISCOVERED_TRUTH', opening: '你们滞留超市，门外响起警报。', ...(profile ? { characterCreation: profile } : {}) });
   let mid = 100;
   const input = (text, user = HOST, m = manager) => m.receive(CHAT, user, text, ++mid);
   const begin = (m = manager) => m.command(CHAT, HOST, '/跑团 开团 ' + world.id, ++mid);
-  const finish = (user = HOST, m = manager) => { for (const s of ['阿澜', '寻找家人，与同伴互助', '2', '1']) input(s, user, m); };
+  const finish = (user = HOST, m = manager) => { for (const s of ['阿澜', '寻找家人，与同伴互助', ...(profile?.attributePresets ? ['1'] : []), '1']) input(s, user, m); };
   return { dir, cfg, manager, world, restore, input, begin, finish };
 }
 
@@ -24,7 +24,7 @@ test('其他世界无需补配置即可建角，公开开场引导身份，不�
   const f = fixture(t), m = f.manager;
   assert.match(f.begin().reply, /建角.*当前世界/);
   const start = m.command(CHAT, HOST, '/跑团 建角');
-  assert.match(start.reply, /临江最后一日.*万佳福超市/);
+  assert.match(start.reply, /临江超市·生存测试/);
   assert.match(start.reply, /滞留超市/);
   assert.doesNotMatch(start.reply, /SECRET_UNDISCOVERED_TRUTH|愚者|途径|序列9|灵性/);
   assert.equal(m.handlesInput(CHAT, HOST), true);
@@ -35,6 +35,7 @@ test('其他世界无需补配置即可建角，公开开场引导身份，不�
   assert.match(p.character.description, /职业\/身份：超市收银员/);
   assert.equal(p.hp, 10);
   assert.deepEqual(p.inventory, []);
+  assert.deepEqual(p.character.attributes, {}, '未配置属性的世界不再套用全局四属性');
   for (const k of ['pathway', 'sequence']) assert.equal(Object.hasOwn(p.character, k), false);
   assert.equal(Object.hasOwn(p, 'progress'), false);
   assert.equal(m.handlesInput(CHAT, HOST), false);
@@ -104,7 +105,7 @@ test('必须先选世界开团；取消、人数变化和开场清理不生成�
   assert.equal(m.handlesInput(CHAT, HOST), false);
   for (const actor of [HOST, OTHER]) {
     m.command(CHAT, actor, '/跑团 建角');
-    for (const s of ['顾客', '新角色', '合作逃生', '1']) f.input(s, actor);
+    for (const s of ['顾客', '新角色', '合作逃生']) f.input(s, actor);
   }
   f.cfg.trpg.maxPlayers = 1;
   f.input('1');
@@ -140,7 +141,6 @@ test('删除同会话旧存档不清理当前草稿；私聊建角与群聊隔�
   m.receive(privateChat, HOST, '医护人员', 900);
   m.receive(privateChat, HOST, '林医生', 901);
   m.receive(privateChat, HOST, '寻找家人', 902);
-  m.receive(privateChat, HOST, '1', 903);
   const confirm = m.receive(privateChat, HOST, '1', 904);
   assert.match(confirm.reply, /已加入/);
   assert.equal(m.receive(privateChat, HOST, '1', 904).duplicate, true);

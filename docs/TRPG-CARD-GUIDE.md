@@ -26,7 +26,7 @@
 
 ## 2. 通用文件格式
 
-**按世界建角（2026-10-18）**：普通世界不再使用诡秘途径向导。先按世界ID开团，每人发送 `/跑团 建角`，填写符合世界的职业/身份、姓名、背景和属性，确认后自动加入。不配置时使用自由身份、HP10和空背包；如希望玩家按编号选本世界职业，在世界卡的 `asset.characterCreation` 中配置公开说明、`roles`、`attributePresets` 和 `inventory`。网页已有对应字段，完整限制见 [按世界建角](TRPG.md#按世界建角)，可直接参考 [现代求生示例](examples/trpg/narrative-world-with-creation.json)。仅 `lotm-tactical-v1` 使用诡秘途径。不要通过把普通世界标成诡秘战术来开启自定义职业。
+**按世界建角（2026-10-18）**：普通世界不再使用诡秘途径向导。先按世界ID开团，每人发送 `/跑团 建角`，填写符合世界的职业/身份、姓名、背景和属性，确认后自动加入。不配置时使用自由身份、HP10和空背包，不再默认套用四属性；可在 `asset.characterCreation` 配置公开说明、`roles`、`inventory`，属性选择固定 `attributePresets` 或自由 `attributeAllocation`。自由分配示例：`{"attributes":["力量","敏捷","防御"],"points":10,"min":0,"max":10}`；玩家可发送 `4 3 3` 完成10点分配，程序校验后本人确认。网页已有独立字段，不必写JSON。完整限制和旧角色补救见 [按世界建角](TRPG.md#按世界建角)，可直接参考 [现代求生示例](examples/trpg/narrative-world-with-creation.json)。仅 `lotm-tactical-v1` 使用诡秘途径，不采用这套10点自由加点规则。
 
 推荐使用 UTF-8 编码的 `.json` 文件。每个文件只放一张卡，使用以下外层结构：
 
