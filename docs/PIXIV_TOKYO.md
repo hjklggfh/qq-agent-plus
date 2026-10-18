@@ -49,17 +49,20 @@ WantedBy=default.target
 
 ## 杭州隧道
 
-建立独立的 `qq-pixiv-tunnel.service`，执行下面的命令，并设置 `Restart=always`、`RestartSec=5`；路径和目标用户按实际安装填写：
+建立独立的 `qq-pixiv-tunnel.service`。将 `src/features/pixiv/ssh_gateway.py` 复制到杭州服务用户的 `~/.local/share/qq-pixiv-tunnel/ssh_gateway.py`，设置权限0600；用户服务执行下面的命令，设置 `Restart=always`、`RestartSec=3`、`MemoryMax=128M`、`TasksMax=64`。路径和目标用户按实际安装填写：
 
 ```bash
-ssh -NT -i ~/.ssh/pixiv_tokyo_ed25519 \
-  -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
-  -o UserKnownHostsFile=~/.ssh/known_hosts_pixiv \
-  -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -L 127.0.0.1:3222:127.0.0.1:3222 <东京用户>@<东京地址>
+python3 -I -B ~/.local/share/qq-pixiv-tunnel/ssh_gateway.py \
+  --host <东京用户>@<东京地址> \
+  --key ~/.ssh/pixiv_tokyo_ed25519 \
+  --known-hosts ~/.ssh/known_hosts_pixiv --port 3222
 ```
 
 在systemd的ExecStart里使用绝对路径，避免 `~` 未展开。启用后，从杭州访问上述健康检查应返回200。先使用隔离数据目录和模拟发送接口，验证官方详情、分级、完整页数、实际下载、PDF页数和耗时，确认成功后再切换生产PID设置。
+
+杭州网关每个TCP请求启动一个新的 `ssh -W 127.0.0.1:3222` 进程，响应结束后关闭；不再让所有图片共用一条长期 SSH 连接。跨区线路丢包可能让旧连接的拥塞窗口持续缩小，新连接可避免后续图片一直继承该状态。仍使用同一把受限密钥和已核实主机公钥，最多8条连接，仅绑定本机地址。断开或120秒无数据会清理对应SSH子进程，不会重试QQ发送。网关只适用于Linux。
+
+单作品PDF正常只发送开始提示、PDF文件、完成总结，共3条；不发送逐页、合成或上传中的文本提示。错误直接结束任务并返回原因，不补发重复文件。
 
 ## Agent 设置与回退
 

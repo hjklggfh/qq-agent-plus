@@ -172,8 +172,7 @@ test('PDF独立页数上限超过卡片20页且有序打包，不发送任何图
   assert.equal(f.manager.history.at(-1).status, 'done');
   assert.match(f.sends.at(-1)[1][0], /分级：safe/);
   assert.match(f.sends[0][1][0], /开始处理 PID/);
-  assert.match(f.sends[1][1][0], /下载完成.*正在排队合成 PDF/);
-  assert.match(f.sends[2][1][0], /PDF 已生成.*上传群文件/);
+  assert.equal(f.sends.length, 2); // 开始、总结，加PDF文件总共3条。
   assert.doesNotMatch(f.sends.at(-1)[1][0], /包含：|1、2|第\s*\d+\s*页/);
   assert.equal(fs.existsSync(captured.file), false);
 });
@@ -186,6 +185,20 @@ test('PDF缺页后仍保留后续页并标注部分，不把页码压缩成完�
   assert.match(captured.name, /部分/); assert.equal(f.manager.history.at(-1).status, 'partial');
   assert.match(f.sends.at(-1)[1][0], /1 张未取到/);
   assert.doesNotMatch(f.sends.at(-1)[1][0], /第3页|包含：/);
+});
+
+test('长时间多页PDF也不发送逐页进度，文本和文件总共最多三条', async (t) => {
+  const captured = {};
+  const f = fixture(t, {}, { pages: 30, host: pdfHost(captured) });
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const fetch = f.manager.engine.fetchImage;
+  f.manager.engine.fetchImage = async (...args) => { const result = await fetch(...args); now += 21000; return result; };
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'long-pdf');
+  assert.equal(result.isError, undefined, result.content);
+  assert.equal(f.sends.length + captured.uploads, 3);
+  assert.equal(captured.inputs.length, 30);
+  assert.doesNotMatch(f.sends.map((s) => s[1][0]).join('\n'), /下载中|已取得|PDF 已生成|下载完成/);
 });
 
 test('PDF总量限制停止下载并发送部分文件；分级拦截不会下载或生成', async (t) => {
@@ -207,7 +220,7 @@ test('PDF上传未确认只调用一次，不回退卡片或文本；保留文�
   } }) });
   const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'unknown-pdf');
   assert.equal(result.sendUnknown, true); assert.equal(captured.uploads, 1);
-  assert.equal(f.forwards.length, 0); assert.equal(f.sends.length, 3);
+  assert.equal(f.forwards.length, 0); assert.equal(f.sends.length, 1);
   assert.doesNotMatch(f.sends.at(-1)[1][0], /✅|已上传到本群/);
   assert.equal(f.manager.history.at(-1).status, 'send-unknown'); assert.ok(fs.existsSync(captured.file));
 });
@@ -261,7 +274,7 @@ test('总页数未知且首页404时记录真实失败原因，不把后续页�
   assert.equal(f.manager.history[0].failedPages[0].status, 404);
 });
 
-test('私聊PDF按阶段提示，最终不枚举页码；上传前提示失败不上传', async (t) => {
+test('群聊与私聊PDF仅开始和总结两条文本，连文件共三条，不枚举页码', async (t) => {
   const captured = {}, stages = [];
   const host = pdfHost(captured);
   const f = fixture(t, {}, { host: { ...host,
@@ -270,16 +283,10 @@ test('私聊PDF按阶段提示，最终不枚举页码；上传前提示失败�
     file: async (...args) => { stages.push('发送文件'); return host.file(...args); }
   } });
   await f.manager.start({ pid, outputFormat: 'pdf' }, 'private:100001', 'private-pdf');
-  assert.match(stages[0], /开始处理/); assert.match(stages[1], /下载完成/);
-  assert.equal(stages[2], '生成文件'); assert.match(stages[3], /正在发送私聊文件/);
-  assert.equal(stages[4], '发送文件'); assert.match(stages[5], /✅.*处理完成/);
-  assert.doesNotMatch(stages[5], /包含：|第\s*\d+\s*页|1、2/);
-  let uploads = 0;
-  const g = fixture(t, {}, { host: { ...pdfHost({}), file: async () => { uploads++; },
-    send: async (_chat, messages) => { if (messages[0].includes('PDF 已生成')) throw new Error('timeout'); }
-  } });
-  assert.equal((await g.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'pre-upload')).sendUnknown, true);
-  assert.equal(uploads, 0);
+  assert.equal(stages.length, 4);
+  assert.match(stages[0], /开始处理/); assert.equal(stages[1], '生成文件');
+  assert.equal(stages[2], '发送文件'); assert.match(stages[3], /✅.*处理完成/);
+  assert.doesNotMatch(stages[3], /包含：|第\s*\d+\s*页|1、2/);
 });
 
 const pdfPython = process.platform === 'win32' ? 'python' : 'python3';

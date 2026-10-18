@@ -214,12 +214,6 @@ export class PixivManager {
         if (from > last) throw new Error(`作品只有 ${item.pageCount} 页，请检查起始页。`);
         let batch = [], bytes = 0, seed = item, stopped = '', missingWork = false;
         const pdfFiles = [];
-        let lastProgress = Date.now();
-        const downloadProgress = async (count) => {
-          if (Date.now() - lastProgress < 20000) return;
-          await notify(`🖼️ PID ${item.pid} 下载中，已取得 ${count} 张${item.pageCount ? `／共 ${last - from + 1} 张` : '（总数未知）'}…`);
-          lastProgress = Date.now();
-        };
         const flush = async () => {
           if (!batch.length) return;
           signal.throwIfAborted(); this.enforce(); signal.throwIfAborted();
@@ -266,7 +260,6 @@ export class PixivManager {
               } finally {
                 try { fs.unlinkSync(got.file); } catch { /* 已移动或已删除。 */ }
               }
-              await downloadProgress(pdfFiles.length);
               continue;
             }
             try { fs.unlinkSync(got.file); } catch { /* 下次清理临时目录。 */ }
@@ -274,7 +267,6 @@ export class PixivManager {
             if (batch.length && (batch.length >= s.pagesPerBatch || bytes + buffer.length > s.forwardBudgetBytes)) await flush();
             if (buffer.length > s.forwardBudgetBytes) { record.failedPages.push({ pid: item.pid, page, reason: '图片超过单批大小限制' }); continue; }
             batch.push({ page, buffer }); bytes += buffer.length;
-            await downloadProgress(record.pages.filter((p) => p.pid === item.pid).length + batch.length);
           } catch (error) {
             if (sending || error.checkpoint) throw error;
             signal.throwIfAborted();
@@ -292,13 +284,11 @@ export class PixivManager {
         if (pdf && incomplete) record.partial = true;
         if (pdf && pdfFiles.length) {
           signal.throwIfAborted();
-          await notify(`🖼️ PID ${item.pid} 下载完成（${pdfFiles.length} 张），正在排队合成 PDF…`);
           const name = `Pixiv-${item.pid}-${pdfFiles[0].page}-${pdfFiles.at(-1).page}${incomplete ? '-部分' : ''}.pdf`;
           const result = await (this.options.buildPdf || buildPixivPdf)({ files: pdfFiles,
             output: path.join(jobDir, name), signal, maxBytes: s.pdfMaxBytes,
             pythonPath: this.options.getConfig().jm?.pythonPath });
           this.enforce(); signal.throwIfAborted();
-          await notify(`📄 PID ${item.pid} PDF 已生成（${fileSize(result.bytes)}），正在${chatKey.startsWith('group:') ? '上传群文件' : '发送私聊文件'}…`);
           sending = true;
           await this.options.file(chatKey, { file: result.file, name, bytes: result.bytes }, { runId, signal });
           sending = false;
@@ -310,7 +300,6 @@ export class PixivManager {
             fs.rmSync(result.file, { force: true });
           } catch { /* 文件已发送；清理失败不改变发送结果。 */ }
         } else {
-          if (batch.length) await notify(`🖼️ PID ${item.pid} 下载完成，正在发送图片…`);
           await flush();
           const count = record.pages.filter((p) => p.pid === item.pid).length;
           if (count) summaries.push(`✅ PID ${item.pid} 已发送 ${count} 张图片\nhttps://www.pixiv.net/artworks/${item.pid}`);
