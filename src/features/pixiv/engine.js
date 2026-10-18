@@ -881,41 +881,57 @@ export function createPixivEngine(options) {
       const ext = MIME_EXT[mime] || '.jpg';
       const file = path.join(tempDir(), `pixiv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`);
       fs.writeFileSync(file, buf);
-      let sourceUrl;
-      try {
-        const requested = new URL(url);
-        const source = new URL(resp.headers.get('x-origin-url') || '');
-        const parsed = parseOriginalPath(source.href);
-        const page = parseSuffixPath(requested.href)?.page;
-        const requestedPage = page ? page - 1 : Number(parseOriginalPath(requested.href)?.page || 0);
-        if (['pixiv.re', 'pixiv.cat', 'pixiv.nl', 'i.pixiv.re'].includes(requested.hostname)
-          && source.protocol === 'https:' && source.hostname === 'i.pximg.net'
-          && !source.username && !source.password && !source.port && !source.search && !source.hash
-          && parsed?.pid === extractPid(requested.href) && Number(parsed.page) === requestedPage) {
-          if (!resolveProxyUrl(settings())) source.hostname = 'i.pixiv.re';
-          sourceUrl = source.href;
-        }
-      } catch { /* 响应头仅作优化；无效或不匹配时继续沿用请求地址。 */ }
+      const sourceUrl = validatedOriginUrl(url, resp.headers.get('x-origin-url'));
       return { file, bytes: buf.length, ...(sourceUrl ? { sourceUrl } : {}) };
     } finally {
       clearTimeout(timer);
     }
   }
+  function validatedOriginUrl(requestUrl, raw) {
+    try {
+      const requested = new URL(requestUrl);
+      const source = new URL(raw || '');
+      const parsed = parseOriginalPath(source.href);
+      const page = parseSuffixPath(requested.href)?.page;
+      const requestedPage = page ? page - 1 : Number(parseOriginalPath(requested.href)?.page || 0);
+      if (['pixiv.re', 'pixiv.cat', 'pixiv.nl', 'i.pixiv.re'].includes(requested.hostname)
+        && source.protocol === 'https:' && source.hostname === 'i.pximg.net'
+        && !source.username && !source.password && !source.port && !source.search && !source.hash
+        && parsed?.pid === extractPid(requested.href) && Number(parsed.page) === requestedPage) {
+        if (!resolveProxyUrl(settings())) source.hostname = 'i.pixiv.re';
+        return source.href;
+      }
+    } catch { /* 响应头仅作优化；无效或不匹配时继续沿用请求地址。 */ }
+    return '';
+  }
   async function sizeUrlsFromTemplate(templateUrl, s, pid = '') {
     let status = 0;
     try {
-      const resp = await doFetch(templateUrl, 'image/*,*/*;q=0.8', s.timeoutMs,
-        { method: 'GET', redirect: 'manual', quiet: true });
-      status = Number(resp?.status) || 0;
-      const location = String(resp?.headers?.get?.('location') ?? '').trim();
-      try { await resp?.body?.cancel?.(); } catch { /* 保留主流程。 */ }
-      if (!location) {
-        say(`[pixiv] ${pid}：模板没有重定向（HTTP ${status}），只能按原图取`);
-        return [];
+      let current = templateUrl;
+      for (let hop = 0; hop < 3; hop++) {
+        const resp = await doFetch(current, 'image/*,*/*;q=0.8', s.timeoutMs,
+          { method: 'GET', redirect: 'manual', quiet: true });
+        status = Number(resp?.status) || 0;
+        const location = String(resp?.headers?.get?.('location') ?? '').trim();
+        const source = status === 200 ? validatedOriginUrl(current, resp.headers.get('x-origin-url')) : '';
+        try { await resp?.body?.cancel?.(); } catch { /* 保留主流程。 */ }
+        // 图床不支持HEAD；GET只读头后立即取消响应体，不下载整张引导图。
+        if (source) return sizeUrlsFromOriginal(source, s.imageSize);
+        if (!location) {
+          say(`[pixiv] ${pid}：模板没有重定向（HTTP ${status}），只能按原图取`);
+          return [];
+        }
+        const target = new URL(location, current);
+        const urls = sizeUrlsFromOriginal(target.href, s.imageSize);
+        if (urls.length) return urls;
+        const suffix = parseSuffixPath(target.href);
+        if (![301, 302, 303, 307, 308].includes(status) || target.origin !== new URL(templateUrl).origin
+          || !['pixiv.re', 'pixiv.cat', 'pixiv.nl', 'i.pixiv.re'].includes(target.hostname)
+          || target.username || target.password || target.search || target.hash || suffix?.pid !== String(pid)
+          || suffix.page !== (parseSuffixPath(templateUrl)?.page || 1)) break;
+        current = target.href;
       }
-      const urls = sizeUrlsFromOriginal(new URL(location, templateUrl).toString(), s.imageSize);
-      if (!urls.length) say(`[pixiv] ${pid}：301 的目标认不出日期路径（${location.slice(0, 90)}），只能按原图取`);
-      return urls;
+      return [];
     } catch (error) {
       say(`[pixiv] ${pid}：读 301 失败（${String(error?.message ?? error).slice(0, 60)}），只能按原图取`);
       return [];

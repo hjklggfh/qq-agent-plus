@@ -107,6 +107,29 @@ test('X-Origin-URL不信任任意域名、凭据或不同作品和页号；404�
   assert.equal(f.manager.engine.isTransientFetchError({ status: 429 }), false);
 });
 
+test('首页仅读取同站引导响应头，取消响应体后直接取东京缩图', async (t) => {
+  let cancelled = 0;
+  const origin = `https://i.pximg.net/img-original/img/2026/10/03/21/44/15/${pid}_p0.jpg`;
+  const f = fixture(t, { proxyUrl: 'http://127.0.0.1:3222', imageRelayUrl: 'http://127.0.0.1:3222/image' }, {
+    fetchImpl: async (url, init) => {
+      if (url.startsWith('https://pixiv.re/')) {
+        assert.equal(init.method, 'GET'); assert.equal(init.redirect, 'manual');
+        const first = url.endsWith(`/${pid}.png`);
+        return new Response(new ReadableStream({ cancel() { cancelled++; } }), {
+          status: first ? 302 : 200,
+          headers: first ? { location: `/${pid}-1.png` } : { 'x-origin-url': origin }
+        });
+      }
+      assert.equal(url, 'http://127.0.0.1:3222/image');
+      assert.match(JSON.parse(init.body).url, new RegExp(`${pid}_p0_master1200\\.jpg$`));
+      return new Response(png, { headers: { 'content-type': 'image/png' } });
+    }
+  });
+  const got = await f.manager.engine.fetchImage({ pid }, f.manager.engine.settings());
+  assert.equal(cancelled, 2); assert.equal(f.requests.length, 3);
+  assert.equal(got.bytes, png.length); fs.rmSync(got.file);
+});
+
 test('公开data详情格式取得真实路径，Yuki图片改用既有反代，缺少分级绝不默认为safe', async (t) => {
   const f = fixture(t, { metadataUrlTemplate: 'https://pixiv.yuki.sh/api/illust?id={pid}', maxPdfPages: 1 }, {
     host: pdfHost({}),

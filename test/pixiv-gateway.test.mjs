@@ -48,3 +48,23 @@ print(server.server_address[1],flush=True);server.serve_forever()
   assert.match(second, /^HTTP\/1.1 200 OK/);
   assert.notEqual(first.split('\r\n\r\n')[1], second.split('\r\n\r\n')[1]);
 });
+
+test('SSH小批次最多复用三次，超龄空闲及时关闭，忙碌连接不被其他请求共享', { skip: !available }, () => {
+  const script = load + `
+now=[0.0]
+pool=m.TransportPool(m.ssh_command('ubuntu@example.com','key','known'),clock=lambda:now[0],background=False)
+try:
+ first=pool.acquire();other=pool.acquire();assert first is not other
+ pool.release(first);pool.release(other)
+ second=pool.acquire();assert second is first;pool.release(second)
+ third=pool.acquire();assert third is first;pool.release(third)
+ assert first not in pool.entries
+ now[0]=4;pool.sweep();assert not pool.entries
+ live=pool.acquire();now[0]=20;pool.sweep();assert live in pool.entries
+ pool.release(live);assert not pool.entries
+finally:pool.close()
+assert not m.Path(pool.root.name).exists()
+`;
+  const result = spawnSync(python, ['-B', '-c', script, source], { encoding: 'utf8', timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+});
