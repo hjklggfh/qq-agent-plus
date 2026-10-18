@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto';
-import { PATHWAYS, BUILD_STYLES, ATTRIBUTE_NAMES, pathwayOf, newProgress, limitsOf, abilitiesOf, TACTICAL_RULESET } from './catalog.js';
+import { ATTRIBUTE_NAMES, pathwayOf, newProgress, limitsOf, abilitiesOf, TACTICAL_RULESET } from './catalog.js';
 import { shortText, integer, drawDice, currentUnit, combatPanel, combatOptions, combatAction, startCombat } from './combat.js';
 
 export function tactical(c) { return c?.ruleset === TACTICAL_RULESET; }
@@ -9,54 +9,6 @@ export function createPlayer(card, userId) {
 export function initializeCampaign(c) {
   Object.assign(c, { ruleset: TACTICAL_RULESET, phase: 'exploration', scene: { id: 'arrival', name: '抵达现场' },
     safe: false, choices: {}, intents: {}, resolved: [], journal: [], npcs: [], rewards: [], flags: {}, clock: 0, dangerClock: 0, clockPaused: false, chapter: 1, combat: null });
-}
-
-function wizardKey(chatKey, userId) { return `${chatKey}|${userId}`; }
-export function hasWizard(data, chatKey, userId) { return Boolean(data.wizards?.[wizardKey(chatKey, userId)]); }
-function wizardPanel(w) {
-  if (w.stage === 'pathway') {
-    const page = PATHWAYS.slice(w.page * 6, w.page * 6 + 6);
-    return `【自建角色·选择途径 ${w.page + 1}/4】\n${page.map((p, i) => `${i + 1}. ${p.name}·${p.sequences[0].name}`).join('\n')}\n7. 下一页\n8. 上一页\n0. 取消建角`;
-  }
-  if (w.stage === 'name') return `已选${pathwayOf(w.pathway).name}，从序列9起步。\n请输入角色姓名（最多60字）；0取消。`;
-  if (w.stage === 'background') return '请输入职业、性格、经历、冒险目标，以及与队伍或NPC的联系（最多1200字）；0取消。';
-  if (w.stage === 'style') return `【选择属性方案】\n${BUILD_STYLES.map((s, i) => `${i + 1}. ${s.name}：${Object.entries(s.attributes).map(([k, v]) => k + v).join('、')}`).join('\n')}\n0. 取消建角`;
-  return `【确认角色】${w.name} · ${pathwayOf(w.pathway).name}序列9\n${w.background}\n${BUILD_STYLES[w.style].name}，HP10/灵性6，普通职业工具、提灯、绷带各一。\n1. 确认创建${w.join ? '并加入当前战役' : ''}\n2. 重新选择途径\n0. 取消`;
-}
-export function startWizard(data, chatKey, userId, c) {
-  data.wizards ||= {};
-  if (Object.keys(data.wizards).length >= 300 && !hasWizard(data, chatKey, userId)) throw new Error('建角草稿已满，请清理旧草稿');
-  const w = data.wizards[wizardKey(chatKey, userId)] ||= { stage: 'pathway', page: 0, join: Boolean(c && tactical(c) && ['recruiting', 'paused'].includes(c.status) && !c.players.some((p) => p.userId === userId)) };
-  return { reply: wizardPanel(w) };
-}
-export function wizardInput(data, chatKey, userId, value, c, maxPlayers) {
-  const k = wizardKey(chatKey, userId), w = data.wizards[k];
-  if (value.trim() === '0' || value.trim() === '/跑团 取消建角') { delete data.wizards[k]; return { reply: '建角已取消，已有角色与存档保留。' }; }
-  if (w.stage === 'pathway') {
-    const n = Number(value.trim());
-    if (n === 7 || n === 8) w.page = (w.page + (n === 7 ? 1 : 3)) % 4;
-    else {
-      const p = PATHWAYS[w.page * 6 + integer(n, 1, 6, '途径序号') - 1];
-      if (!p) throw new Error('该页没有这个序号');
-      w.pathway = p.id; w.stage = 'name';
-    }
-  } else if (w.stage === 'name') { w.name = shortText(value, 60, '角色名'); w.stage = 'background'; }
-  else if (w.stage === 'background') { w.background = shortText(value, 1200, '背景'); w.stage = 'style'; }
-  else if (w.stage === 'style') { w.style = integer(Number(value.trim()), 1, BUILD_STYLES.length, '方案') - 1; w.stage = 'confirm'; }
-  else if (value.trim() === '2') { w.stage = 'pathway'; w.page = 0; }
-  else if (value.trim() === '1') {
-    if (data.characters.length >= 200) throw new Error('角色卡已满');
-    if (w.join && (!c || !tactical(c) || !['recruiting', 'paused'].includes(c.status) || c.combat?.status === 'active')) throw new Error('当前战役状态已变，先暂停或完成战斗再确认建角');
-    if (w.join && (c.players.some((p) => p.userId === userId) || c.players.length >= maxPlayers)) throw new Error('已经加入或人数已满，请取消建角后查看状态');
-    const card = { id: randomUUID().slice(0, 8), scope: chatKey, ownerId: userId, name: w.name,
-      description: w.background, hp: 10, attributes: { ...BUILD_STYLES[w.style].attributes },
-      inventory: ['普通职业工具', '提灯', '绷带'], pathway: w.pathway, sequence: 9 };
-    data.characters.push(card);
-    if (w.join) c.players.push(createPlayer(card, userId));
-    delete data.wizards[k];
-    return { reply: `已创建${card.name}，角色ID ${card.id}。${w.join ? '已加入当前战役，等待团主开始或继续。' : `使用 /跑团 加入 ${card.id} 加入战役。`}` };
-  } else throw new Error('请回复1确认、2重选或0取消');
-  return { reply: wizardPanel(w) };
 }
 
 function optionMenu(c, userId, options, title, kind = 'story') {

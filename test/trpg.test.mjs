@@ -124,7 +124,7 @@ test('普通闲聊不注入跑团；旧团行动不能用于新团；暂停后�
 
 test('文档中的角色卡和世界观示例可直接验证并保存', (t) => {
   const f = fixture(t);
-  for (const filename of ['character', 'world', 'tactical-character', 'tactical-world']) {
+  for (const filename of ['character', 'world', 'tactical-character', 'tactical-world', 'narrative-world-with-creation']) {
     const input = JSON.parse(fs.readFileSync(new URL(`../docs/examples/trpg/${filename}.json`, import.meta.url), 'utf8'));
     const saved = f.manager.saveAsset(input.kind, input.asset);
     assert.ok(saved.id);

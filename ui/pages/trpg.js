@@ -23,7 +23,10 @@ function trpgEditor(kind) {
     <input name="id" type="hidden">
     <label>名称<input name="name" maxlength="60" required placeholder="${world ? '雾港来信' : '你的角色名'}"></label>
     <label>${world ? '背景设定' : '外貌、性格、经历和能力'}<textarea name="description" rows="6" maxlength="12000" required placeholder="直接粘贴设定文本"></textarea></label>
-    ${world ? '<label>规则模式<select name="ruleset"><option value="narrative">原有轻量叙事</option value="lotm-tactical-v1">诡秘战术长期战役（序列9—5）</option></select></label><label>开场<textarea name="opening" rows="3" maxlength="4000" placeholder="玩家抵达时发生的第一幕"></textarea></label><label>世界规则与风格<textarea name="rules" rows="3" maxlength="4000" placeholder="时代、魔法边界、禁忌、剧情风格等"></textarea></label>'
+    ${world ? `<label>规则模式<select name="ruleset"><option value="narrative">通用轻量叙事（按世界建角）</option><option value="lotm-tactical-v1">诡秘战术长期战役（序列9—5）</option></select></label><label>开场<textarea name="opening" rows="3" maxlength="4000" placeholder="玩家抵达时发生的第一幕"></textarea></label><label>世界规则与风格<textarea name="rules" rows="3" maxlength="4000" placeholder="时代、魔法边界、禁忌、剧情风格等"></textarea></label>
+      <label>建角说明（选填，公开给玩家）<textarea name="creationPrompt" rows="2" maxlength="1200" placeholder="例如：普通现代人，无超能力，说明为何来到超市。"></textarea></label>
+      <label>可选职业／身份（选填，每行一个）<textarea name="creationRoles" rows="3" placeholder="收银员\n保安\n顾客"></textarea></label>
+      <details><summary>建角初始属性与物品（通用叙事，选填）</summary><label>初始配置（JSON）<textarea name="creationDefaults" rows="4" placeholder='{"hp":10,"inventory":["手机"],"backgroundPrompt":"填写人物经历和与队伍的联系"}'></textarea></label><p class="hint">可配置hp、inventory、backgroundPrompt、attributePresets。默认HP10、通用四属性方案、空背包；不会自动生成诡秘途径或灵性。诡秘战术模式使用固定建角规则，请留空这些自定义项。</p></details>`
     : `<label>途径<select name="pathway"><option value="">旧叙事角色（无结构化途径）</option>${pathways.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} · 序列9 ${esc(p.sequences[0].name)}</option>`).join('')}</select></label><div class="hint">选择途径后：新角色HP10，四属性-1至2且总和≤4，最高成长至序列5。QQ发送 /跑团 建角 可用编号引导，无需填写JSON。</div><label>初始生命值<input name="hp" type="number" min="1" max="1000" value="10" required></label><label>属性修正值（JSON）<textarea name="attributes" rows="3">{"力量":0,"敏捷":1,"感知":2,"交涉":1}</textarea></label><label>初始物品（每行一个单位）<textarea name="inventory" rows="3" placeholder="提灯\n绷带"></textarea></label>`}
     <div class="trpg-actions"><button class="btn btn-primary" type="submit">保存${world ? '世界观' : '角色卡'}</button><button class="btn" type="button" data-trpg-action="new" data-kind="${kind}">新建</button>
     <label class="btn trpg-import">导入 JSON / TXT<input type="file" accept=".json,.txt,.md" data-trpg-import="${kind}"></label></div>
@@ -85,6 +88,12 @@ function fillTrpgForm(kind, asset) {
     const input = form.elements.namedItem(key);
     if (input) input.value = key === 'attributes' ? JSON.stringify(value, null, 2) : key === 'inventory' ? value.join('\n') : value;
   }
+  if (kind === 'worlds') {
+    const { prompt = '', roles = [], ...defaults } = asset?.characterCreation || {};
+    form.elements.namedItem('creationPrompt').value = prompt;
+    form.elements.namedItem('creationRoles').value = roles.join('\n');
+    form.elements.namedItem('creationDefaults').value = Object.keys(defaults).length ? JSON.stringify(defaults, null, 2) : '';
+  }
   if (kind === 'characters' && asset?.pathway) {
     const p = (state.trpgCatalog?.pathways || []).find((p) => p.id === asset.pathway || p.name === asset.pathway);
     if (!p) throw new Error('无法识别途径，请刷新页面加载22途径目录');
@@ -126,7 +135,13 @@ async function submitTrpgCard(form) {
   const get = (name) => form.elements.namedItem(name)?.value || '';
   const asset = { name: get('name'), description: get('description') };
   if (get('id')) asset.id = get('id');
-  if (kind === 'worlds') Object.assign(asset, { opening: get('opening'), rules: get('rules'), ...(get('ruleset') === 'lotm-tactical-v1' ? { ruleset: get('ruleset') } : {}) });
+  if (kind === 'worlds') {
+    const defaults = get('creationDefaults').trim() ? JSON.parse(get('creationDefaults')) : {};
+    if (!defaults || typeof defaults !== 'object' || Array.isArray(defaults)) throw new Error('建角初始配置需为JSON对象');
+    if (Object.hasOwn(defaults, 'prompt') || Object.hasOwn(defaults, 'roles')) throw new Error('建角说明和职业请填写上方专用字段');
+    const profile = { ...defaults, ...(get('creationPrompt').trim() ? { prompt: get('creationPrompt').trim() } : {}), ...(get('creationRoles').trim() ? { roles: get('creationRoles').split('\n').map((s) => s.trim()).filter(Boolean) } : {}) };
+    Object.assign(asset, { opening: get('opening'), rules: get('rules'), ...(get('ruleset') === 'lotm-tactical-v1' ? { ruleset: get('ruleset') } : {}), ...(Object.keys(profile).length ? { characterCreation: profile } : {}) });
+  }
   else Object.assign(asset, { hp: Number(get('hp')), attributes: JSON.parse(get('attributes')), inventory: get('inventory').split('\n').map((s) => s.trim()).filter(Boolean), ...(get('pathway') ? { pathway: get('pathway'), sequence: 9 } : {}) });
   const saved = await trpgPost('asset', { kind, asset });
   form.elements.namedItem('id').value = saved.id;
@@ -159,7 +174,7 @@ async function loadTrpgPage() {
   if (!host.dataset.ready) {
     try { state.trpgCatalog = await api('/api/trpg/catalog'); } catch { state.trpgCatalog = null; }
     host.dataset.ready = 'true';
-    host.innerHTML = `<header><h2>跑团工作台</h2><p class="muted">22途径自建 · 序列9—5长期成长 · 多人编号行动 · 战术地图与真实骰点</p></header>
+    host.innerHTML = `<header><h2>跑团工作台</h2><p class="muted">按世界建角 · 自定义职业与背景 · 诡秘战术与长期成长 · 真实骰点</p></header>
       <section class="trpg-card"><div class="trpg-actions"><label><input type="checkbox" id="trpg-enabled"> 开启跑团</label><label>人数上限 <input type="number" id="trpg-max" min="1" max="6" value="6"></label><button class="btn btn-primary" data-trpg-action="settings">保存设置</button><button class="btn" data-trpg-action="refresh">刷新存档</button></div>
       <div class="trpg-grid trpg-allowlists"><label for="trpg-groups">群聊白名单（群号）<textarea id="trpg-groups" rows="3" placeholder="每行一个群号，也可用逗号分隔"></textarea></label><label for="trpg-private">私聊白名单（QQ号）<textarea id="trpg-private" rows="3" placeholder="每行一个QQ号，也可用逗号分隔"></textarea></label></div>
       <p class="hint">只有白名单中的群聊／私聊可以开团，还需满足全局授权与时段。空名单禁止开团；移出名单立即停止并保留存档。退出游戏＝保存暂停；结束战役＝团主确认归档。规则引擎接收编号与结算战斗，剧情生成计入原有模型预算。</p></section>
@@ -174,7 +189,7 @@ async function loadTrpgPage() {
 /跑团 继续
 /跑团 成长
 /跑团 能力
-退出游戏</pre><p>先保存允许的群号／QQ号。每名玩家发送建角指令，按编号选途径、输入姓名与背景、选择属性并确认；创建后加入当前待开始战役。团主开始后，各自回复本人菜单序号或自由描述。探索收集全员意图，战斗轮到谁由谁行动。原有叙事世界和卡片仍可用指定ID开团；新世界选择战术模式即可使用规则引擎。</p></details>
+退出游戏</pre><p>先保存允许的群号／QQ号，再用 /跑团 开团 世界ID 选择世界；省略ID会使用内置诡秘战役。每名玩家发送建角指令：通用世界填写职业/身份或选择世界预设，诡秘战术世界才选择途径。输入姓名、背景、属性并确认后自动加入。普通世界的职业、能力和资源按世界设定叙事，不会自动获得诡秘机制；诡秘战术团的编号、探索意图与回合由程序结算。</p></details>
       <div class="trpg-grid">${trpgEditor('worlds')}${trpgEditor('characters')}</div><h2>游戏存档</h2><div id="trpg-campaigns" class="trpg-grid"></div>`;
     host.addEventListener('click', (event) => {
       const target = event.target.closest('[data-trpg-action]');

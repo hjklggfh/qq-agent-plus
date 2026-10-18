@@ -260,6 +260,44 @@ test('真实消息入口：确定性指令直接消费，行动标记唤醒，�
   assert.equal(wakes, 4);
 });
 
+test('通用世界真实入站建角按世界分流、切团清理旧草稿、确认自动加入且不唤醒模型', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
+  cfg.allow.groups = ['400001'];
+  cfg.trpg = { enabled: true, maxPlayers: 6, allowedGroups: ['400001'], allowedPrivate: [] };
+  cfg.sticker.autoCollect = false; cfg.sticker.enabled = false;
+  setRuntimeConfig(cfg);
+  const app = createApp({ log: () => {} }), chat = 'group:400001';
+  t.after(() => app.stop());
+  const replies = [];
+  app.sender.sendTextBatch = async (_chat, messages) => { replies.push(...messages); return { sent: messages.map((text) => ({ text })), failed: [] }; };
+  let wakes = 0, mid = 20000;
+  app.orchestrator.onIncoming = () => { wakes++; };
+  const message = (text, user = '123456', id = ++mid) => app.onebot.onEvent({ post_type: 'message', message_type: 'group', group_id: 400001, user_id: Number(user), message_id: id, time: Math.floor(Date.now() / 1000), message: text });
+  const first = app.trpg.saveAsset('worlds', { name: '现代超市', description: '末日求生', opening: '超市门外响起警报。' });
+  await message('/跑团 开团 ' + first.id); await message('/跑团 建角'); await message('收银员');
+  assert.match(replies.at(-1), /已选收银员/);
+  await message('/跑团 结束');
+  const next = app.trpg.saveAsset('worlds', { name: '星际货船', description: '太空探险', characterCreation: { roles: ['船员', '医生'], inventory: ['通讯器'] } });
+  await message('/跑团 开团 ' + next.id); await message('/跑团 建角');
+  assert.match(replies.at(-1), /星际货船[\s\S]*\n1\. 船员/);
+  assert.doesNotMatch(replies.at(-1), /愚者|序列9|收银员/);
+  for (const text of ['2', '林澜', '受雇随船，救助船员', '1']) await message(text);
+  const confirmId = ++mid;
+  await message('1', '123456', confirmId); await message('1', '123456', confirmId);
+  assert.equal(app.trpg.current(chat).players.length, 1);
+  const p = app.trpg.current(chat).players[0];
+  assert.match(p.character.description, /职业\/身份：医生/);
+  assert.deepEqual(p.inventory, ['通讯器']);
+  assert.equal(Object.hasOwn(p, 'progress'), false);
+  assert.equal(wakes, 0);
+  assert.deepEqual(app.trpg.snapshot().wizards, {});
+  await message('/跑团 开始'); await message('检查通讯器');
+  assert.equal(wakes, 1, '建角完成后普通游戏行动仍进入原有叙事模型链路');
+});
+
 test('战术真实入站与模型链路：双人建角、独立编号、合并意图、规则工具与真实菜单自动发送', async (t) => {
   const { createApp } = await import('../src/console/app.js');
   const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
