@@ -210,6 +210,48 @@ test('PDF缺页后仍保留后续页并标注部分，不把页码压缩成完�
   assert.doesNotMatch(f.sends.at(-1)[1][0], /第3页|包含：/);
 });
 
+test('完整PDF重复请求跳过取图和合成，仍检查当前会话分级及消息上限', async (t) => {
+  const captured = {};
+  const f = fixture(t, {}, { host: pdfHost(captured) });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cache-first');
+  const requests = f.requests.length;
+  f.manager.options.buildPdf = async () => assert.fail('缓存命中不再合成');
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cache-second');
+  assert.equal(f.requests.length, requests); assert.equal(captured.uploads, 2);
+  assert.equal(f.manager.history.at(-1).cachePdfHits, 1); assert.equal(f.sends.length, 4);
+  f.manager.setRating(pid, 'r18');
+  const denied = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cache-denied');
+  assert.equal(denied.isError, true); assert.match(denied.content, /当前会话不允许/);
+  assert.equal(captured.uploads, 2); assert.equal(f.requests.length, requests);
+});
+
+test('部分PDF不作为整本缓存，重试只补失败图片，尺寸设置变化使缓存失效', async (t) => {
+  const captured = {}, missing = [3];
+  const f = fixture(t, {}, { missing, host: pdfHost(captured) });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'resume-first');
+  assert.equal(f.manager.history.at(-1).status, 'partial');
+  const requests = f.requests.length; missing.length = 0;
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'resume-second');
+  assert.equal(f.requests.length - requests, 1);
+  assert.equal(f.manager.history.at(-1).cacheImageHits, 4);
+  assert.equal(f.manager.history.at(-1).cachePdfHits, 0);
+  assert.equal(f.manager.history.at(-1).status, 'done');
+  f.updateConfig({ pixiv: { imageSize: 'small' } });
+  await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'resume-size');
+  assert.equal(f.manager.history.at(-1).cachePdfHits, 0);
+  assert.equal(f.manager.history.at(-1).cacheImageHits, 0);
+});
+
+test('PDF解码发现坏图时移除对应图片缓存，下次重新下载', async (t) => {
+  const captured = {}, host = pdfHost(captured);
+  const f = fixture(t, {}, { host: { ...host, buildPdf: async () => { throw Object.assign(new Error('坏图片'), { invalidImages: true }); } } });
+  assert.equal((await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'bad-cache')).isError, true);
+  const requests = f.requests.length; f.manager.options.buildPdf = host.buildPdf;
+  const next = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'fixed-cache');
+  assert.equal(next.isError, undefined, next.content); assert.equal(f.requests.length - requests, 5);
+  assert.equal(f.manager.history.at(-1).cacheImageHits, 0); assert.equal(captured.uploads, 1);
+});
+
 test('长时间多页PDF也不发送逐页进度，文本和文件总共最多三条', async (t) => {
   const captured = {};
   const f = fixture(t, {}, { pages: 30, host: pdfHost(captured) });
@@ -224,7 +266,7 @@ test('长时间多页PDF也不发送逐页进度，文本和文件总共最多�
   assert.doesNotMatch(f.sends.map((s) => s[1][0]).join('\n'), /下载中|已取得|PDF 已生成|下载完成/);
 });
 
-test('东京已知页最多预取3张，乱序返回仍按页合成，超限后回收预取文件', async (t) => {
+test('东京默认四个下载工人，乱序返回仍按页合成，超限后回收预取文件', async (t) => {
   for (const limited of [false, true]) {
     const captured = {};
     const f = fixture(t, { imageRelayUrl: 'http://127.0.0.1:3222/image', ...(limited ? { pdfMaxBytes: png.length * 2 } : {}) }, { pages: 9, host: pdfHost(captured) });
@@ -241,7 +283,7 @@ test('东京已知页最多预取3张，乱序返回仍按页合成，超限后�
     };
     const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'prefetch-'+limited);
     assert.equal(result.isError, undefined, result.content);
-    assert.equal(peak, 3); assert.equal(active, 0);
+    assert.equal(peak, 4); assert.equal(active, 0);
     assert.deepEqual(captured.inputs.map((p) => p.page), limited ? [1, 2] : [1, 2, 3, 4, 5, 6, 7, 8, 9]);
     assert.ok(paths.every((p) => !fs.existsSync(p)));
     assert.equal(f.sends.length + captured.uploads, 3);
@@ -274,6 +316,21 @@ test('取消东京预取会等待收回全部临时图片，不合成或上传PD
   assert.equal(result.isError, true); assert.equal(captured.uploads, undefined);
   assert.ok(paths.every((p) => !fs.existsSync(p)));
   assert.deepEqual(fs.readdirSync(path.join(f.dir, 'pixiv', 'pdf')), []);
+});
+
+test('JM式下载调度在前页较慢时继续填充空闲工人，并限制预取窗口', async (t) => {
+  const captured = {}, starts = [];
+  const f = fixture(t, { imageRelayUrl: 'http://127.0.0.1:3222/image', downloadConcurrency: 3 }, { pages: 9, host: pdfHost(captured) });
+  const fetch = f.manager.engine.fetchImage;
+  f.manager.engine.fetchImage = async (...args) => {
+    const page = Number(args[0].imageUrls[0].match(/-(\d+)\.png/)[1]); starts.push(page);
+    await new Promise((resolve) => setTimeout(resolve, page === 1 ? 100 : 1));
+    if (page === 1) { assert.ok(starts.includes(6)); assert.equal(starts.includes(7), false); }
+    return fetch(...args);
+  };
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'worker-pool');
+  assert.equal(result.isError, undefined, result.content);
+  assert.deepEqual(captured.inputs.map((p) => p.page), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 });
 
 test('PDF上传未确认只调用一次，不回退卡片或文本；保留文件供协议端读取', async (t) => {

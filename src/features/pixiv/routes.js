@@ -11,6 +11,11 @@ export function installPixivRoutes(app, manager) {
     return JSON.parse(Buffer.concat(parts).toString('utf8'));
   };
   app.addRoute('GET', '/api/pixiv', async (_req, res) => respond(res, 200, manager.snapshot()));
+  app.addRoute('GET', '/api/pixiv/cache', async (_req, res) => respond(res, 200, manager.files.sweep()));
+  app.addRoute('POST', '/api/pixiv/cache/clear', async (_req, res) => {
+    if (manager.active) return respond(res, 409, { error: 'PID 正在处理，请完成或取消后清理缓存' });
+    respond(res, 200, { ok: true, ...manager.files.clear() });
+  });
   app.addRoute('POST', '/api/pixiv/settings', async (req, res) => {
     try {
       const patch = await body(req); validatePixivPatch(patch);

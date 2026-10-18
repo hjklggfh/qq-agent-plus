@@ -5,6 +5,7 @@ export const DEFAULT_PIXIV_CONFIG = Object.freeze({
   imageSize: 'regular', maxCount: 1, maxPages: 100, timeoutMs: 15000,
   outputFormat: 'images', maxPdfPages: 500, pdfMaxBytes: 256 * 1024 * 1024,
   taskTimeoutSeconds: 300, forwardBudgetBytes: 4 * 1024 * 1024,
+  downloadConcurrency: 4, cacheEnabled: true, cacheTtlHours: 24, cacheMaxBytes: 512 * 1024 * 1024,
   maxImageBytes: 5 * 1024 * 1024, pagesPerBatch: 10,
   downsampleOverBytes: 800 * 1024, downsampleMaxEdge: 1200,
   downsampleQuality: 5, cooldownSeconds: 10, metadataUrlTemplate: '',
@@ -23,7 +24,7 @@ export function validatePixivPatch(patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (key.startsWith('has')) continue;
     if (!(key in DEFAULT_PIXIV_CONFIG)) throw new Error(`未知 PID 设置：${key}`);
-    if (['enabled', 'excludeAI', 'chatRatingsMigrated'].includes(key) && typeof value !== 'boolean') throw new Error('PID 开关须为布尔值');
+    if (['enabled', 'excludeAI', 'chatRatingsMigrated', 'cacheEnabled'].includes(key) && typeof value !== 'boolean') throw new Error('PID 开关须为布尔值');
     if (key === 'ratings' && !validRatings(value)) throw new Error('至少允许一种有效分级');
     const chats = value?.__replace__ ?? value;
     if (key === 'chatRatings' && (!chats || typeof chats !== 'object' || Array.isArray(chats)
@@ -42,6 +43,7 @@ export function validatePixivPatch(patch) {
     }
   }
   for (const [key, min, max] of [
+    ['downloadConcurrency', 1, 6], ['cacheTtlHours', 1, 168], ['cacheMaxBytes', 16 * 1048576, 2 * 1073741824],
     ['maxPdfPages', 1, 1000], ['pdfMaxBytes', 1048576, 536870912],
     ['maxPages', 1, 100], ['maxCount', 1, 5], ['pagesPerBatch', 1, 20], ['timeoutMs', 3000, 60000],
     ['taskTimeoutSeconds', 30, 600], ['forwardBudgetBytes', 256 * 1024, 8 * 1024 * 1024],

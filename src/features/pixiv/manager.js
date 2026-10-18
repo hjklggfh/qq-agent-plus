@@ -6,6 +6,7 @@ import { createPixivEngine } from './engine.js';
 import { registerBuiltinFeature } from '../feature-registry.js';
 import { imageType } from '../../core/image-type.js';
 import { buildPixivPdf, sweepPdfJobs } from './pdf.js';
+import { PixivFileCache, cacheKey } from './file-cache.js';
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; } }
 function writeJson(file, value) {
@@ -59,6 +60,10 @@ export class PixivManager {
     this.task = null;
     this.cooldowns = new Map();
     this.engine = options.engine || createPixivEngine({ stateDir: this.stateDir, getSettings: () => this.settings(), log: options.log, fetchImpl: options.fetchImpl });
+    this.files = new PixivFileCache(path.join(this.dir, 'file-cache'), () => this.settings());
+    this.files.sweep();
+    this.cacheTimer = setInterval(() => this.files.sweep(), 30 * 60 * 1000);
+    this.cacheTimer.unref?.();
     registerBuiltinFeature({ id: 'pixiv', toolDefs: this.toolDefs() });
   }
   settings() { return pixivConfig(this.options.getConfig().pixiv); }
@@ -96,7 +101,7 @@ export class PixivManager {
   enforce() {
     if (this.active && (!this.allowed(this.active.chatKey) || JSON.stringify(this.settings()) !== this.active.settings)) this.active.controller.abort();
   }
-  async stop() { this.active?.controller.abort(); await this.task; await this.engine.dispose?.(); registerBuiltinFeature({ id: 'pixiv' }); }
+  async stop() { clearInterval(this.cacheTimer); this.active?.controller.abort(); await this.task; await this.engine.dispose?.(); registerBuiltinFeature({ id: 'pixiv' }); }
   cache(item) {
     if (!item || !this.engine.ratingKnown(item)) return;
     this.metadata[item.pid] = { ...item, xRestrict: this.engine.ratingOf(item), ratingKnown: true, cachedAt: Date.now() };
@@ -168,7 +173,7 @@ export class PixivManager {
     const pdf = format === 'pdf';
     const pageLimit = pdf ? s.maxPdfPages : s.maxPages;
     const signal = AbortSignal.any([controller.signal, ...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(s.taskTimeoutSeconds * 1000)]);
-    const record = { id: randomUUID(), chatKey, format, startedAt: new Date().toISOString(), status: 'running', pages: [], failedPages: [] };
+    const record = { id: randomUUID(), chatKey, format, startedAt: new Date().toISOString(), status: 'running', pages: [], failedPages: [], cacheImageHits: 0, cachePdfHits: 0 };
     this.history.push(record); this.history = this.history.slice(-50);
     const save = () => writeJson(path.join(this.dir, 'history.json'), this.history);
     const guard = setInterval(() => this.enforce(), 500);
@@ -192,6 +197,7 @@ export class PixivManager {
         fs.chmodSync(jobDir, 0o700);
       }
       this.migrateState(); this.engine.sweepTemp?.(); save();
+      this.files.sweep();
       const pid = this.engine.extractPid(args.pid) || this.engine.extractPid(args.url);
       await notify(pid ? `🔍 开始处理 PID ${pid}…` : '🔍 开始搜索 Pixiv 作品…');
       let works;
@@ -212,6 +218,18 @@ export class PixivManager {
         if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from || to > 10000 || to - from + 1 > pageLimit) throw new Error(`页码无效；每次最多 ${pageLimit} 页，可用“PID ${item.pid} 21-40${pdf ? ' PDF' : ''}”指定范围。`);
         const last = item.pageCount ? Math.min(item.pageCount, to) : to;
         if (from > last) throw new Error(`作品只有 ${item.pageCount} 页，请检查起始页。`);
+        // Hash the full rendering identity (including credentials) without persisting secrets.
+        const variant = cacheKey(Object.fromEntries(['imageSize', 'maxImageBytes', 'downsampleMaxEdge', 'downsampleQuality',
+          'downsampleOverBytes', 'imageUrlTemplate', 'metadataUrlTemplate', 'proxyUrl', 'imageRelayUrl', 'cookie'].map((key) => [key, s[key]])));
+        const imageKey = (page) => cacheKey({ kind: 'image-v1', variant, pid: item.pid, page });
+        const pdfKey = cacheKey({ kind: 'pdf-v1', variant, pid: item.pid, from, last });
+        let cachedPdf = pdf && from === 1 && last === item.pageCount
+          ? this.files.get(pdfKey, path.join(jobDir, 'cached.pdf'), s.pdfMaxBytes) : null;
+        if (cachedPdf && (!Array.isArray(cachedPdf.pages) || cachedPdf.pages.length !== last
+          || cachedPdf.pages.some((p, i) => p !== i + 1))) {
+          fs.rmSync(cachedPdf.file, { force: true }); this.files.drop(pdfKey); cachedPdf = null;
+        }
+        if (cachedPdf) record.cachePdfHits++;
         let batch = [], bytes = 0, seed = item, stopped = '', missingWork = false;
         const pdfFiles = [];
         const flush = async () => {
@@ -228,7 +246,11 @@ export class PixivManager {
           try { save(); } catch (error) { error.checkpoint = true; throw error; }
         };
         const pending = new Map();
-        const fetchPage = (page) => {
+        const fetchPage = async (page) => {
+          signal.throwIfAborted();
+          const destination = path.join(jobDir || path.join(this.stateDir, 'tmp'), `cached-${randomUUID()}.img`);
+          const hit = this.files.get(imageKey(page), destination, s.maxImageBytes);
+          if (hit) { record.cacheImageHits++; return { ...hit, fromCache: true }; }
           let urls = item.pages?.[page - 1] || (page === 1 ? item.imageUrls : this.engine.pageUrlsOf(seed, page - 1, s.imageSize));
           urls = (urls || []).map((raw) => {
             try { const u = new URL(raw); if (u.hostname === 'i.pximg.net' && !s.proxyUrl) u.hostname = 'i.pixiv.re'; return u.href; } catch { return ''; }
@@ -241,14 +263,20 @@ export class PixivManager {
           }
           return this.engine.fetchImage({ ...item, imageUrl: '', imageUrls: urls, thumbnail: '' }, this.engine.settings(), { allowTemplate: page === 1 && !urls.length });
         };
+        let front = from, cursor = from, activeDownloads = 0, closing = false;
+        const pump = () => {
+          const width = s.imageRelayUrl && item.pageCount && (item.pages?.length || this.engine.parseOriginalPath(seed.imageUrl)) ? s.downloadConcurrency : 1;
+          const ahead = width > 1 ? width * 2 : 1;
+          while (!closing && activeDownloads < width && cursor <= Math.min(last, front + ahead - 1)) {
+            const page = cursor++; activeDownloads++;
+            pending.set(page, Promise.resolve().then(() => fetchPage(page)).then((got) => ({ got }), (error) => ({ error }))
+              .then((entry) => { activeDownloads--; pump(); return entry; }));
+          }
+        };
         try {
-            for (let page = from; page <= last; page++) {
+            for (let page = from; !cachedPdf && page <= last; page++) {
               signal.throwIfAborted();
-              // 只在东京图片线路和可靠页地址就绪后预取，最多3张，按原顺序处理。
-              const width = s.imageRelayUrl && item.pageCount && (item.pages?.length || this.engine.parseOriginalPath(seed.imageUrl)) ? 3 : 1;
-              for (let next = page; next <= Math.min(last, page + width - 1); next++) {
-                if (!pending.has(next)) pending.set(next, fetchPage(next).then((got) => ({ got }), (error) => ({ error })));
-              }
+              front = page; pump();
               try {
                 const entry = await pending.get(page); pending.delete(page);
                 if (entry.error) throw entry.error;
@@ -259,9 +287,10 @@ export class PixivManager {
                   this.cache(item); // 已核实分级的作品记住真实路径，后续请求无需重复查询PID短链。
                 }
                 const buffer = fs.readFileSync(got.file);
+                if (!imageType(buffer)) { fs.rmSync(got.file, { force: true }); throw new Error('返回内容不是图片'); }
+                if (!got.fromCache) this.files.put(imageKey(page), got.file, { url: got.usedUrl || got.url || seed.imageUrl });
                 if (pdf) {
                   try {
-                    if (!imageType(buffer)) throw new Error('返回内容不是图片');
                     if (bytes + buffer.length > s.pdfMaxBytes) {
                       stopped = '已到 PDF 图片总大小上限，后续页面未下载；请指定后续页码继续';
                       break;
@@ -275,7 +304,6 @@ export class PixivManager {
                   continue;
                 }
                 try { fs.unlinkSync(got.file); } catch { /* 下次清理临时目录。 */ }
-                if (!imageType(buffer)) throw new Error('返回内容不是图片');
                 if (batch.length && (batch.length >= s.pagesPerBatch || bytes + buffer.length > s.forwardBudgetBytes)) await flush();
                 if (buffer.length > s.forwardBudgetBytes) { record.failedPages.push({ pid: item.pid, page, reason: '图片超过单批大小限制' }); continue; }
                 batch.push({ page, buffer }); bytes += buffer.length;
@@ -293,6 +321,7 @@ export class PixivManager {
               }
             }
         } finally {
+          closing = true;
           // 取消、总量上限或异常退出后也收回已预取文件，不留下孤立下载。
           for (const result of await Promise.all(pending.values())) {
             if (result.got?.file) { try { fs.rmSync(result.got.file, { force: true }); } catch { /* 后续临时目录清理兜底。 */ } }
@@ -300,13 +329,22 @@ export class PixivManager {
         }
         const incomplete = stopped || from > 1 || (item.pageCount ? last < item.pageCount : true) || record.failedPages.some((p) => p.pid === item.pid);
         if (pdf && incomplete) record.partial = true;
-        if (pdf && pdfFiles.length) {
+        if (pdf && (pdfFiles.length || cachedPdf)) {
           signal.throwIfAborted();
-          const name = `Pixiv-${item.pid}-${pdfFiles[0].page}-${pdfFiles.at(-1).page}${incomplete ? '-部分' : ''}.pdf`;
-          const result = await (this.options.buildPdf || buildPixivPdf)({ files: pdfFiles,
-            output: path.join(jobDir, name), signal, maxBytes: s.pdfMaxBytes,
-            pythonPath: this.options.getConfig().jm?.pythonPath });
+          const name = `Pixiv-${item.pid}-${cachedPdf ? from : pdfFiles[0].page}-${cachedPdf ? last : pdfFiles.at(-1).page}${incomplete ? '-部分' : ''}.pdf`;
+          let result = cachedPdf;
+          if (!result) {
+            try {
+              result = await (this.options.buildPdf || buildPixivPdf)({ files: pdfFiles,
+                output: path.join(jobDir, name), signal, maxBytes: s.pdfMaxBytes,
+                pythonPath: this.options.getConfig().jm?.pythonPath });
+            } catch (error) {
+              if (error.invalidImages) for (const page of pdfFiles) this.files.drop(imageKey(page.page));
+              throw error;
+            }
+          }
           this.enforce(); signal.throwIfAborted();
+          if (!cachedPdf && !incomplete) this.files.put(pdfKey, result.file, { pages: result.pages });
           sending = true;
           await this.options.file(chatKey, { file: result.file, name, bytes: result.bytes }, { runId, signal });
           sending = false;

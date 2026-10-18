@@ -83,6 +83,40 @@ with patch('socket.getaddrinfo', return_value=[(2,1,6,'',('127.0.0.1',443))]):
   assert.equal(result.status, 0, result.stderr);
 });
 
+test('东京CDN复用完整响应的HTTPS连接，空闲过期和错误响应立即关闭', { skip: !pillow }, () => {
+  const script = load + `
+from PIL import Image
+from unittest.mock import patch
+import io,time
+buf=io.BytesIO();Image.new('RGB',(50,50),'white').save(buf,'PNG');data=buf.getvalue()
+created=[]
+class Sock:
+ def settimeout(self,value):pass
+class Response:
+ status=200;will_close=False
+ def getheader(self,name):return str(len(data))
+ def read(self,limit):return data
+class Connection:
+ def __init__(self,host,timeout):
+  assert host=='i.pximg.net';self.sock=Sock();created.append(self)
+ def request(self,*a,**kw):pass
+ def getresponse(self):return Response()
+ def close(self):self.sock=None
+value={'url':'https://i.pximg.net/img-original/img/test.png'}
+with patch.object(m,'PublicHTTPS',Connection):
+ assert m.compressed_image(value)[0]==200
+ assert m.compressed_image(value)[0]==200
+ assert len(created)==1
+ now=time.monotonic()+6
+ with patch('time.monotonic',return_value=now):assert m.compressed_image(value)[0]==200
+ assert len(created)==2 and created[0].sock is None
+ with patch('time.monotonic',return_value=now),patch.object(Response,'status',302):assert m.compressed_image(value)[0]==502
+ assert created[-1].sock is None and m.CONNECTIONS.empty()
+`;
+  const result = spawnSync(python, ['-B', '-c', script, source], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(result.status, 0, result.stderr);
+});
+
 test('PID代理本机健康检查可用，通用HTTP与白名单外CONNECT均被拒绝', { skip: !available }, async (t) => {
   const child = spawn(python, ['-B', '-u', '-c', load + "server=m.Server(('127.0.0.1',0),m.Handler); print(server.server_address[1],flush=True); server.serve_forever()", source], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   t.after(async () => { const stopped = once(child, 'exit'); child.kill(); await stopped; });

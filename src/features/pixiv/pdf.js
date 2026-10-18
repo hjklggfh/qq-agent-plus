@@ -25,7 +25,9 @@ export async function buildPixivPdf(options) {
     signal.throwIfAborted();
     // 不发送静默丢页的 PDF，避免生成结果与外部标注的页码不一致。
     if (!result.ok || result.pagesOk !== files.length || result.failed?.length) {
-      throw new Error(`PDF 生成失败或存在无法解码的图片，未上传：${result.error || `${result.failed?.length || 0} 页处理失败`}`);
+      const error = new Error(`PDF 生成失败或存在无法解码的图片，未上传：${result.error || `${result.failed?.length || 0} 页处理失败`}`);
+      error.invalidImages = Boolean(result.failed?.length);
+      throw error;
     }
     const bytes = fs.statSync(output).size;
     if (bytes > maxBytes) throw new Error('PDF 超过文件大小上限，请缩小页码范围后重试');

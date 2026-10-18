@@ -8,10 +8,12 @@ import http.client
 import io
 import ipaddress
 import json
+import queue
 import select
 import socket
 import socketserver
 import threading
+import time
 from urllib.parse import urlsplit
 
 HOSTS = frozenset({
@@ -19,8 +21,33 @@ HOSTS = frozenset({
     'pixiv.re', 'i.pixiv.re', 'api.lolicon.app',
 })
 SLOTS = threading.BoundedSemaphore(8)
-IMAGE_SLOT = threading.BoundedSemaphore(3)
+IMAGE_SLOT = threading.BoundedSemaphore(6)
 DECODE_SLOT = threading.BoundedSemaphore(1)
+CONNECTIONS = queue.LifoQueue(maxsize=6)
+
+
+def image_connection(timeout):
+    while True:
+        try:
+            connection, born, last, uses = CONNECTIONS.get_nowait()
+        except queue.Empty:
+            return PublicHTTPS('i.pximg.net', timeout=timeout), time.monotonic(), 0
+        now = time.monotonic()
+        if uses < 12 and now - born < 30 and now - last < 5 and connection.sock is not None:
+            connection.timeout = timeout
+            connection.sock.settimeout(timeout)
+            return connection, born, uses
+        connection.close()
+
+
+def release_image_connection(connection, born, uses, reusable):
+    if reusable and getattr(connection, 'sock', None) is not None:
+        try:
+            CONNECTIONS.put_nowait((connection, born, time.monotonic(), uses + 1))
+            return
+        except queue.Full:
+            pass
+    connection.close()
 
 
 class PublicHTTPS(http.client.HTTPSConnection):
@@ -53,7 +80,8 @@ def image_request(value):
 def compressed_image(value):
     from PIL import Image
     target, limit, edge, timeout = image_request(value)
-    connection = PublicHTTPS('i.pximg.net', timeout=timeout)
+    connection, born, uses = image_connection(timeout)
+    reusable = False
     try:
         connection.request('GET', target, headers={'Referer': 'https://www.pixiv.net/', 'User-Agent': 'Mozilla/5.0'})
         response = connection.getresponse()
@@ -64,8 +92,9 @@ def compressed_image(value):
         data = response.read(limit + 1)
         if len(data) > limit:
             return 413, b''
+        reusable = not getattr(response, 'will_close', True)
     finally:
-        connection.close()
+        release_image_connection(connection, born, uses, reusable)
     with DECODE_SLOT, Image.open(io.BytesIO(data)) as image:
         if image.width * image.height > 24000000:
             return 413, b''
