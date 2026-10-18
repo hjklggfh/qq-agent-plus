@@ -227,8 +227,8 @@ export class PixivManager {
           batch = []; bytes = 0;
           try { save(); } catch (error) { error.checkpoint = true; throw error; }
         };
-        for (let page = from; page <= last; page++) {
-          signal.throwIfAborted();
+        const pending = new Map();
+        const fetchPage = (page) => {
           let urls = item.pages?.[page - 1] || (page === 1 ? item.imageUrls : this.engine.pageUrlsOf(seed, page - 1, s.imageSize));
           urls = (urls || []).map((raw) => {
             try { const u = new URL(raw); if (u.hostname === 'i.pximg.net' && !s.proxyUrl) u.hostname = 'i.pixiv.re'; return u.href; } catch { return ''; }
@@ -239,45 +239,63 @@ export class PixivManager {
             const suffix = this.engine.parseSuffixPath(base);
             if (suffix) urls = [`${suffix.origin}/${item.pid}-${page}.${suffix.ext}`];
           }
-          try {
-            const got = await this.engine.fetchImage({ ...item, imageUrl: '', imageUrls: urls, thumbnail: '' }, this.engine.settings(), { allowTemplate: page === 1 && !urls.length });
-            seed = { ...item, imageUrl: got.usedUrl || got.url || urls[0] || seed.imageUrl, imageUrls: [got.usedUrl || got.url || urls[0]].filter(Boolean) };
-            if (page === 1 && this.engine.ratingKnown(item) && this.engine.parseOriginalPath(seed.imageUrl)) {
-              item.imageUrls = this.engine.sizeUrlsFromOriginal(seed.imageUrl, s.imageSize);
-              this.cache(item); // 已核实分级的作品记住真实路径，后续请求无需重复查询PID短链。
-            }
-            const buffer = fs.readFileSync(got.file);
-            if (pdf) {
-              try {
-                if (!imageType(buffer)) throw new Error('返回内容不是图片');
-                if (bytes + buffer.length > s.pdfMaxBytes) {
-                  stopped = '已到 PDF 图片总大小上限，后续页面未下载；请指定后续页码继续';
-                  break;
-                }
-                const file = path.join(jobDir, `${item.pid}-${page}.img`);
-                fs.renameSync(got.file, file);
-                pdfFiles.push({ page, file }); bytes += buffer.length;
-              } finally {
-                try { fs.unlinkSync(got.file); } catch { /* 已移动或已删除。 */ }
+          return this.engine.fetchImage({ ...item, imageUrl: '', imageUrls: urls, thumbnail: '' }, this.engine.settings(), { allowTemplate: page === 1 && !urls.length });
+        };
+        try {
+            for (let page = from; page <= last; page++) {
+              signal.throwIfAborted();
+              // 只在东京图片线路和可靠页地址就绪后预取，最多3张，按原顺序处理。
+              const width = s.imageRelayUrl && item.pageCount && (item.pages?.length || this.engine.parseOriginalPath(seed.imageUrl)) ? 3 : 1;
+              for (let next = page; next <= Math.min(last, page + width - 1); next++) {
+                if (!pending.has(next)) pending.set(next, fetchPage(next).then((got) => ({ got }), (error) => ({ error })));
               }
-              continue;
+              try {
+                const entry = await pending.get(page); pending.delete(page);
+                if (entry.error) throw entry.error;
+                const got = entry.got;
+                seed = { ...item, imageUrl: got.usedUrl || got.url || seed.imageUrl, imageUrls: [got.usedUrl || got.url || seed.imageUrl].filter(Boolean) };
+                if (page === 1 && this.engine.ratingKnown(item) && this.engine.parseOriginalPath(seed.imageUrl)) {
+                  item.imageUrls = this.engine.sizeUrlsFromOriginal(seed.imageUrl, s.imageSize);
+                  this.cache(item); // 已核实分级的作品记住真实路径，后续请求无需重复查询PID短链。
+                }
+                const buffer = fs.readFileSync(got.file);
+                if (pdf) {
+                  try {
+                    if (!imageType(buffer)) throw new Error('返回内容不是图片');
+                    if (bytes + buffer.length > s.pdfMaxBytes) {
+                      stopped = '已到 PDF 图片总大小上限，后续页面未下载；请指定后续页码继续';
+                      break;
+                    }
+                    const file = path.join(jobDir, `${item.pid}-${page}.img`);
+                    fs.renameSync(got.file, file);
+                    pdfFiles.push({ page, file }); bytes += buffer.length;
+                  } finally {
+                    try { fs.unlinkSync(got.file); } catch { /* 已移动或已删除。 */ }
+                  }
+                  continue;
+                }
+                try { fs.unlinkSync(got.file); } catch { /* 下次清理临时目录。 */ }
+                if (!imageType(buffer)) throw new Error('返回内容不是图片');
+                if (batch.length && (batch.length >= s.pagesPerBatch || bytes + buffer.length > s.forwardBudgetBytes)) await flush();
+                if (buffer.length > s.forwardBudgetBytes) { record.failedPages.push({ pid: item.pid, page, reason: '图片超过单批大小限制' }); continue; }
+                batch.push({ page, buffer }); bytes += buffer.length;
+              } catch (error) {
+                if (sending || error.checkpoint) throw error;
+                signal.throwIfAborted();
+                if (!item.pageCount && [404, 410].includes(Number(error.status))) {
+                  missingWork = page === 1;
+                  if (missingWork) record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error), status: Number(error.status) });
+                  stopped = '未知总页数，遇到不存在的页面后停止探测'; break;
+                }
+                record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error),
+                  ...(Number.isInteger(Number(error.status)) ? { status: Number(error.status) } : {}) });
+                if (!item.pageCount) { stopped = `第 ${page} 页暂时取不到，后续页数未确认`; break; }
+              }
             }
-            try { fs.unlinkSync(got.file); } catch { /* 下次清理临时目录。 */ }
-            if (!imageType(buffer)) throw new Error('返回内容不是图片');
-            if (batch.length && (batch.length >= s.pagesPerBatch || bytes + buffer.length > s.forwardBudgetBytes)) await flush();
-            if (buffer.length > s.forwardBudgetBytes) { record.failedPages.push({ pid: item.pid, page, reason: '图片超过单批大小限制' }); continue; }
-            batch.push({ page, buffer }); bytes += buffer.length;
-          } catch (error) {
-            if (sending || error.checkpoint) throw error;
-            signal.throwIfAborted();
-            if (!item.pageCount && [404, 410].includes(Number(error.status))) {
-              missingWork = page === 1;
-              if (missingWork) record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error), status: Number(error.status) });
-              stopped = '未知总页数，遇到不存在的页面后停止探测'; break;
-            }
-            record.failedPages.push({ pid: item.pid, page, reason: downloadFailure(error),
-              ...(Number.isInteger(Number(error.status)) ? { status: Number(error.status) } : {}) });
-            if (!item.pageCount) { stopped = `第 ${page} 页暂时取不到，后续页数未确认`; break; }
+        } finally {
+          // 取消、总量上限或异常退出后也收回已预取文件，不留下孤立下载。
+          for (const result of await Promise.all(pending.values())) {
+            if (result.got?.file) { try { fs.rmSync(result.got.file, { force: true }); } catch { /* 后续临时目录清理兜底。 */ } }
           }
         }
         const incomplete = stopped || from > 1 || (item.pageCount ? last < item.pageCount : true) || record.failedPages.some((p) => p.pid === item.pid);

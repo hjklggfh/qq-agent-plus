@@ -27,7 +27,7 @@ for host in ['-oProxyCommand=evil','ubuntu@host;evil','ubuntu@host/path','user n
 test('PID网关每个请求建立新进程，完整转发响应且退出释放资源', { skip: !available || process.platform === 'win32' }, async (t) => {
   const script = load + `
 server=m.Server(('127.0.0.1',0),m.Handler)
-server.command=[sys.executable,'-u','-c',"import os;os.read(0,4096);body=str(os.getpid()).encode();os.write(1,b'HTTP/1.1 200 OK\\r\\nConnection: close\\r\\nContent-Length: '+str(len(body)).encode()+b'\\r\\n\\r\\n'+body)"]
+server.command=[sys.executable,'-u','-c',"import os;os.read(0,4096);body=str(os.getpid()).encode();sep=bytes([13,10]);os.write(1,b'HTTP/1.1 200 OK'+sep+b'Connection: close'+sep+b'Content-Length: '+str(len(body)).encode()+sep+sep+body)"]
 print(server.server_address[1],flush=True);server.serve_forever()
 `;
   const child = spawn(python, ['-B', '-u', '-c', script, source], { stdio: ['ignore', 'pipe', 'pipe'] });

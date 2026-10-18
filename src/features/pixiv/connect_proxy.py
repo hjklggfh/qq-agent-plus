@@ -19,7 +19,8 @@ HOSTS = frozenset({
     'pixiv.re', 'i.pixiv.re', 'api.lolicon.app',
 })
 SLOTS = threading.BoundedSemaphore(8)
-IMAGE_SLOT = threading.BoundedSemaphore(1)
+IMAGE_SLOT = threading.BoundedSemaphore(3)
+DECODE_SLOT = threading.BoundedSemaphore(1)
 
 
 class PublicHTTPS(http.client.HTTPSConnection):
@@ -65,7 +66,7 @@ def compressed_image(value):
             return 413, b''
     finally:
         connection.close()
-    with Image.open(io.BytesIO(data)) as image:
+    with DECODE_SLOT, Image.open(io.BytesIO(data)) as image:
         if image.width * image.height > 24000000:
             return 413, b''
         image.thumbnail((edge, edge))

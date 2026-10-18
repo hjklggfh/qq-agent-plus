@@ -201,6 +201,30 @@ test('长时间多页PDF也不发送逐页进度，文本和文件总共最多�
   assert.doesNotMatch(f.sends.map((s) => s[1][0]).join('\n'), /下载中|已取得|PDF 已生成|下载完成/);
 });
 
+test('东京已知页最多预取3张，乱序返回仍按页合成，超限后回收预取文件', async (t) => {
+  for (const limited of [false, true]) {
+    const captured = {};
+    const f = fixture(t, { imageRelayUrl: 'http://127.0.0.1:3222/image', ...(limited ? { pdfMaxBytes: png.length * 2 } : {}) }, { pages: 9, host: pdfHost(captured) });
+    let active = 0, peak = 0;
+    const fetch = f.manager.engine.fetchImage;
+    const paths = [];
+    f.manager.engine.fetchImage = async (...args) => {
+      active++; peak = Math.max(peak, active);
+      try {
+        const page = Number(args[0].imageUrls[0].match(/-(\d+)\.png/)[1]);
+        await new Promise((resolve) => setTimeout(resolve, page % 3 === 1 ? 35 : 5));
+        const got = await fetch(...args); paths.push(got.file); return got;
+      } finally { active--; }
+    };
+    const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'prefetch-'+limited);
+    assert.equal(result.isError, undefined, result.content);
+    assert.equal(peak, 3); assert.equal(active, 0);
+    assert.deepEqual(captured.inputs.map((p) => p.page), limited ? [1, 2] : [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.ok(paths.every((p) => !fs.existsSync(p)));
+    assert.equal(f.sends.length + captured.uploads, 3);
+  }
+});
+
 test('PDF总量限制停止下载并发送部分文件；分级拦截不会下载或生成', async (t) => {
   const captured = {};
   const f = fixture(t, { pdfMaxBytes: png.length * 2 }, { host: pdfHost(captured) });
@@ -211,6 +235,22 @@ test('PDF总量限制停止下载并发送部分文件；分级拦截不会下�
   const g = fixture(t, {}, { restriction: 1, host: pdfHost(denied) });
   assert.equal((await g.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'denied-pdf')).isError, true);
   assert.equal(denied.inputs, undefined); assert.equal(denied.uploads, undefined);
+});
+
+test('取消东京预取会等待收回全部临时图片，不合成或上传PDF', async (t) => {
+  const captured = {};
+  const f = fixture(t, { imageRelayUrl: 'http://127.0.0.1:3222/image' }, { pages: 6, host: pdfHost(captured) });
+  const fetch = f.manager.engine.fetchImage;
+  const paths = [];
+  f.manager.engine.fetchImage = async (...args) => {
+    const got = await fetch(...args); paths.push(got.file);
+    if (args[0].imageUrls[0].endsWith('-1.png')) f.manager.active.controller.abort();
+    return got;
+  };
+  const result = await f.manager.start({ pid, outputFormat: 'pdf' }, 'group:100001', 'cancel-prefetch');
+  assert.equal(result.isError, true); assert.equal(captured.uploads, undefined);
+  assert.ok(paths.every((p) => !fs.existsSync(p)));
+  assert.deepEqual(fs.readdirSync(path.join(f.dir, 'pixiv', 'pdf')), []);
 });
 
 test('PDF上传未确认只调用一次，不回退卡片或文本；保留文件供协议端读取', async (t) => {
