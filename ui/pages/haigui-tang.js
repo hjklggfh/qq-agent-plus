@@ -5,7 +5,7 @@ import { state } from '../core/state.js';
 function renderHaiguiTangSection(config) {
   const s = config.haiguiTang || {};
   return `<h3>海龟汤</h3>
-  <p class="hint">内置 112 道谜题。启用并填写会话后，发送「海龟汤」开局；问「是不是……」，发送「提示」「公布答案」「换题」或「结束海龟汤」。每次判断会调用一次聊天模型。</p>
+  <p class="hint">内置 112 道谜题。启用并填写会话后，发送「海龟汤」查看各难度题数并选择；发送「退出」可取消选题或结束游戏。开局后可问「是不是……」，发送「提示」「公布答案」或「换题」。每次判断会调用一次聊天模型。</p>
   <div class="field"><label><input id="ht-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用海龟汤</label></div>
   <div class="field"><label>允许的会话（每行一个 group:群号 或 private:QQ号；留空表示没有会话可玩）</label><textarea id="ht-chats" rows="4">${esc((s.allowedChats || []).join('\n'))}</textarea></div>
   <div class="field-row"><div class="field"><label><input id="ht-dark" type="checkbox" ${s.includeDark !== false ? 'checked' : ''}> 包含黑暗向题目</label></div>

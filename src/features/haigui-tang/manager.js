@@ -67,7 +67,8 @@ export class HaiguiTangManager {
 
   #chat(chatKey) {
     return this.chats[chatKey] || (this.chats[chatKey] = {
-      puzzleId: null, custom: null, startedAt: 0, lastAt: 0, asked: 0, hints: 0, used: [], lastPicked: null, pendingRevealAt: 0
+      puzzleId: null, custom: null, startedAt: 0, lastAt: 0, asked: 0, hints: 0, used: [], lastPicked: null, pendingRevealAt: 0,
+      selectingAt: 0
     });
   }
 
@@ -81,6 +82,12 @@ export class HaiguiTangManager {
   }
 
   isActive(chatKey) { return this.allowed(chatKey) && Boolean(this.#current(chatKey)); }
+
+  isSelecting(chatKey) {
+    const chat = this.chats[chatKey];
+    return this.allowed(chatKey) && !this.#current(chatKey) && Number(chat?.selectingAt) > 0
+      && this.now() - chat.selectingAt <= this.settings().sessionHours * 3600000;
+  }
 
   status() {
     const running = Object.keys(this.chats).filter((chatKey) => this.isActive(chatKey)).map((chatKey) => ({
@@ -126,8 +133,7 @@ export class HaiguiTangManager {
   }
 
   #pick(chat, cfg, requestedStars) {
-    let pool = PUZZLES.filter((puzzle) => stars(puzzle) <= cfg.maxStars
-      && (cfg.includeDark || !puzzle.tags?.includes('dark')));
+    let pool = this.#available(cfg);
     if (requestedStars) pool = pool.filter((puzzle) => stars(puzzle) === requestedStars);
     if (!pool.length) return null;
     if (cfg.avoidRepeat) {
@@ -142,6 +148,11 @@ export class HaiguiTangManager {
     return pool[Math.min(pool.length - 1, Math.floor(this.rng() * pool.length))];
   }
 
+  #available(cfg) {
+    return PUZZLES.filter((puzzle) => stars(puzzle) <= cfg.maxStars
+      && (cfg.includeDark || !puzzle.tags?.includes('dark')));
+  }
+
   async #send(chatKey, message, messageId) {
     await this.send(chatKey, [message], { runId: `haigui-tang-${messageId}`, preserveCode: false });
   }
@@ -153,7 +164,17 @@ export class HaiguiTangManager {
     const active = this.#current(chatKey);
     const now = this.now();
     let message = '';
-    if (command.kind === 'start' || command.kind === 'custom') {
+    if (command.kind === 'menu') {
+      if (active) {
+        message = `🐢 海龟汤（难度 ${'★'.repeat(stars(active))}${'☆'.repeat(5 - stars(active))}）\n${active.soup}`;
+      } else {
+        const available = this.#available(cfg);
+        const count = (level) => available.filter((puzzle) => stars(puzzle) === level).length;
+        chat.selectingAt = now;
+        this.#save();
+        message = `🐢 请选择海龟汤难度：\n1. 简单（3 星，${count(3)} 道）\n2. 中等（4 星，${count(4)} 道）\n3. 困难（5 星，${count(5)} 道）\n回复数字或难度名称开始；0 道的难度不可选。发送「退出」取消。`;
+      }
+    } else if (command.kind === 'start' || command.kind === 'custom') {
       if (active && !command.force) {
         if (command.kind === 'custom') return { error: '当前会话已有一局，请先结束或换题。' };
         message = `🐢 海龟汤（难度 ${'★'.repeat(stars(active))}${'☆'.repeat(5 - stars(active))}）\n${active.soup}`;
@@ -178,10 +199,19 @@ export class HaiguiTangManager {
         chat.asked = 0;
         chat.hints = 0;
         chat.pendingRevealAt = 0;
+        chat.selectingAt = 0;
         this.#save();
         message = `🐢 海龟汤（难度 ${'★'.repeat(stars(puzzle))}${'☆'.repeat(5 - stars(puzzle))}）\n${puzzle.soup}`;
       }
       if (cfg.showRules) message += '\n规则：问「是不是……」，我只答是／不是／无关／部分对。说「提示」取提示，说「公布答案」看汤底。';
+    } else if (command.kind === 'stop') {
+      if (!active && !this.isSelecting(chatKey)) return { error: '当前没有进行中的海龟汤。发送「海龟汤」可选择难度。' };
+      chat.puzzleId = null;
+      chat.custom = null;
+      chat.pendingRevealAt = 0;
+      chat.selectingAt = 0;
+      this.#save();
+      message = active ? '已退出海龟汤，本局结束。' : '已退出海龟汤选题。';
     } else if (!active) {
       return { error: '当前没有进行中的海龟汤，发送「海龟汤」开始一局。' };
     } else if (command.kind === 'status') {
@@ -207,12 +237,6 @@ export class HaiguiTangManager {
         chat.pendingRevealAt = 0;
         this.#save();
       }
-    } else if (command.kind === 'stop') {
-      chat.puzzleId = null;
-      chat.custom = null;
-      chat.pendingRevealAt = 0;
-      this.#save();
-      message = '这局海龟汤已结束。';
     } else if (command.kind === 'ask') {
       const question = String(command.question || '').slice(0, 300);
       if (!question) return { error: '请发送你的问题，例如「是不是……」或「海龟汤 问：……」。' };

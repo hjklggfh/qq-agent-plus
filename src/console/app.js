@@ -1086,7 +1086,7 @@ export function createApp({
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const pidCommand = !isSelf && pixivCommand(text);
     const ehCommand = !isSelf && ehentaiCommand(text, ehentai.hasList(chatKey));
-    const haiguiCommand = !isSelf && haiguiTangCommand(text, haiguiTang.isActive(chatKey));
+    const haiguiCommand = !isSelf && haiguiTangCommand(text, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),

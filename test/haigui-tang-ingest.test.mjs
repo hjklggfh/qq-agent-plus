@@ -33,4 +33,9 @@ test('明确海龟汤指令由宿主消费、重复消息不重复执行', async
   assert.equal(app.store.unreadCount('group:100001'), 0);
   await event(11, '今天吃什么');
   assert.equal(wakes, 1);
+  app.haiguiTang.isSelecting = () => true;
+  await event(12, '2');
+  await event(13, '退出');
+  assert.equal(handled, 3);
+  assert.equal(wakes, 1);
 });
