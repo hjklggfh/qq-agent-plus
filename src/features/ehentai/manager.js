@@ -108,6 +108,7 @@ export class EhentaiManager {
       throw new Error(this.proxy ? 'E站代理连接失败或目标站点不可达，请检查专用代理。' : `E-Hentai 直连失败：${error.message}；可更新直连 IP 或配置专用本机代理。`, { cause: error });
     }
     if (!response.ok) throw new Error(`E-Hentai 请求失败：HTTP ${response.status}`);
+    if (!response.body) throw new Error('站点返回空内容');
     if (Number(response.headers.get('content-length') || 0) > limit) throw new Error('站点返回内容超过大小上限');
     const parts = []; let size = 0;
     for await (const part of response.body) {
@@ -181,9 +182,22 @@ export class EhentaiManager {
       for (let index = 0; index < links.length; index++) {
         signal.throwIfAborted();
         if (index) await new Promise((resolve) => setTimeout(resolve, 250));
-        const url = parseImagePage(await this.html(links[index], signal));
-        if (!url) throw new Error(`第 ${index + 1} 页图片地址无效，未发送 PDF`);
-        const buffer = await this.fetch(url, s.maxImageBytes, signal, links[index]);
+        let buffer;
+        let lastError;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          signal.throwIfAborted();
+          try {
+            const url = parseImagePage(await this.html(links[index], signal));
+            if (!url) throw new Error('图片地址无效');
+            buffer = await this.fetch(url, s.maxImageBytes, signal, links[index]);
+            break;
+          } catch (error) {
+            lastError = error;
+            if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
+            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+          }
+        }
+        if (!buffer) throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
         const type = imageType(buffer);
         if (!type) throw new Error(`第 ${index + 1} 页不是受支持的图片，未发送 PDF`);
         bytes += buffer.length;

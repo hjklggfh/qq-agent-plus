@@ -57,6 +57,7 @@ test('关闭时无文件副作用；开启后按过期时间清理自有 PDF', (
 test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', async () => {
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-flow-'));
   const sent = [], uploads = [];
+  let imageAttempts = 0;
   const galleryUrl = 'https://e-hentai.org/g/123/abc123/';
   const listHtml = `<table class="itg">${Array.from({ length: 20 }, (_, i) => `<tr><td><a href="https://e-hentai.org/g/${123 + i}/abc123/"><div class="glink">作品${i + 1}</div></a><div title="2026-10-18 11:00">1 pages</div></td></tr>`).join('')}</table>`;
   const fetchImpl = async (url) => {
@@ -65,7 +66,11 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     if (value.startsWith('https://e-hentai.org/g/999/abc123/')) return new Response('<div id="gn">缺页</div><div id="gdd">2 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/999-1">1</a></div>');
     if (value === galleryUrl) return new Response('<div id="gn">作品1</div><div id="gdd">1 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/123-1">1</a></div>');
     if (value.includes('/s/abc123/')) return new Response('<img id="img" src="https://a.hath.network/1.png">');
-    if (value.includes('a.hath.network')) return new Response(Buffer.from('89504e470d0a1a0a', 'hex'));
+    if (value.includes('a.hath.network')) {
+      imageAttempts++;
+      return imageAttempts === 1 ? new Response(null, { status: 204 })
+        : new Response(Buffer.from('89504e470d0a1a0a', 'hex'));
+    }
     throw new Error(`Unexpected URL: ${value}`);
   };
   const manager = new EhentaiManager({ dataDir: root,
@@ -84,6 +89,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     assert.deepEqual(await manager.handle(ehentaiCommand('第1页', true), 'private:123456', '3'), { handled: true });
     assert.deepEqual(await manager.handle(ehentaiCommand('1', true), 'private:123456', '4'), { handled: true });
     assert.equal(uploads.length, 1);
+    assert.equal(imageAttempts, 2);
     assert.equal(uploads[0].chatKey, 'private:123456');
     assert.match(uploads[0].name, /^E站-123-/);
     assert.ok(fs.existsSync(path.join(root, 'ehentai', 'pdf', '123-abc123.pdf')));
