@@ -85,7 +85,7 @@ test('坏图重载跳过重复失败的 CDN 节点', async () => {
     fetchImpl: async (url) => {
       if (String(url).startsWith(link)) {
         const host = ['a', 'b', 'a', 'b', 'c'][Math.min(pageReads++, 4)];
-        return new Response(`<img id="img" src="https://${host}.hath.network/1.png"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
+        return new Response(`<img id="img" src="https://${host}.hath.network${host === 'c' ? '' : ':9362'}/1.png"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
       }
       const host = new URL(url).hostname[0]; attempted.push(host);
       return host === 'c' ? new Response(Buffer.from('89504e470d0a1a0a', 'hex')) : new Response(null, { status: 204 });
@@ -94,7 +94,7 @@ test('坏图重载跳过重复失败的 CDN 节点', async () => {
   try {
     const result = await manager.downloadImage(link, 0, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
     assert.equal(result.type, 'image/png');
-    assert.deepEqual(attempted, ['a', 'b', 'c']);
+    assert.deepEqual(attempted, ['a', 'c']);
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -162,25 +162,26 @@ export class EhentaiManager {
   async downloadImage(link, index, settings, signal, directClient, failedHosts = new Set()) {
     let pageUrl = link;
     let lastError;
-    let attempts = 0, skipped = 0;
+    let attempts = 0, preferStandardPort = false;
     const seenHosts = new Set();
-    for (let candidate = 0; candidate < 16 && attempts < 6; candidate++) {
+    // H@H 节点有大量随机高端口；杭州出口遇到不可达节点后，优先挑 443 的站方回退节点。
+    // 官方重载会消耗图片额度，因此每页最多只取 6 个替代候选。
+    for (let candidate = 0; candidate < 7 && attempts < 4; candidate++) {
       signal.throwIfAborted();
-      let host = '';
+      let host = '', port = '';
       try {
         const pageHtml = await this.html(pageUrl, signal, directClient);
         const url = parseImagePage(pageHtml);
         if (!url) throw new Error('图片地址无效');
         const reload = reloadImagePage(pageHtml, link);
         pageUrl = reload || link;
-        host = new URL(url).host;
-        if (reload && (seenHosts.has(host) || failedHosts.has(host)) && skipped < 6) {
-          skipped++;
-          continue;
-        }
+        const imageAddress = new URL(url);
+        host = imageAddress.host; port = imageAddress.port;
+        if (reload && candidate < 6 && ((preferStandardPort && port)
+          || seenHosts.has(host) || failedHosts.has(host))) continue;
         seenHosts.add(host);
         attempts++;
-        const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, 12000))]);
+        const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, port ? 8000 : 15000))]);
         const buffer = await this.fetch(url, settings.maxImageBytes, imageSignal, link, directClient);
         const type = imageType(buffer);
         if (!type) throw new Error('站点返回了不受支持的图片');
@@ -188,8 +189,8 @@ export class EhentaiManager {
       } catch (error) {
         lastError = error;
         if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
-        if (host) failedHosts.add(host);
-        if (attempts < 6) await new Promise((resolve) => setTimeout(resolve, 250));
+        if (host && port) failedHosts.add(host);
+        if (port) preferStandardPort = true;
       }
     }
     throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
