@@ -10,6 +10,7 @@ import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
 import { validateEhentaiPatch } from '../features/ehentai/config.js';
+import { validateHaiguiTangPatch } from '../features/haigui-tang/config.js';
 import {
   ASR_DEFAULT_PROVIDER, ASR_PROVIDERS,
   asrLocalModel, findWhisperBinSync
@@ -306,6 +307,7 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
   if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
+  if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
   const autoUpdateEnabled = hasOwn(rawPatch?.autoUpdate, 'enabled')
     ? rawPatch.autoUpdate.enabled === true
     : current.autoUpdate?.enabled === true;

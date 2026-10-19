@@ -36,6 +36,9 @@ import { PixivManager } from '../features/pixiv/manager.js';
 import { EhentaiManager } from '../features/ehentai/manager.js';
 import { ehentaiCommand } from '../features/ehentai/command.js';
 import { installEhentaiRoutes } from '../features/ehentai/routes.js';
+import { HaiguiTangManager } from '../features/haigui-tang/manager.js';
+import { haiguiTangCommand } from '../features/haigui-tang/command.js';
+import { installHaiguiTangRoutes } from '../features/haigui-tang/routes.js';
 import { pixivCommand } from '../features/pixiv/command.js';
 import { installPixivRoutes } from '../features/pixiv/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
@@ -593,6 +596,10 @@ export function createApp({
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
+  const haiguiTang = new HaiguiTangManager({
+    dataDir: DATA_DIR, getConfig, canRun, log: moduleLog('haigui-tang'), complete: chatCompletion,
+    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
+  });
   const jmFeature = initJmFeature({
     dataDir: DATA_DIR,
     getConfig,
@@ -1079,6 +1086,7 @@ export function createApp({
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const pidCommand = !isSelf && pixivCommand(text);
     const ehCommand = !isSelf && ehentaiCommand(text, ehentai.hasList(chatKey));
+    const haiguiCommand = !isSelf && haiguiTangCommand(text, haiguiTang.isActive(chatKey));
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1095,7 +1103,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand || ehCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1149,6 +1157,18 @@ export function createApp({
             catch (error) { log('[ehentai] 错误提示发送失败:', error?.message ?? error); }
           }
         }).catch((error) => log('[ehentai] 指令异常:', error?.message ?? error));
+      }
+      return;
+    }
+    if (haiguiCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void haiguiTang.handle(haiguiCommand, chatKey, stored.id).then(async (result) => {
+          if (result?.error && canRun(chatKey) && !orchestrator.paused) {
+            try { await sender.sendTextBatch(chatKey, [result.error], { runId: `haigui-tang-error-${stored.id}`, preserveCode: false }); }
+            catch (error) { log('[haigui-tang] 错误提示发送失败:', error?.message ?? error); }
+          }
+        }).catch((error) => log('[haigui-tang] 指令异常:', error?.message ?? error));
       }
       return;
     }
@@ -4465,12 +4485,14 @@ export function createApp({
   }, imageSearch);
   installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
   installEhentaiRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, ehentai);
+  installHaiguiTangRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, haiguiTang);
 
   return {
     server,
     trpg,
     imageSearch,
     pixiv,
+    haiguiTang,
     onebot,
     store,
     memory,

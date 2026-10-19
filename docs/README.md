@@ -29,6 +29,7 @@
 | [IMAGE-SEARCH.md](IMAGE-SEARCH.md) | 以图搜图：Google Lens、Yandex、trace.moe，东京中转、SSH隧道、指令和平台限制 |
 | [PIXIV.md](PIXIV.md) | 内置 PID 搜索：旧插件迁移、会话分级、作品核实、多页分批与继续取图 |
 | [EHENTAI.md](EHENTAI.md) | E-Hentai 检索：标签、关键词、昨日榜单、翻页、PDF 与杭州直连路径 |
+| [HAIGUI-TANG.md](HAIGUI-TANG.md) | 内置海龟汤：题库、QQ 指令、会话设置、模型判断与进度持久化 |
 | [PIXIV_TOKYO.md](PIXIV_TOKYO.md) | PID 专用东京隧道、图片压缩回传、密钥限制与回退 |
 | [JM-SUOMINGOR.md](JM-SUOMINGOR.md) | JM 禁漫下载内置功能：设置、工具和受限 OneBot 文件操作 |
 | [TRPG.md](TRPG.md) | 单人/小群轻量跑团：角色卡、世界观、真实骰点、持久化存档与QQ指令 |

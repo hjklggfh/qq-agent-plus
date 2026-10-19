@@ -17,6 +17,7 @@ import { DEFAULT_TRPG_CONFIG } from '../features/trpg/config.js';
 import { DEFAULT_IMAGE_SEARCH_CONFIG } from '../features/image-search/config.js';
 import { DEFAULT_PIXIV_CONFIG, migratePixivConfig } from '../features/pixiv/config.js';
 import { DEFAULT_EHENTAI_CONFIG } from '../features/ehentai/config.js';
+import { DEFAULT_HAIGUI_TANG_CONFIG } from '../features/haigui-tang/config.js';
 // 插件 id 的规则只有一处定义（plugins/_host/manifest.js 是零依赖的叶子模块，不会引回 core/）。
 // 在配置里重抄一份正则，就会埋下"配置认为合法、装载器认为不合法"的两套口径。
 import { PLUGIN_ID_PATTERN } from '../../plugins/_host/manifest.js';
@@ -36,6 +37,7 @@ export const MAX_PLUGIN_ROOTS = 5;
 export const DEFAULT_CONFIG = {
   pixiv: structuredClone(DEFAULT_PIXIV_CONFIG),
   ehentai: structuredClone(DEFAULT_EHENTAI_CONFIG),
+  haiguiTang: structuredClone(DEFAULT_HAIGUI_TANG_CONFIG),
   imageSearch: structuredClone(DEFAULT_IMAGE_SEARCH_CONFIG),
   trpg: { ...DEFAULT_TRPG_CONFIG },
   // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。

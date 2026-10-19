@@ -33,6 +33,7 @@ import { loadUsageView } from './usage.js';
 import { renderImageSearchSection, bindImageSearchSection } from './image-search.js';
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
 import { renderEhentaiSection, bindEhentaiSection } from './ehentai.js';
+import { renderHaiguiTangSection, bindHaiguiTangSection } from './haigui-tang.js';
 /** 把设置解析成实际要应用的主题名。 */
 function resolveTheme(pref) {
   if (THEME_VALUES.includes(pref) && pref !== 'system') return pref;
@@ -68,6 +69,7 @@ function renderSettingsSidebar() {
     ['image-search', '以图搜图'],
     ['pixiv', 'PID 搜索'],
     ['ehentai', 'E站检索'],
+    ['haigui-tang', '海龟汤'],
     ['media', 'B站媒体'],
     ['jm', 'JM 禁漫下载'],
     ['asr', '语音转文字'],
@@ -114,6 +116,7 @@ function renderSettingsImpl() {
   if (state.settingsSection === 'image-search') bindImageSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'ehentai') bindEhentaiSection();
+  if (state.settingsSection === 'haigui-tang') bindHaiguiTangSection();
 }
 
 function renderJmSection(c) {
@@ -180,6 +183,7 @@ function renderSettingsSection(c) {
     'image-search': () => renderImageSearchSection(c),
     'pixiv': () => renderPixivSection(c),
     'ehentai': () => renderEhentaiSection(c),
+    'haigui-tang': () => renderHaiguiTangSection(c),
     media: () => renderBilibiliSection(c),
     jm: () => renderJmSection(c),
     asr: () => renderAsrSection(c),
