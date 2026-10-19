@@ -75,6 +75,29 @@ test('单个直连 IP 超时后切换到下一个 IP', async () => {
   } finally { direct.close(); }
 });
 
+test('坏图重载跳过重复失败的 CDN 节点', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-reload-'));
+  const attempted = [];
+  let pageReads = 0;
+  const link = 'https://e-hentai.org/s/abc123/123-1';
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      if (String(url).startsWith(link)) {
+        const host = ['a', 'b', 'a', 'b', 'c'][Math.min(pageReads++, 4)];
+        return new Response(`<img id="img" src="https://${host}.hath.network/1.png"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
+      }
+      const host = new URL(url).hostname[0]; attempted.push(host);
+      return host === 'c' ? new Response(Buffer.from('89504e470d0a1a0a', 'hex')) : new Response(null, { status: 204 });
+    }
+  });
+  try {
+    const result = await manager.downloadImage(link, 0, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
+    assert.equal(result.type, 'image/png');
+    assert.deepEqual(attempted, ['a', 'b', 'c']);
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', async () => {
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-flow-'));
   const sent = [], uploads = [];

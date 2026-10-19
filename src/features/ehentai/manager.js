@@ -159,16 +159,27 @@ export class EhentaiManager {
     const lines = items.map((item, index) => `${index + 1}. ${safeTitle(item.title)}${item.date ? ` · ${item.date}` : ''}${item.pages ? ` · ${item.pages}页` : ''}`);
     await this.send(chatKey, `${title} · 第${page}页\n${lines.join('\n')}\n回复 1—${items.length} 获取 PDF；“下一页”“上一页”或“第N页”翻页。`, runId, signal);
   }
-  async downloadImage(link, index, settings, signal, directClient) {
+  async downloadImage(link, index, settings, signal, directClient, failedHosts = new Set()) {
     let pageUrl = link;
     let lastError;
-    for (let attempt = 0; attempt < 5; attempt++) {
+    let attempts = 0, skipped = 0;
+    const seenHosts = new Set();
+    for (let candidate = 0; candidate < 16 && attempts < 6; candidate++) {
       signal.throwIfAborted();
+      let host = '';
       try {
         const pageHtml = await this.html(pageUrl, signal, directClient);
         const url = parseImagePage(pageHtml);
         if (!url) throw new Error('图片地址无效');
-        pageUrl = reloadImagePage(pageHtml, link) || link;
+        const reload = reloadImagePage(pageHtml, link);
+        pageUrl = reload || link;
+        host = new URL(url).host;
+        if (reload && (seenHosts.has(host) || failedHosts.has(host)) && skipped < 6) {
+          skipped++;
+          continue;
+        }
+        seenHosts.add(host);
+        attempts++;
         const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, 12000))]);
         const buffer = await this.fetch(url, settings.maxImageBytes, imageSignal, link, directClient);
         const type = imageType(buffer);
@@ -177,7 +188,8 @@ export class EhentaiManager {
       } catch (error) {
         lastError = error;
         if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
-        if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        if (host) failedHosts.add(host);
+        if (attempts < 6) await new Promise((resolve) => setTimeout(resolve, 250));
       }
     }
     throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
@@ -235,6 +247,7 @@ export class EhentaiManager {
       await this.send(chatKey, `📥 已找到 ${total} 页，${cachedCount ? `已缓存 ${cachedCount} 张，继续下载` : '开始下载图片'}…`, runId, signal);
       const failed = new AbortController();
       const downloadSignal = AbortSignal.any([signal, failed.signal]);
+      const failedHosts = new Set();
       let next = 0, completed = cachedCount, firstError = null, lastReported = cachedCount, lastReportAt = 0;
       let progress = Promise.resolve();
       const report = () => {
@@ -252,7 +265,7 @@ export class EhentaiManager {
             const index = next++;
             if (index >= links.length) break;
             if (files[index]) continue;
-            const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient);
+            const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient, failedHosts);
             bytes += buffer.length;
             if (bytes > s.maxPdfBytes) throw new Error('图片总量超过 PDF 上限，未发送 PDF');
             const source = path.join(cache, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
