@@ -75,7 +75,7 @@ test('单个直连 IP 超时后切换到下一个 IP', async () => {
   } finally { direct.close(); }
 });
 
-test('坏图重载跳过重复失败的 CDN 节点', async () => {
+test('坏图重载优先换新节点，跳过已失败的 CDN 节点', async () => {
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-reload-'));
   const attempted = [];
   let pageReads = 0;
@@ -94,7 +94,64 @@ test('坏图重载跳过重复失败的 CDN 节点', async () => {
   try {
     const result = await manager.downloadImage(link, 0, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
     assert.equal(result.type, 'image/png');
-    assert.deepEqual(attempted, ['a', 'c']);
+    assert.deepEqual(attempted, ['a', 'b', 'c']);
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('失败后用普通重新加载换节点，而不是锁在 ?nl= 池里', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-reroll-'));
+  const pageUrls = [], attempted = [];
+  const link = 'https://e-hentai.org/s/abc123/123-1';
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      const value = String(url);
+      if (value.startsWith(link)) {
+        pageUrls.push(value);
+        // 前两次都分到 9362 高端口，第三次才分到 443 的站方节点。
+        const host = ['muudapi.dvubzogrfhrd.hath.network:9362', 'muudapi.dvubzogrfhrd.hath.network:9362', 'zurswtyclg.hath.network'][pageUrls.length - 1];
+        return new Response(`<img id="img" src="https://${host}/1.webp"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
+      }
+      attempted.push(new URL(url).host);
+      return new URL(url).host === 'zurswtyclg.hath.network'
+        ? new Response(Buffer.from('89504e470d0a1a0a', 'hex'))
+        : new Response(null, { status: 204 });
+    }
+  });
+  try {
+    const result = await manager.downloadImage(link, 21, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
+    assert.equal(result.type, 'image/png');
+    assert.deepEqual(attempted, ['muudapi.dvubzogrfhrd.hath.network:9362', 'zurswtyclg.hath.network']);
+    assert.equal(pageUrls.length, 3);
+    assert.ok(pageUrls.every((url) => !url.includes('nl=')), '普通重载已经能换节点时不应消耗 nl 额度');
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('普通重载反复拿不到新节点时才用一次 nl 换池', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-nl-'));
+  const pageUrls = [], attempted = [];
+  const link = 'https://e-hentai.org/s/abc123/123-1';
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      const value = String(url);
+      if (value.startsWith(link)) {
+        pageUrls.push(value);
+        const host = value.includes('?nl=') ? 'relay.hath.network' : 'dead.hath.network:9362';
+        return new Response(`<img id="img" src="https://${host}/1.webp"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
+      }
+      attempted.push(new URL(url).host);
+      return new URL(url).host === 'relay.hath.network'
+        ? new Response(Buffer.from('89504e470d0a1a0a', 'hex'))
+        : new Response(null, { status: 204 });
+    }
+  });
+  try {
+    const result = await manager.downloadImage(link, 4, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
+    assert.equal(result.type, 'image/png');
+    assert.deepEqual(attempted, ['dead.hath.network:9362', 'dead.hath.network:9362', 'relay.hath.network']);
+    assert.equal(pageUrls.filter((url) => url.includes('?nl=')).length, 1, 'nl 只作为最后手段用一次');
+    assert.ok(pageUrls[0].endsWith(link) && pageUrls[1].endsWith(link));
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -102,7 +159,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-flow-'));
   const sent = [], uploads = [];
   let imageAttempts = 0;
-  let reloadedImagePage = false;
+  let imagePageLoads = 0;
   const galleryUrl = 'https://e-hentai.org/g/123/abc123/';
   const listHtml = `<table class="itg">${Array.from({ length: 20 }, (_, i) => `<tr><td><a href="https://e-hentai.org/g/${123 + i}/abc123/"><div class="glink">作品${i + 1}</div></a><div title="2026-10-18 11:00">1 pages</div></td></tr>`).join('')}</table>`;
   const fetchImpl = async (url) => {
@@ -111,10 +168,10 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     if (value.startsWith('https://e-hentai.org/g/999/abc123/')) return new Response('<div id="gn">缺页</div><div id="gdd">2 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/999-1">1</a></div>');
     if (value === galleryUrl) return new Response('<div id="gn">作品1</div><div id="gdd">1 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/123-1">1</a></div>');
     if (value.includes('/s/abc123/')) {
-      if (value.includes('?nl=')) reloadedImagePage = true;
-      return new Response('<img id="img" src="https://a.hath.network/1.png"><a id="loadfail" onclick="return nl(\'123-456\')">Reload</a>');
+      imagePageLoads++;
+      return new Response(`<img id="img" src="https://${imagePageLoads === 1 ? 'a' : 'b'}.hath.network/1.png"><a id="loadfail" onclick="return nl('123-456')">Reload</a>`);
     }
-    if (value.includes('a.hath.network')) {
+    if (value.includes('a.hath.network') || value.includes('b.hath.network')) {
       imageAttempts++;
       return imageAttempts === 1 ? new Response(null, { status: 204 })
         : new Response(Buffer.from('89504e470d0a1a0a', 'hex'));
@@ -138,7 +195,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     assert.deepEqual(await manager.handle(ehentaiCommand('1', true), 'private:123456', '4'), { handled: true });
     assert.equal(uploads.length, 1);
     assert.equal(imageAttempts, 2);
-    assert.equal(reloadedImagePage, true);
+    assert.equal(imagePageLoads, 2, '第一次分到的节点失败后，普通重载换到新节点直接成功');
     assert.deepEqual(sent.slice(3, 7).map((entry) => entry.text.split(' ')[0]), ['🔍', '📥', '🖼', '📤']);
     assert.equal(uploads[0].chatKey, 'private:123456');
     assert.match(uploads[0].name, /^E站-123-/);
