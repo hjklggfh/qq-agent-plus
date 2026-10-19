@@ -149,7 +149,7 @@ test('普通重载反复拿不到新节点时才用一次 nl 换池', async () =
   try {
     const result = await manager.downloadImage(link, 4, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
     assert.equal(result.type, 'image/png');
-    assert.deepEqual(attempted, ['dead.hath.network:9362', 'dead.hath.network:9362', 'relay.hath.network']);
+    assert.deepEqual(attempted, ['dead.hath.network:9362', 'dead.hath.network:9362', 'dead.hath.network:9362', 'relay.hath.network']);
     assert.equal(pageUrls.filter((url) => url.includes('?nl=')).length, 1, 'nl 只作为最后手段用一次');
     assert.ok(pageUrls[0].endsWith(link) && pageUrls[1].endsWith(link));
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }

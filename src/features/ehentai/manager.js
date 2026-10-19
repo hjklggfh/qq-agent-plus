@@ -169,7 +169,7 @@ export class EhentaiManager {
     // 另一个小池子里轮换，还会计入站点图片额度。所以失败后先用普通加载换节点，连续多次
     // 拿不到新节点时才用一次 nl 换池。坏节点（高端口常见）由站点分配，等再久也不会通，
     // 不能因为“不是 443”就跳过下载，也不能锁死在 nl 池里。
-    while (pageLoads < 10 && totalTries() < 4) {
+    while (pageLoads < 14 && totalTries() < 6) {
       signal.throwIfAborted();
       pageLoads++;
       let pageHtml;
@@ -191,13 +191,13 @@ export class EhentaiManager {
         continue;
       }
       const reloadUrl = reloadImagePage(pageHtml, link);
-      // 超时才算死节点（跨页也不再试）；几秒内就失败的更可能是瞬时网络错误，
-      // 换过几次节点后再给它一次机会，避免把偶尔抖一下的好节点永久拉黑。
+      // 超时才算死节点（跨页也不再试）；几秒内就失败的更可能是瞬时网络抖动，
+      // 换过几次节点后可以再给同一节点机会，最多试 3 次，避免把偶尔抖一下的好节点永久拉黑。
       const count = tries.get(host) || 0;
-      const canTry = count === 0 || (count === 1 && staleLoads >= 2);
+      const canTry = count === 0 || (count < 3 && staleLoads >= 2);
       if (failedHosts.has(host) || !canTry) {
         staleLoads++;
-        if (staleLoads >= 4 && nlUses < 1 && reloadUrl) {
+        if (pageLoads >= 12 && staleLoads >= 3 && nlUses < 1 && reloadUrl) {
           pageUrl = reloadUrl; nlUses++; staleLoads = 0;
         } else pageUrl = link;
         continue;
@@ -216,7 +216,8 @@ export class EhentaiManager {
         if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
         const elapsed = Date.now() - started;
         if (elapsed >= 3000) failedHosts.add(host);
-        this.options.log?.(`E站第${index + 1}页：节点 ${host} 获取失败（${elapsed}ms，${error.message}），重新分配节点`);
+        const cause = error.cause?.code || error.cause?.message || '';
+        this.options.log?.(`E站第${index + 1}页：节点 ${host} 获取失败（${elapsed}ms，${error.message}${cause ? `：${cause}` : ''}），重新分配节点`);
       }
       pageUrl = link;
     }
