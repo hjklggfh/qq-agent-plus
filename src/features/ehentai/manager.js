@@ -197,7 +197,7 @@ export class EhentaiManager {
       const canTry = count === 0 || (count === 1 && staleLoads >= 2);
       if (failedHosts.has(host) || !canTry) {
         staleLoads++;
-        if (staleLoads >= 6 && nlUses < 1 && reloadUrl) {
+        if (staleLoads >= 4 && nlUses < 1 && reloadUrl) {
           pageUrl = reloadUrl; nlUses++; staleLoads = 0;
         } else pageUrl = link;
         continue;
