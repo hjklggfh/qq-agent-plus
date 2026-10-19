@@ -135,7 +135,7 @@ describe('Orchestrator', () => {
       calls++;
       assert.equal(store.findByMid('group:1', 1).read, false);
       append(2);
-      return Response.json({ choices: [{ message: { content: 'No reply needed' } }], usage: { total_tokens: 10 } });
+      return Response.json({ choices: [{ message: { content: '' } }], usage: { total_tokens: 10 } });
     };
     await runner.wake('group:1');
     assert.equal(calls, 1);
@@ -211,19 +211,66 @@ describe('Orchestrator', () => {
     assert.equal(session.status, 'done');
   });
 
-  it('keeps plain group text silent when the group did not address the bot', async (t) => {
+  it('repairs an unsent first-round reply in all-response mode', async (t) => {
+    const { cfg, runner, sessions, append } = fixture(t);
+    cfg.store.randomPercent = 100;
+    setRuntimeConfig(cfg);
+    append(80, '你觉得呢');
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      if (requests.length === 1) return Response.json({
+        choices: [{ message: { content: '我觉得可以' } }], usage: { total_tokens: 10 }
+      });
+      if (requests.length === 2) return Response.json({
+        choices: [{ message: { tool_calls: [{ id: 'send', type: 'function', function: {
+          name: 'send_message', arguments: JSON.stringify({ messages: '我觉得可以' })
+        } }] } }], usage: { total_tokens: 10 }
+      });
+      return Response.json({ choices: [{ message: { content: '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('group:1');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(session.triggerKind, 'all');
+    assert.equal(session.replyRepairAttempted, true);
+    assert.match(requests[1].messages.at(-1).content, /【系统补正】/);
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['我觉得可以']);
+  });
+
+  it('allows silence after repair in all-response mode', async (t) => {
+    const { cfg, runner, sessions, append } = fixture(t);
+    cfg.store.randomPercent = 100;
+    setRuntimeConfig(cfg);
+    append(81, '大家继续聊');
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({
+        choices: [{ message: { content: '也许不用插话' } }], usage: { total_tokens: 10 }
+      });
+      return Response.json({ choices: [{ message: { content: '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('group:1');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(session.replyRepairAttempted, true);
+    assert.deepEqual(session.sent, []);
+    assert.equal(calls, 2);
+  });
+
+  it('does not auto-send plain group text after an unsuccessful repair', async (t) => {
     const { runner, sessions, append } = fixture(t);
     append(78, '随便聊聊');
     let calls = 0;
     globalThis.fetch = async () => {
       calls += 1;
-      return Response.json({ choices: [{ message: { content: '内部想法' } }], usage: { total_tokens: 10 } });
+      return Response.json({ choices: [{ message: { content: calls === 1 ? '内部想法' : '' } }], usage: { total_tokens: 10 } });
     };
     await runner.wake('group:1');
     const session = sessions.get(sessions.listSummaries(1)[0].id);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     assert.equal(session.status, 'noreply');
-    assert.equal(session.replyRepairAttempted, undefined);
+    assert.equal(session.replyRepairAttempted, true);
   });
 
   it('preserves failed input and recorded token usage without clearing a run', async (t) => {
@@ -271,7 +318,7 @@ describe('Orchestrator', () => {
         });
       }
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { prompt_tokens: 70, total_tokens: 80 }
       });
     };
@@ -493,7 +540,7 @@ describe('Orchestrator', () => {
         });
       }
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { total_tokens: 10 }
       });
     };
@@ -532,7 +579,7 @@ describe('Orchestrator', () => {
         });
       }
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { prompt_tokens: 120, prompt_cache_hit_tokens: 100, total_tokens: 130 }
       });
     };
@@ -605,7 +652,7 @@ describe('Orchestrator', () => {
       assert.match(String(toolResult?.content || ''), /喜欢讨论架构/);
       assert.match(String(toolResult?.content || ''), /"chatCount": 2/);
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { prompt_tokens: 120, total_tokens: 130 }
       });
     };
@@ -656,7 +703,7 @@ describe('Orchestrator', () => {
         '退役后 friend_request_propose 不应再注入');
       assert.doesNotMatch(body.messages[0].content, /好友候选/);
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { prompt_tokens: 100, total_tokens: 110 }
       });
     };
@@ -687,7 +734,7 @@ describe('Orchestrator', () => {
         tool.function.name === 'friend_request_propose'));
       assert.doesNotMatch(body.messages[0].content, /好友候选|自行判断是否主动交朋友/);
       return Response.json({
-        choices: [{ message: { content: '无需回复' } }],
+        choices: [{ message: { content: '' } }],
         usage: { prompt_tokens: 100, total_tokens: 105 }
       });
     };
@@ -709,7 +756,7 @@ describe('Orchestrator', () => {
     globalThis.fetch = async (_url, options) => {
       bodies.push(JSON.parse(options.body));
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { total_tokens: 10 }
       });
     };
