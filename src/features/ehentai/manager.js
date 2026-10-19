@@ -169,7 +169,7 @@ export class EhentaiManager {
     // 另一个小池子里轮换，还会计入站点图片额度。所以失败后先用普通加载换节点，连续多次
     // 拿不到新节点时才用一次 nl 换池。坏节点（高端口常见）由站点分配，等再久也不会通，
     // 不能因为“不是 443”就跳过下载，也不能锁死在 nl 池里。
-    while (pageLoads < 12 && totalTries() < 4) {
+    while (pageLoads < 10 && totalTries() < 4) {
       signal.throwIfAborted();
       pageLoads++;
       let pageHtml;
