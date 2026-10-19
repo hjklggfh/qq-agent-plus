@@ -22,6 +22,7 @@ import { captureTimeControlRule } from './settings-bind.js';
 import { syncThinkingUi } from './settings.js';
 import { saveImageSearchSettings } from './image-search.js';
 import { savePixivSettings } from './pixiv.js';
+import { saveEhentaiSettings } from './ehentai.js';
 async function saveConfig({ quiet = false } = {}) {
   const c = state.config;
   // 只在当前区块的元素存在时才读取，避免“每个区块保存时读取其他区块元素”导致的 null 报错。
@@ -39,6 +40,7 @@ async function saveConfig({ quiet = false } = {}) {
   const patch = {};
   if (sec === 'image-search') return saveImageSearchSettings();
   if (sec === 'pixiv') return savePixivSettings();
+  if (sec === 'ehentai') return saveEhentaiSettings();
 
   if (sec === 'jm') {
     const settings = {

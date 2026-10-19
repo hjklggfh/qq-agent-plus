@@ -32,6 +32,7 @@
 | 主动互动 | 群聊主动发言、持久化提醒、受限制的主动私信、每日动态与动态互动 | [主动私信](docs/PRIVATE_PROACTIVE.md) · [每日动态](docs/DAILY_MOMENTS.md) · [动态互动](docs/QZONE_INTERACTIONS.md) |
 | 时间控制与小游戏 | 按上海时间配置全局／会话活跃时段；提醒、掷骰及可选的数字炸弹、谁是卧底等群游戏 | [配置示例](docs/CONFIG-EXAMPLES.md) · [稳定特性](docs/STABLE_FEATURES.md) |
 | PID / Pixiv | 指定作品号或链接取图；多页合并卡片或打包 PDF；会话分级、任务记录、下载缓存，可选独立东京链路 | [PID 搜索](docs/PIXIV.md) · [可选东京链路](docs/PIXIV_TOKYO.md) |
+| E-Hentai 检索 | 标签与关键词检索、每日榜单、每页 10 条、序号打包 PDF，宿主本地缓存定期清理 | [E站用法](docs/EHENTAI.md) |
 | 以图搜图 | Google Lens、Yandex、trace.moe，返回匹配网页与图片，支持指定平台和失败回退 | [用法与中转部署](docs/IMAGE-SEARCH.md) |
 | JM 下载 | 明确指令下载、图片处理、逐页合成 PDF、群聊／私聊文件发送、任务状态、日更与图库 | [JM 设置](docs/JM-SUOMINGOR.md) |
 | B 站自动转发 | 识别链接、短链接与 QQ 分享卡片，获取信息并下载、发送视频 | [B 站转发](docs/BILIBILI-AUTO-FORWARD.md) |

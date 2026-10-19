@@ -33,6 +33,9 @@ import { ImageSearchManager } from '../features/image-search/manager.js';
 import { imageSearchCommand } from '../features/image-search/command.js';
 import { installImageSearchRoutes } from '../features/image-search/routes.js';
 import { PixivManager } from '../features/pixiv/manager.js';
+import { EhentaiManager } from '../features/ehentai/manager.js';
+import { ehentaiCommand } from '../features/ehentai/command.js';
+import { installEhentaiRoutes } from '../features/ehentai/routes.js';
 import { pixivCommand } from '../features/pixiv/command.js';
 import { installPixivRoutes } from '../features/pixiv/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
@@ -585,6 +588,11 @@ export function createApp({
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
+  const ehentai = new EhentaiManager({
+    dataDir: DATA_DIR, getConfig, canRun, log: moduleLog('ehentai'),
+    file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
+    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
+  });
   const jmFeature = initJmFeature({
     dataDir: DATA_DIR,
     getConfig,
@@ -1070,6 +1078,7 @@ export function createApp({
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const pidCommand = !isSelf && pixivCommand(text);
+    const ehCommand = !isSelf && ehentaiCommand(text, ehentai.hasList(chatKey));
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1086,7 +1095,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand || ehCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1128,6 +1137,18 @@ export function createApp({
             await sender.sendTextBatch(chatKey, [result.content], { runId: `pixiv-hint-${stored.id}`, preserveCode: false });
           }
         }).catch((error) => log('[pixiv] PID 任务异常:', error?.name || 'Error'));
+      }
+      return;
+    }
+    if (ehCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void ehentai.handle(ehCommand, chatKey, stored.id).then(async (result) => {
+          if (result.error && !result.sendUnknown && canRun(chatKey) && !orchestrator.paused) {
+            try { await sender.sendTextBatch(chatKey, [result.error], { runId: `ehentai-error-${stored.id}`, preserveCode: false }); }
+            catch (error) { log('[ehentai] 错误提示发送失败:', error?.message ?? error); }
+          }
+        }).catch((error) => log('[ehentai] 指令异常:', error?.message ?? error));
       }
       return;
     }
@@ -4408,6 +4429,7 @@ export function createApp({
     await jmFeature?.deactivate?.();
     await imageSearch.stop();
     await pixiv.stop();
+    ehentai.stop();
     onebot.close();
     await orchestrator.abortAll();
     await Promise.allSettled([...ingress.values()]);
@@ -4442,6 +4464,7 @@ export function createApp({
     auditWrite
   }, imageSearch);
   installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
+  installEhentaiRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, ehentai);
 
   return {
     server,
