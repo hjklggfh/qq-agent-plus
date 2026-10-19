@@ -43,6 +43,9 @@ export const DEFAULT_CONFIG = {
   // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。
   jm: {
     enabled: false,
+    // 管理员私聊权限覆盖层；默认空数组，沿用既有 JM 群名单行为。
+    allowedChats: [],
+    deniedChats: [],
     outputFormat: 'pdf',
     restore: true,
     maxPages: 500,

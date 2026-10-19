@@ -308,6 +308,16 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
   if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
   if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
+  if (Object.hasOwn(rawPatch, 'jm')) {
+    for (const field of ['allowedChats', 'deniedChats']) {
+      if (!Object.hasOwn(rawPatch.jm || {}, field)) continue;
+      const list = rawPatch.jm[field];
+      if (!Array.isArray(list) || list.length > 500
+        || list.some((key) => typeof key !== 'string' || !/^(group|private):\d{5,15}$/.test(key))) {
+        throw new Error(`JM ${field} 必须是最多 500 项的会话列表`);
+      }
+    }
+  }
   const autoUpdateEnabled = hasOwn(rawPatch?.autoUpdate, 'enabled')
     ? rawPatch.autoUpdate.enabled === true
     : current.autoUpdate?.enabled === true;

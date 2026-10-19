@@ -39,6 +39,7 @@ import { installEhentaiRoutes } from '../features/ehentai/routes.js';
 import { HaiguiTangManager } from '../features/haigui-tang/manager.js';
 import { haiguiTangCommand } from '../features/haigui-tang/command.js';
 import { installHaiguiTangRoutes } from '../features/haigui-tang/routes.js';
+import { parseAdminChatAccessCommand, executeAdminChatAccessCommand } from '../features/admin-chat-access.js';
 import { pixivCommand } from '../features/pixiv/command.js';
 import { installPixivRoutes } from '../features/pixiv/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
@@ -1087,6 +1088,9 @@ export function createApp({
     const pidCommand = !isSelf && pixivCommand(text);
     const ehCommand = !isSelf && ehentaiCommand(text, ehentai.hasList(chatKey));
     const haiguiCommand = !isSelf && haiguiTangCommand(text, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
+    const adminAccessCommand = !isSelf && kind === 'private' && senderId === id
+      && senderId === String(cfgNow.admin?.ownerUin || '')
+      ? parseAdminChatAccessCommand(text) : null;
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1103,7 +1107,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean((searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1113,6 +1117,36 @@ export function createApp({
         log('[sticker] 自动收藏失败:', error?.message ?? error));
     }
     emit('chat-update', chatKey);
+    // 管理员私聊指令先于跑团/下载器/模型消费，避免其他玩法接管时误解配置操作。
+    if (adminAccessCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) return;
+      let reply;
+      try {
+        reply = executeAdminChatAccessCommand(adminAccessCommand, {
+          actorId: senderId, getConfig, updateConfig,
+          jmChatAllowed: (target) => jmFeature.isChatAllowed(target),
+          jmConfiguredGroups: () => jmFeature.configuredGroups(),
+          onChange: (feature, target) => {
+            if (feature === '基础聊天') orchestrator.enforceChatControl(target);
+            if (feature === '跑团') orchestrator.enforceTrpgState();
+            if (feature === 'E站') ehentai.sync();
+            if (feature === '群搜图') imageSearch.enforce();
+            if (feature === '群日报') groupDigest.reconfigure();
+            auditWrite('admin-chat.access-update', target, { after: { feature, actorId: senderId } });
+            emit('chat-update', target);
+          }
+        });
+      } catch (error) {
+        reply = `功能权限修改失败：${String(error?.message ?? error)}`;
+        auditWrite('admin-chat.access-update', adminAccessCommand.target || '', {
+          after: { feature: adminAccessCommand.feature, actorId: senderId },
+          ok: false, error
+        });
+      }
+      if (reply) await sender.sendTextBatch(chatKey, [reply], { runId: `admin-access-${stored.id}`, preserveCode: false });
+      return;
+    }
     // 跑团优先接管本窗口，行动不再落入下载器或普通聊天触发逻辑。
     if (!isSelf && (trpgCommand || trpgManaged || trpg.narratorActive(chatKey))) {
       if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) {

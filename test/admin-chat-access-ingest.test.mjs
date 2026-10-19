@@ -1,0 +1,52 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const dir = fs.mkdtempSync(path.join(process.cwd(), '.admin-access-test-'));
+process.env.QQ_AGENT_DATA_DIR = dir;
+process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* SQLite may still hold a file */ } });
+
+test('仅管理员私聊可管理权限；普通消息和重发不修改现有名单', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { DEFAULT_CONFIG, getConfig, setRuntimeConfig } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active';
+  cfg.runtime.paused = false;
+  cfg.admin.ownerUin = '123456';
+  cfg.allow.groups = ['100001'];
+  cfg.allow.private = ['123456', '999999'];
+  cfg.sticker.autoCollect = false;
+  setRuntimeConfig(cfg);
+  const oldJmFile = path.join(dir, 'plugin-state', 'jm-suomingor', 'enabled-groups.json');
+  fs.mkdirSync(path.dirname(oldJmFile), { recursive: true });
+  const oldJmBytes = JSON.stringify({ groups: { '100001': { name: '原有群' } } });
+  fs.writeFileSync(oldJmFile, oldJmBytes);
+  const app = createApp({ log: () => {} });
+  t.after(() => app.stop());
+  const sent = [];
+  let wakes = 0;
+  app.sender.sendTextBatch = async (chatKey, messages) => { sent.push([chatKey, messages]); return { sent: messages, failed: [] }; };
+  app.orchestrator.onIncoming = () => { wakes++; };
+  const event = (id, mid, text) => app.onebot.onEvent({ post_type: 'message', message_type: 'private', user_id: Number(id),
+    message_id: mid, time: Math.floor(Date.now() / 1000), sender: { user_id: Number(id), nickname: '用户' }, message: text });
+  await event('123456', 1, '功能 查看 group:100001');
+  assert.deepEqual(getConfig().allow.groups, ['100001']);
+  assert.equal(wakes, 0);
+  assert.match(sent.at(-1)[1][0], /基础聊天：已开启/);
+  await event('999999', 2, '功能 开启 group:100002 海龟汤');
+  assert.deepEqual(getConfig().haiguiTang.allowedChats, []);
+  await event('123456', 3, '功能 开启 group:100002 海龟汤');
+  await event('123456', 3, '功能 开启 group:100002 海龟汤');
+  assert.deepEqual(getConfig().haiguiTang.allowedChats, ['group:100002']);
+  assert.deepEqual(getConfig().allow.groups, ['100001']);
+  assert.deepEqual(getConfig().allow.private, ['123456', '999999']);
+  assert.equal(sent.length, 2);
+  assert.equal(app.store.unreadCount('private:123456'), 0);
+  const { isChatAllowed } = await import('../src/features/jm-suomingor/legacy-index.js');
+  assert.equal(isChatAllowed('group:100001'), true);
+  await event('123456', 4, '功能 关闭 group:100001 JM');
+  assert.equal(isChatAllowed('group:100001'), false);
+  assert.deepEqual(getConfig().jm.deniedChats, ['group:100001']);
+  assert.equal(fs.readFileSync(oldJmFile, 'utf8'), oldJmBytes);
+});

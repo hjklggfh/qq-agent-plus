@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import { activate as activateJm } from './jm-suomingor/index.js';
-import { promptSections as jmPromptSections } from './jm-suomingor/legacy-index.js';
+import { promptSections as jmPromptSections, isChatAllowed as jmChatAllowed, configuredJmGroups } from './jm-suomingor/legacy-index.js';
 import { registerBuiltinFeature } from './feature-registry.js';
 
 const ALLOWED_ONEBOT_CALLS = new Set([
@@ -94,7 +94,7 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
     runtimeState.getConfig = getConfig || (() => ({}));
     runtimeState.onebot = onebot;
     runtimeState.sender = sender;
-    return { handleMessage: featureHandleMessage, deactivate: deactivation };
+    return { handleMessage: featureHandleMessage, deactivate: deactivation, isChatAllowed: jmChatAllowed, configuredGroups: configuredJmGroups };
   }
   initialized = true;
 
@@ -154,7 +154,9 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
   });
   return {
     handleMessage: featureHandleMessage,
-    deactivate: deactivation
+    deactivate: deactivation,
+    isChatAllowed: jmChatAllowed,
+    configuredGroups: configuredJmGroups
   };
 }
 

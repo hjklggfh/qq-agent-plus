@@ -409,6 +409,8 @@ function cfg() {
   const c = api?.config?.() || {};
   return {
     enabled: c.enabled !== false,
+    allowedChats: Array.isArray(c.allowedChats) ? c.allowedChats.filter((key) => /^(group|private):\d{5,15}$/.test(key)) : [],
+    deniedChats: Array.isArray(c.deniedChats) ? c.deniedChats.filter((key) => /^(group|private):\d{5,15}$/.test(key)) : [],
     dataDir: String(c.dataDir ?? '').trim(),
     downloadDir: String(c.downloadDir ?? '').trim(),
     domains: String(c.domains ?? '').trim(),
@@ -614,15 +616,22 @@ function saveGroupState(state) {
   }
 }
 
-/** 这个会话能不能用 JM 功能。私聊不受白名单限制。 */
-function isChatAllowed(chatKey) {
+/** 这个会话能不能用 JM 功能；管理员覆盖层优先，旧群名单保持原样。 */
+export function isChatAllowed(chatKey) {
+  const key = String(chatKey || '');
+  const settings = cfg();
+  if (settings.deniedChats.includes(key)) return false;
+  if (settings.allowedChats.includes(key)) return true;
   const st = loadGroupState();
   const ids = Object.keys(st.groups || {}).filter(Boolean);
   if (!ids.length) return true;
-  const key = String(chatKey || '');
   if (key.startsWith('private:')) return true;
   const gid = key.startsWith('group:') ? key.slice('group:'.length) : key;
   return Boolean(st.groups[gid]);
+}
+
+export function configuredJmGroups() {
+  return Object.keys(loadGroupState().groups || {}).filter((id) => /^\d{5,15}$/.test(id));
 }
 
 /** 门禁：返回空串=放行；否则返回给群友看的提示文本。 */
@@ -1614,6 +1623,11 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         return { content: '开启/关闭是按群生效的。请到目标群里发「开启JM」或「关闭JM」。', isError: true };
       }
 
+      if (['on', 'off'].includes(action)
+        && (cfg().allowedChats.includes(chatKey) || cfg().deniedChats.includes(chatKey))) {
+        return { content: '本群 JM 权限已由 Agent 管理员私聊设置，请管理员通过「功能 开启/关闭 group:群号 JM」修改。', isError: true };
+      }
+
       if (action === 'on') {
         let gname = '';
         try {
@@ -1641,7 +1655,8 @@ const JM_CONTROL_OWNER_ID = '2118530760';
       if (action === 'all') {
         st.groups = {};
         saveGroupState(st);
-        return reply('✅ 已恢复默认：所有群都可用 JM。');
+        const restricted = cfg().deniedChats.filter((key) => key.startsWith('group:')).length;
+        return reply(`✅ 已清空原有 JM 群名单${restricted ? `；管理员另设的 ${restricted} 个群禁用项仍然生效。` : '，恢复默认所有群可用。'}`);
       }
       return { content: 'action 只能是 on / off / list / all。', isError: true };
     },
