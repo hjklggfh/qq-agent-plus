@@ -77,6 +77,13 @@ export class EhentaiManager {
       if (this.active?.job === target) continue;
       try { if (fs.statSync(target).mtimeMs < Date.now() - 24 * HOUR) fs.rmSync(target, { recursive: true, force: true }); } catch { /* 下次清理 */ }
     }
+    const cache = path.join(this.root, 'cache');
+    if (fs.existsSync(cache)) for (const entry of fs.readdirSync(cache, { withFileTypes: true })) {
+      if (!entry.isDirectory() || !/^\d+-[a-f0-9]+$/i.test(entry.name)) continue;
+      const target = path.join(cache, entry.name);
+      if (this.active?.cache === target) continue;
+      try { if (fs.statSync(target).mtimeMs < Date.now() - 24 * HOUR) fs.rmSync(target, { recursive: true, force: true }); } catch { /* 下次清理 */ }
+    }
     return { removed };
   }
   async fetch(url, limit, signal, referer = 'https://e-hentai.org/', directClient = null) {
@@ -155,21 +162,22 @@ export class EhentaiManager {
   async downloadImage(link, index, settings, signal, directClient) {
     let pageUrl = link;
     let lastError;
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 5; attempt++) {
       signal.throwIfAborted();
       try {
         const pageHtml = await this.html(pageUrl, signal, directClient);
         const url = parseImagePage(pageHtml);
         if (!url) throw new Error('图片地址无效');
         pageUrl = reloadImagePage(pageHtml, link) || link;
-        const buffer = await this.fetch(url, settings.maxImageBytes, signal, link, directClient);
+        const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, 12000))]);
+        const buffer = await this.fetch(url, settings.maxImageBytes, imageSignal, link, directClient);
         const type = imageType(buffer);
         if (!type) throw new Error('站点返回了不受支持的图片');
         return { buffer, type };
       } catch (error) {
         lastError = error;
         if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
-        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
       }
     }
     throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
@@ -200,16 +208,34 @@ export class EhentaiManager {
       links.push(...page.links.filter((link) => !links.includes(link)));
     }
     if (links.length !== total) throw new Error(`画廊页数不完整（应有 ${total} 页，取得 ${links.length} 页），未生成 PDF`);
-    await this.send(chatKey, `📥 已找到 ${total} 页，开始下载图片…`, runId, signal);
     const jobs = path.join(this.root, 'jobs');
     fs.mkdirSync(jobs, { recursive: true, mode: 0o700 });
     const job = path.join(jobs, `job-${randomUUID()}`);
     fs.mkdirSync(job, { mode: 0o700 }); this.active.job = job;
+    const cache = path.join(this.root, 'cache', `${match[1]}-${match[2]}`);
+    fs.mkdirSync(cache, { recursive: true, mode: 0o700 }); this.active.cache = cache;
     const files = new Array(links.length); let bytes = 0;
     try {
+      for (const entry of fs.readdirSync(cache, { withFileTypes: true })) {
+        const found = entry.name.match(/^(\d{4})\.(png|jpeg|webp|gif)$/);
+        if (!entry.isFile() || !found) continue;
+        const index = Number(found[1]) - 1;
+        const source = path.join(cache, entry.name);
+        if (index < 0 || index >= links.length || files[index]) continue;
+        const stat = fs.lstatSync(source);
+        if (stat.isSymbolicLink() || stat.size <= 512 || stat.size > s.maxImageBytes) continue;
+        const type = imageType(fs.readFileSync(source));
+        if (type !== `image/${found[2]}`) continue;
+        files[index] = { page: index + 1, file: source };
+        bytes += stat.size;
+      }
+      if (bytes > s.maxPdfBytes) throw new Error('已缓存图片总量超过 PDF 上限');
+      fs.utimesSync(cache, new Date(), new Date());
+      const cachedCount = files.filter(Boolean).length;
+      await this.send(chatKey, `📥 已找到 ${total} 页，${cachedCount ? `已缓存 ${cachedCount} 张，继续下载` : '开始下载图片'}…`, runId, signal);
       const failed = new AbortController();
       const downloadSignal = AbortSignal.any([signal, failed.signal]);
-      let next = 0, completed = 0, firstError = null, lastReported = 0, lastReportAt = 0;
+      let next = 0, completed = cachedCount, firstError = null, lastReported = cachedCount, lastReportAt = 0;
       let progress = Promise.resolve();
       const report = () => {
         if (completed >= links.length || completed - lastReported < 10
@@ -225,11 +251,14 @@ export class EhentaiManager {
           while (!downloadSignal.aborted) {
             const index = next++;
             if (index >= links.length) break;
+            if (files[index]) continue;
             const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient);
             bytes += buffer.length;
             if (bytes > s.maxPdfBytes) throw new Error('图片总量超过 PDF 上限，未发送 PDF');
-            const source = path.join(job, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
-            fs.writeFileSync(source, buffer, { mode: 0o600 });
+            const source = path.join(cache, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
+            const temporary = `${source}.part-${randomUUID()}`;
+            fs.writeFileSync(temporary, buffer, { mode: 0o600 });
+            fs.renameSync(temporary, source);
             files[index] = { page: index + 1, file: source };
             completed++; report();
           }
@@ -248,11 +277,13 @@ export class EhentaiManager {
       signal.throwIfAborted();
       fs.renameSync(result.file, pdf);
       fs.chmodSync(pdf, 0o600);
+      fs.rmSync(cache, { recursive: true, force: true });
       await this.send(chatKey, `📤 PDF 已生成（${(result.bytes / 1048576).toFixed(1)} MB），正在发送文件…`, runId, signal);
       await this.upload(chatKey, pdf, `E站-${match[1]}-${fileName(first.title || item.title)}.pdf`, result.bytes, runId, signal);
     } finally {
       try { fs.rmSync(job, { recursive: true, force: true }); } catch { /* 启动后定期清理 */ }
       this.active.job = null;
+      this.active.cache = null;
     }
   }
   async handle(command, chatKey, messageId) {

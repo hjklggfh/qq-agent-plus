@@ -162,3 +162,47 @@ test('多页图片限量并行下载且 PDF 页序不变', async () => {
     assert.match(sent[2], /10\/12/);
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('下载失败后保留已完成图片，重新请求时续传并清理缓存', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-resume-'));
+  const gallery = 'https://e-hentai.org/g/789/abc123/';
+  const links = Array.from({ length: 3 }, (_, i) => `https://e-hentai.org/s/abc123/789-${i + 1}`);
+  const requested = [0, 0, 0], sent = [];
+  let failThird = true, uploads = 0;
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      if (url === gallery) return new Response(`<div id="gn">续传作品</div><div id="gdd">3 pages</div><div id="gdt">${links.map((link) => `<a href="${link}">页</a>`).join('')}</div>`);
+      const page = links.indexOf(url);
+      if (page >= 0) return new Response(`<img id="img" src="https://a.hath.network/${page + 1}.png">`);
+      const image = String(url).match(/https:\/\/a\.hath\.network\/(\d)\.png/);
+      if (image) {
+        const index = Number(image[1]) - 1; requested[index]++;
+        if (index === 2 && failThird) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          throw new Error('超过大小上限');
+        }
+        return new Response(Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(600)]));
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    send: async (_chat, messages) => sent.push(messages[0]),
+    file: async () => { uploads++; },
+    buildPdf: async ({ files, output }) => {
+      assert.deepEqual(files.map((file) => file.page), [1, 2, 3]);
+      fs.writeFileSync(output, '%PDF-1.4'); return { file: output, bytes: 8 };
+    }
+  });
+  try {
+    manager.active = { chatKey: 'private:123456', file: null, job: null, cache: null, abort: () => {} };
+    await assert.rejects(manager.downloadPdf('private:123456', { url: gallery, title: '续传作品', pages: 3 }, 'first', AbortSignal.timeout(1000)), /超过大小上限/);
+    assert.deepEqual(requested, [1, 1, 1]);
+    assert.equal(uploads, 0);
+    failThird = false;
+    await manager.downloadPdf('private:123456', { url: gallery, title: '续传作品', pages: 3 }, 'second', AbortSignal.timeout(1000));
+    assert.deepEqual(requested, [1, 1, 2]);
+    assert.ok(sent.some((message) => message.includes('已缓存 2 张')));
+    assert.equal(uploads, 1);
+    assert.equal(fs.existsSync(path.join(root, 'ehentai', 'cache', '789-abc123')), false);
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
