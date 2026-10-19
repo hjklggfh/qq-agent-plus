@@ -79,7 +79,7 @@ export class EhentaiManager {
     }
     return { removed };
   }
-  async fetch(url, limit, signal, referer = 'https://e-hentai.org/') {
+  async fetch(url, limit, signal, referer = 'https://e-hentai.org/', directClient = null) {
     const target = new URL(url);
     if (target.protocol !== 'https:' || target.username || target.password || target.hash
       || !(target.hostname === 'e-hentai.org' || imageUrl(url))) throw new Error('站点返回了不允许的地址');
@@ -101,11 +101,14 @@ export class EhentaiManager {
         ...(this.proxy && !this.options.fetchImpl ? { dispatcher: this.proxy } : {}) };
       response = this.options.fetchImpl ? await this.options.fetchImpl(url, init)
         : this.proxy ? await undiciFetch(url, init)
-          : target.hostname === 'e-hentai.org' ? await this.direct.fetch(url, { ...init, limit })
+          : target.hostname === 'e-hentai.org' ? await (directClient || this.direct).fetch(url, { ...init, limit })
             : await fetch(url, init);
     } catch (error) {
       if (signal.aborted) throw error;
-      throw new Error(this.proxy ? 'E站代理连接失败或目标站点不可达，请检查专用代理。' : `E-Hentai 直连失败：${error.message}；可更新直连 IP 或配置专用本机代理。`, { cause: error });
+      const message = this.proxy ? 'E站代理连接失败或目标站点不可达，请检查专用代理。'
+        : target.hostname === 'e-hentai.org' ? `E-Hentai 主站直连失败：${error.message}`
+          : `E站图片 CDN 请求失败：${error.message}`;
+      throw new Error(message, { cause: error });
     }
     if (!response.ok) throw new Error(`E-Hentai 请求失败：HTTP ${response.status}`);
     if (!response.body) throw new Error('站点返回空内容');
@@ -118,7 +121,7 @@ export class EhentaiManager {
     }
     return Buffer.concat(parts, size);
   }
-  async html(url, signal) { return (await this.fetch(url, 3 * 1048576, signal)).toString('utf8'); }
+  async html(url, signal, directClient) { return (await this.fetch(url, 3 * 1048576, signal, 'https://e-hentai.org/', directClient)).toString('utf8'); }
   async listing(state, needed, signal) {
     while (state.items.length < needed && state.next && state.fetched < 12) {
       const url = state.next; state.next = '';
@@ -149,6 +152,28 @@ export class EhentaiManager {
     const lines = items.map((item, index) => `${index + 1}. ${safeTitle(item.title)}${item.date ? ` · ${item.date}` : ''}${item.pages ? ` · ${item.pages}页` : ''}`);
     await this.send(chatKey, `${title} · 第${page}页\n${lines.join('\n')}\n回复 1—${items.length} 获取 PDF；“下一页”“上一页”或“第N页”翻页。`, runId, signal);
   }
+  async downloadImage(link, index, settings, signal, directClient) {
+    let pageUrl = link;
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      signal.throwIfAborted();
+      try {
+        const pageHtml = await this.html(pageUrl, signal, directClient);
+        const url = parseImagePage(pageHtml);
+        if (!url) throw new Error('图片地址无效');
+        pageUrl = reloadImagePage(pageHtml, link) || link;
+        const buffer = await this.fetch(url, settings.maxImageBytes, signal, link, directClient);
+        const type = imageType(buffer);
+        if (!type) throw new Error('站点返回了不受支持的图片');
+        return { buffer, type };
+      } catch (error) {
+        lastError = error;
+        if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
+  }
   async downloadPdf(chatKey, item, runId, signal) {
     const s = this.settings();
     const match = galleryUrl(item.url).match(/\/g\/(\d+)\/([a-f0-9]+)/i);
@@ -158,9 +183,11 @@ export class EhentaiManager {
     const pdf = path.join(pdfDir, `${match[1]}-${match[2]}.pdf`);
     this.active.file = pdf;
     if (fs.existsSync(pdf) && fs.statSync(pdf).size > 0 && Date.now() - fs.statSync(pdf).mtimeMs < s.keepHours * HOUR) {
+      await this.send(chatKey, `📦 E站 ${match[1]} 命中已生成的 PDF，正在发送…`, runId, signal);
       await this.upload(chatKey, pdf, `E站-${match[1]}-${fileName(item.title)}.pdf`, fs.statSync(pdf).size, runId, signal);
       return;
     }
+    await this.send(chatKey, `🔍 开始处理 E站 ${match[1]}，正在读取画廊…`, runId, signal);
     const first = parseGallery(await this.html(item.url, signal), item.url, 0);
     const total = first.pageCount || item.pages;
     if (!total) throw new Error('无法确认画廊页数，未生成 PDF');
@@ -173,47 +200,55 @@ export class EhentaiManager {
       links.push(...page.links.filter((link) => !links.includes(link)));
     }
     if (links.length !== total) throw new Error(`画廊页数不完整（应有 ${total} 页，取得 ${links.length} 页），未生成 PDF`);
+    await this.send(chatKey, `📥 已找到 ${total} 页，开始下载图片…`, runId, signal);
     const jobs = path.join(this.root, 'jobs');
     fs.mkdirSync(jobs, { recursive: true, mode: 0o700 });
     const job = path.join(jobs, `job-${randomUUID()}`);
     fs.mkdirSync(job, { mode: 0o700 }); this.active.job = job;
-    const files = []; let bytes = 0;
+    const files = new Array(links.length); let bytes = 0;
     try {
-      for (let index = 0; index < links.length; index++) {
-        signal.throwIfAborted();
-        if (index) await new Promise((resolve) => setTimeout(resolve, 250));
-        let buffer;
-        let lastError;
-        let pageUrl = links[index];
-        for (let attempt = 0; attempt < 3; attempt++) {
-          signal.throwIfAborted();
-          try {
-            const pageHtml = await this.html(pageUrl, signal);
-            const url = parseImagePage(pageHtml);
-            if (!url) throw new Error('图片地址无效');
-            pageUrl = reloadImagePage(pageHtml, links[index]) || links[index];
-            buffer = await this.fetch(url, s.maxImageBytes, signal, links[index]);
-            break;
-          } catch (error) {
-            lastError = error;
-            if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
-            if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+      const failed = new AbortController();
+      const downloadSignal = AbortSignal.any([signal, failed.signal]);
+      let next = 0, completed = 0, firstError = null, lastReported = 0, lastReportAt = 0;
+      let progress = Promise.resolve();
+      const report = () => {
+        if (completed >= links.length || completed - lastReported < 10
+          || (lastReported && Date.now() - lastReportAt < 12000)) return;
+        lastReported = completed; lastReportAt = Date.now();
+        const count = completed;
+        progress = progress.then(() => this.send(chatKey, `📥 下载中：${count}/${links.length} 张…`, runId, downloadSignal))
+          .catch((error) => { if (!firstError) { firstError = error; failed.abort(error); } });
+      };
+      const workers = Array.from({ length: Math.min(3, links.length) }, async () => {
+        const directClient = new EhentaiDirect(s.directIps);
+        try {
+          while (!downloadSignal.aborted) {
+            const index = next++;
+            if (index >= links.length) break;
+            const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient);
+            bytes += buffer.length;
+            if (bytes > s.maxPdfBytes) throw new Error('图片总量超过 PDF 上限，未发送 PDF');
+            const source = path.join(job, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
+            fs.writeFileSync(source, buffer, { mode: 0o600 });
+            files[index] = { page: index + 1, file: source };
+            completed++; report();
           }
-        }
-        if (!buffer) throw new Error(`第 ${index + 1} 页图片获取失败：${lastError?.message || '未知错误'}，未发送 PDF`);
-        const type = imageType(buffer);
-        if (!type) throw new Error(`第 ${index + 1} 页不是受支持的图片，未发送 PDF`);
-        bytes += buffer.length;
-        if (bytes > s.maxPdfBytes) throw new Error('图片总量超过 PDF 上限，未发送 PDF');
-        const source = path.join(job, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
-        fs.writeFileSync(source, buffer, { mode: 0o600 });
-        files.push({ page: index + 1, file: source });
-      }
+        } catch (error) {
+          if (!firstError) { firstError = error; failed.abort(error); }
+        } finally { directClient.close(); }
+      });
+      await Promise.all(workers);
+      await progress;
+      if (firstError) throw firstError;
+      signal.throwIfAborted();
+      if (files.filter(Boolean).length !== links.length) throw new Error('画廊图片不完整，未生成 PDF');
+      await this.send(chatKey, `🖼 下载完成（${files.length} 张），正在合成 PDF…`, runId, signal);
       const output = path.join(job, 'output.pdf');
       const result = await (this.options.buildPdf || buildPixivPdf)({ files, output, signal, maxBytes: s.maxPdfBytes, pythonPath: s.pythonPath });
       signal.throwIfAborted();
       fs.renameSync(result.file, pdf);
       fs.chmodSync(pdf, 0o600);
+      await this.send(chatKey, `📤 PDF 已生成（${(result.bytes / 1048576).toFixed(1)} MB），正在发送文件…`, runId, signal);
       await this.upload(chatKey, pdf, `E站-${match[1]}-${fileName(first.title || item.title)}.pdf`, result.bytes, runId, signal);
     } finally {
       try { fs.rmSync(job, { recursive: true, force: true }); } catch { /* 启动后定期清理 */ }

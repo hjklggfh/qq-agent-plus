@@ -6,8 +6,9 @@ const HOST = 'e-hentai.org';
 // E站主站在部分网络里 DNS 被污染，且携带 SNI 的 TLS 被重置。只对固定主站使用
 // 无 SNI 的 HTTP/2；TLS 证书仍按原始域名严格核验，HTTP/2 :authority 仍是原域名。
 export class EhentaiDirect {
-  constructor(ips) {
+  constructor(ips, { attemptTimeoutMs = 7000 } = {}) {
     this.ips = [...ips];
+    this.attemptTimeoutMs = attemptTimeoutMs;
     this.session = null;
     this.ip = '';
   }
@@ -75,7 +76,8 @@ export class EhentaiDirect {
     const ips = this.ip ? [this.ip, ...this.ips.filter((ip) => ip !== this.ip)] : this.ips;
     let lastError;
     for (const ip of ips) {
-      try { return await this.attempt(url, options, ip); }
+      const attemptSignal = AbortSignal.any([options.signal, AbortSignal.timeout(this.attemptTimeoutMs)]);
+      try { return await this.attempt(url, { ...options, signal: attemptSignal }, ip); }
       catch (error) {
         lastError = error;
         this.close();

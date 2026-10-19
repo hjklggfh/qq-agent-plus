@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { ehentaiCommand } from '../src/features/ehentai/command.js';
 import { validateEhentaiPatch } from '../src/features/ehentai/config.js';
 import { EhentaiManager } from '../src/features/ehentai/manager.js';
+import { EhentaiDirect } from '../src/features/ehentai/direct.js';
 import { imageUrl, parseGallery, parseImagePage, parseListing, reloadImagePage, searchUrl } from '../src/features/ehentai/site.js';
 const testRoot = path.join(process.cwd(), 'data', '.ehentai-tests');
 fs.mkdirSync(testRoot, { recursive: true });
@@ -55,6 +56,25 @@ test('关闭时无文件副作用；开启后按过期时间清理自有 PDF', (
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('单个直连 IP 超时后切换到下一个 IP', async () => {
+  const tried = [];
+  class ProbeDirect extends EhentaiDirect {
+    async attempt(_url, { signal }, ip) {
+      tried.push(ip);
+      if (ip === '172.66.132.196') {
+        await new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }
+      return new Response('ok');
+    }
+  }
+  const direct = new ProbeDirect(['172.66.132.196', '172.66.140.62'], { attemptTimeoutMs: 20 });
+  try {
+    const response = await direct.fetch('https://e-hentai.org/', { signal: AbortSignal.timeout(500), headers: {}, limit: 100 });
+    assert.equal(await response.text(), 'ok');
+    assert.deepEqual(tried, ['172.66.132.196', '172.66.140.62']);
+  } finally { direct.close(); }
+});
+
 test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', async () => {
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-flow-'));
   const sent = [], uploads = [];
@@ -96,6 +116,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     assert.equal(uploads.length, 1);
     assert.equal(imageAttempts, 2);
     assert.equal(reloadedImagePage, true);
+    assert.deepEqual(sent.slice(3, 7).map((entry) => entry.text.split(' ')[0]), ['🔍', '📥', '🖼', '📤']);
     assert.equal(uploads[0].chatKey, 'private:123456');
     assert.match(uploads[0].name, /^E站-123-/);
     assert.ok(fs.existsSync(path.join(root, 'ehentai', 'pdf', '123-abc123.pdf')));
@@ -103,5 +124,41 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     const missing = await manager.handle({ kind: 'select', index: 1 }, 'private:123456', '5');
     assert.match(missing.error, /不完整/);
     assert.equal(uploads.length, 1);
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('多页图片限量并行下载且 PDF 页序不变', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-parallel-'));
+  const sent = [];
+  let active = 0, peak = 0;
+  const gallery = 'https://e-hentai.org/g/456/abc123/';
+  const links = Array.from({ length: 12 }, (_, i) => `https://e-hentai.org/s/abc123/456-${i + 1}`);
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      if (url === gallery) return new Response(`<div id="gn">并行作品</div><div id="gdd">12 pages</div><div id="gdt">${links.map((link) => `<a href="${link}">页</a>`).join('')}</div>`);
+      const page = links.indexOf(url);
+      if (page >= 0) return new Response(`<img id="img" src="https://a.hath.network/${page + 1}.png">`);
+      if (String(url).startsWith('https://a.hath.network/')) {
+        active++; peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        active--;
+        return new Response(Buffer.from('89504e470d0a1a0a', 'hex'));
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    },
+    send: async (_chat, messages) => sent.push(messages[0]),
+    file: async (_chat, payload) => assert.ok(fs.existsSync(payload.file)),
+    buildPdf: async ({ files, output }) => {
+      assert.deepEqual(files.map((file) => file.page), Array.from({ length: 12 }, (_, i) => i + 1));
+      fs.writeFileSync(output, '%PDF-1.4'); return { file: output, bytes: 8 };
+    }
+  });
+  try {
+    manager.active = { chatKey: 'private:123456', file: null, job: null, abort: () => {} };
+    await manager.downloadPdf('private:123456', { url: gallery, title: '并行作品', pages: 12 }, 'parallel', AbortSignal.timeout(1000));
+    assert.equal(peak, 3);
+    assert.deepEqual(sent.map((message) => message.split(' ')[0]), ['🔍', '📥', '📥', '🖼', '📤']);
+    assert.match(sent[2], /10\/12/);
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
