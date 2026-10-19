@@ -554,6 +554,43 @@ async function main() {
   await waitSessionDone('单独找你');
   pass('私聊流程正常');
 
+  // ── 场景 9b：私聊模型只写了正文、没调用工具 → 给一次补正机会 ──
+  const repairRequestsStart = llm.state.requests.length;
+  const repairSendsStart = onebotHttp.state.sends.length;
+  llm.state.script.push(
+    { content: '？算得快叫猜得快' },
+    { toolCalls: [{ name: 'send_message', args: { messages: '？算得快叫猜得快' } }] },
+    { content: '完成' }
+  );
+  onebotWs.push({
+    post_type: 'message', message_type: 'private', user_id: 777, self_id: 888,
+    message_id: 9201, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 777, nickname: '好友' },
+    message: [{ type: 'text', data: { text: '你猜得真快' } }]
+  });
+  const repaired = await waitSessionDone('你猜得真快');
+  assert.strictEqual(repaired.status, 'done');
+  assert.strictEqual(repaired.replyRepairAttempted, true);
+  assert.strictEqual(repaired.sent.length, 1, '补正后只发送一次');
+  assert.strictEqual(onebotHttp.state.sends.length, repairSendsStart + 1);
+  assert.strictEqual(onebotHttp.state.sends.at(-1).body.message.at(-1).data.text, '？算得快叫猜得快');
+  assert.ok(llm.state.requests[repairRequestsStart + 1].messages.at(-1).content.includes('【系统补正】'));
+  pass('私聊普通文本不直接外发，补正工具调用后只发送一次');
+
+  // 没有文本、没有工具时仍允许安静结束，不额外消耗模型调用。
+  const silentRequestsStart = llm.state.requests.length;
+  llm.state.script.push({ content: '' });
+  onebotWs.push({
+    post_type: 'message', message_type: 'private', user_id: 777, self_id: 888,
+    message_id: 9202, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 777, nickname: '好友' },
+    message: [{ type: 'text', data: { text: '不用回复这条' } }]
+  });
+  const silent = await waitSessionDone('不用回复这条');
+  assert.strictEqual(silent.status, 'noreply');
+  assert.strictEqual(llm.state.requests.length, silentRequestsStart + 1);
+  pass('私聊明确保持沉默时不触发补正');
+
   // ── 场景 10：拍一拍触发 ──
   llm.state.script.push({ content: '（拍一下而已，不回）' });
   onebotWs.push({

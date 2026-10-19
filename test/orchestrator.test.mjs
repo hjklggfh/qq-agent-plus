@@ -143,6 +143,55 @@ describe('Orchestrator', () => {
     assert.equal(store.findByMid('group:1', 2).read, false);
   });
 
+  it('asks for a send tool once when a direct private reply was returned as plain text', async (t) => {
+    const { cfg, runner, store, sessions } = fixture(t);
+    cfg.allow.private = ['777'];
+    cfg.conversation.mode = 'lifecycle';
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:777', { mid: 77, text: '你猜得真快', senderId: '777' });
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      if (requests.length === 1) return Response.json({
+        choices: [{ message: { content: '？算得快叫猜得快' } }],
+        usage: { prompt_tokens: 100, total_tokens: 110 }
+      });
+      if (requests.length === 2) return Response.json({
+        choices: [{ message: { tool_calls: [{ id: 'reply', type: 'function', function: {
+          name: 'send_message', arguments: JSON.stringify({ messages: '？算得快叫猜得快' })
+        } }] } }],
+        usage: { prompt_tokens: 120, total_tokens: 130 }
+      });
+      return Response.json({ choices: [{ message: { content: '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:777');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(requests.length, 3);
+    assert.match(requests[1].messages.at(-1).content, /【系统补正】/);
+    assert.equal(session.replyRepairAttempted, true);
+    assert.equal(session.status, 'done');
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['？算得快叫猜得快']);
+    const thread = store.getConversationThread('private:777');
+    const turns = store.getThreadTurns(thread.threadId);
+    assert.ok(!JSON.stringify(turns).includes('【系统补正】'));
+  });
+
+  it('keeps plain group text silent when the group did not address the bot', async (t) => {
+    const { runner, sessions, append } = fixture(t);
+    append(78, '随便聊聊');
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ choices: [{ message: { content: '内部想法' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('group:1');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(calls, 1);
+    assert.equal(session.status, 'noreply');
+    assert.equal(session.replyRepairAttempted, undefined);
+  });
+
   it('preserves failed input and recorded token usage without clearing a run', async (t) => {
     const { runner, store, sessions, append } = fixture(t);
     append(1);
@@ -1079,7 +1128,7 @@ describe('Orchestrator', () => {
         });
       }
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { total_tokens: 10 }
       });
     };
@@ -1116,7 +1165,7 @@ describe('Orchestrator', () => {
     globalThis.fetch = async () => {
       calls += 1;
       return Response.json({
-        choices: [{ message: { content: 'done' } }],
+        choices: [{ message: { content: '' } }],
         usage: { total_tokens: 10 }
       });
     };

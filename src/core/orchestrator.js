@@ -1842,6 +1842,8 @@ export class Orchestrator {
     const maxRounds = runLimits.maxRounds;
     let finish = false;
     let completed = false;
+    let replyRepairAttempted = false;
+    let replyRepairTranscriptStart = -1;
     let webSearchCount = 0;
     session.activity = '';
     session.webSearchCount = 0;
@@ -1850,7 +1852,7 @@ export class Orchestrator {
       this.sessions.update(session.id);
       this.emit('session-update', session.id);
     };
-    for (let round = 0; round < maxRounds && !finish; round++) {
+    for (let round = 0; round < maxRounds + Number(replyRepairAttempted) && !finish; round++) {
       signal.throwIfAborted();
       if (this.aborted || !canRun(chatKey)) throw new Error('Run cancelled');
       const maxRunTokens = runLimits.maxRunTokens;
@@ -1998,6 +2000,30 @@ export class Orchestrator {
         this.emit('session-update', session.id);
       }
       if (!toolCalls.length) {
+        // 明确找机器人说话时，部分模型会写出回复文本却忘记调用发送工具。
+        // 只补一次模型轮次，让它自己决定发送或保持沉默；原文本绝不直接外发。
+        const needsReplyRepair = !replyRepairAttempted
+          && !proactive && !privateProactive && !manual
+          && session.sent.length === 0
+          && ['private', 'mention', 'reply'].includes(session.triggerKind)
+          && rawContent.trim().length > 0
+          && toolDefs.some((definition) => definition.name === 'send_message');
+        if (needsReplyRepair) {
+          replyRepairAttempted = true;
+          replyRepairTranscriptStart = messages.length - 1;
+          session.replyRepairAttempted = true;
+          messages.push({
+            role: 'user',
+            content: '【系统补正】你上一轮只输出了普通文本，QQ 用户看不到。如果你打算回复，请现在调用 send_message 发送面向用户的内容；如果决定保持沉默，请调用 finish。不要再次只输出普通文本，也不要汇报操作结果。'
+          });
+          this.sessions.update(session.id);
+          this.emit('session-update', session.id);
+          continue;
+        }
+        if (replyRepairAttempted && !session.sent.length) {
+          session.finishReason ||= '模型补正后仍未调用发送工具，未向 QQ 发送消息';
+          log.warn(`[orchestrator] ${chatKey} 模型补正后仍未调用发送工具: session=${session.id}`);
+        }
         // 没有工具调用 = 模型结束思考（文本不会发给 QQ）
         completed = true;
         break;
@@ -2095,7 +2121,11 @@ export class Orchestrator {
         : '本轮模型轮数用尽，已安全结束';
     }
     const providerTranscriptDelta = conversationCfg.mode === 'lifecycle'
-      ? structuredClone(messages.slice(transcriptStart))
+      ? structuredClone(messages.slice(transcriptStart).filter((_, i) => {
+        const absoluteIndex = transcriptStart + i;
+        return absoluteIndex !== replyRepairTranscriptStart
+          && absoluteIndex !== replyRepairTranscriptStart + 1;
+      }))
       : [];
     // 普通 assistant 文本不会发到 QQ，它只是本次运行的内部输出。下一生命周期轮次
     // 不应把它伪装成机器人曾经说过的话；移除后仍能完整命中上一请求的输入边界。
