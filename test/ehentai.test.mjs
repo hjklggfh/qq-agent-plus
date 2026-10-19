@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { ehentaiCommand } from '../src/features/ehentai/command.js';
 import { validateEhentaiPatch } from '../src/features/ehentai/config.js';
 import { EhentaiManager } from '../src/features/ehentai/manager.js';
-import { imageUrl, parseGallery, parseImagePage, parseListing, searchUrl } from '../src/features/ehentai/site.js';
+import { imageUrl, parseGallery, parseImagePage, parseListing, reloadImagePage, searchUrl } from '../src/features/ehentai/site.js';
 const testRoot = path.join(process.cwd(), 'data', '.ehentai-tests');
 fs.mkdirSync(testRoot, { recursive: true });
 
@@ -26,6 +26,7 @@ test('只解析站内画廊、页码和可信图片域名', () => {
   const gallery = `<div id="gn">测试作品</div><div id="gdd"><tr><td>12 pages</td></tr></div><div id="gdt"><a href="https://e-hentai.org/s/abc123/123-1">1</a></div>`;
   assert.equal(parseGallery(gallery, 'https://e-hentai.org/g/123/abc123/').pageCount, 12);
   assert.equal(parseImagePage('<img id="img" src="https://a.hath.network/x.jpg">'), 'https://a.hath.network/x.jpg');
+  assert.equal(reloadImagePage('<a id="loadfail" onclick="return nl(\'123-456\')">Reload</a>', 'https://e-hentai.org/s/abc123/123-1'), 'https://e-hentai.org/s/abc123/123-1?nl=123-456');
   assert.equal(imageUrl('https://127.0.0.1/secret'), '');
   assert.equal(imageUrl('https://ehgt.org/g/509.gif'), '');
 });
@@ -58,6 +59,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
   const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-flow-'));
   const sent = [], uploads = [];
   let imageAttempts = 0;
+  let reloadedImagePage = false;
   const galleryUrl = 'https://e-hentai.org/g/123/abc123/';
   const listHtml = `<table class="itg">${Array.from({ length: 20 }, (_, i) => `<tr><td><a href="https://e-hentai.org/g/${123 + i}/abc123/"><div class="glink">作品${i + 1}</div></a><div title="2026-10-18 11:00">1 pages</div></td></tr>`).join('')}</table>`;
   const fetchImpl = async (url) => {
@@ -65,7 +67,10 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     if (value.includes('f_search=')) return new Response(listHtml);
     if (value.startsWith('https://e-hentai.org/g/999/abc123/')) return new Response('<div id="gn">缺页</div><div id="gdd">2 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/999-1">1</a></div>');
     if (value === galleryUrl) return new Response('<div id="gn">作品1</div><div id="gdd">1 pages</div><div id="gdt"><a href="https://e-hentai.org/s/abc123/123-1">1</a></div>');
-    if (value.includes('/s/abc123/')) return new Response('<img id="img" src="https://a.hath.network/1.png">');
+    if (value.includes('/s/abc123/')) {
+      if (value.includes('?nl=')) reloadedImagePage = true;
+      return new Response('<img id="img" src="https://a.hath.network/1.png"><a id="loadfail" onclick="return nl(\'123-456\')">Reload</a>');
+    }
     if (value.includes('a.hath.network')) {
       imageAttempts++;
       return imageAttempts === 1 ? new Response(null, { status: 204 })
@@ -90,6 +95,7 @@ test('检索分页与序号 PDF 发送经过当前会话，缺页不会发送', 
     assert.deepEqual(await manager.handle(ehentaiCommand('1', true), 'private:123456', '4'), { handled: true });
     assert.equal(uploads.length, 1);
     assert.equal(imageAttempts, 2);
+    assert.equal(reloadedImagePage, true);
     assert.equal(uploads[0].chatKey, 'private:123456');
     assert.match(uploads[0].name, /^E站-123-/);
     assert.ok(fs.existsSync(path.join(root, 'ehentai', 'pdf', '123-abc123.pdf')));

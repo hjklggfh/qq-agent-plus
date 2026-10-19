@@ -6,7 +6,7 @@ import { imageType } from '../../core/image-type.js';
 import { buildPixivPdf } from '../pixiv/pdf.js';
 import { ehentaiConfig } from './config.js';
 import { EhentaiDirect } from './direct.js';
-import { dailyUrl, galleryUrl, imageUrl, parseGallery, parseImagePage, parseListing, searchUrl } from './site.js';
+import { dailyUrl, galleryUrl, imageUrl, parseGallery, parseImagePage, parseListing, reloadImagePage, searchUrl } from './site.js';
 
 const HOUR = 3600000;
 const LIST_TTL = 30 * 60000;
@@ -184,11 +184,14 @@ export class EhentaiManager {
         if (index) await new Promise((resolve) => setTimeout(resolve, 250));
         let buffer;
         let lastError;
+        let pageUrl = links[index];
         for (let attempt = 0; attempt < 3; attempt++) {
           signal.throwIfAborted();
           try {
-            const url = parseImagePage(await this.html(links[index], signal));
+            const pageHtml = await this.html(pageUrl, signal);
+            const url = parseImagePage(pageHtml);
             if (!url) throw new Error('图片地址无效');
+            pageUrl = reloadImagePage(pageHtml, links[index]) || links[index];
             buffer = await this.fetch(url, s.maxImageBytes, signal, links[index]);
             break;
           } catch (error) {

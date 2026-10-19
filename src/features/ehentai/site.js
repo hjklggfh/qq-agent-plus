@@ -68,6 +68,13 @@ export function parseImagePage(html) {
   return imageUrl(root.querySelector('#img')?.getAttribute('src') || root.querySelector('#img')?.getAttribute('data-src'));
 }
 
+export function reloadImagePage(html, pageUrl) {
+  if (!PAGE.test(pageUrl)) return '';
+  const action = parse(html).querySelector('#loadfail')?.getAttribute('onclick') || '';
+  const token = action.match(/^return nl\('([0-9]+-[0-9]+)'\)$/)?.[1];
+  return token ? `${pageUrl}?nl=${token}` : '';
+}
+
 export function searchUrl(query, kind = 'search') {
   const url = new URL(ORIGIN);
   const value = clean(query).slice(0, 120);
