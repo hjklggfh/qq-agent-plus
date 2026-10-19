@@ -149,9 +149,38 @@ test('普通重载反复拿不到新节点时才用一次 nl 换池', async () =
   try {
     const result = await manager.downloadImage(link, 4, manager.settings(), AbortSignal.timeout(3000), new EhentaiDirect(['172.66.140.62']));
     assert.equal(result.type, 'image/png');
-    assert.deepEqual(attempted, ['dead.hath.network:9362', 'dead.hath.network:9362', 'dead.hath.network:9362', 'relay.hath.network']);
+    assert.deepEqual(attempted, ['dead.hath.network:9362', 'relay.hath.network']);
     assert.equal(pageUrls.filter((url) => url.includes('?nl=')).length, 1, 'nl 只作为最后手段用一次');
     assert.ok(pageUrls[0].endsWith(link) && pageUrls[1].endsWith(link));
+  } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('同一坏节点反复出现时继续找新节点，偶发失败不永久拉黑', async () => {
+  const root = fs.mkdtempSync(path.join(testRoot, 'ehentai-stale-'));
+  const link = 'https://e-hentai.org/s/abc123/123-1';
+  const health = new Map();
+  let loads = 0, badDownloads = 0, goodDownloads = 0;
+  const manager = new EhentaiManager({ dataDir: root,
+    getConfig: () => ({ ehentai: { enabled: true }, admin: { ownerUin: '123456' } }), canRun: () => true,
+    fetchImpl: async (url) => {
+      if (String(url).startsWith(link)) {
+        loads++;
+        const host = loads < 22 ? 'bad' : 'good';
+        return new Response(`<img id="img" src="https://${host}.hath.network/1.png">`);
+      }
+      if (String(url).includes('bad.hath.network')) { badDownloads++; throw new Error('timeout'); }
+      goodDownloads++;
+      return new Response(Buffer.from('89504e470d0a1a0a', 'hex'));
+    }
+  });
+  try {
+    const result = await manager.downloadImage(link, 0, manager.settings(), AbortSignal.timeout(3000), null, health);
+    assert.equal(result.type, 'image/png');
+    assert.equal(loads, 22);
+    assert.equal(badDownloads, 2);
+    assert.equal(goodDownloads, 1);
+    assert.equal(health.get('bad.hath.network'), 2);
+    assert.equal(health.has('good.hath.network'), false);
   } finally { manager.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 

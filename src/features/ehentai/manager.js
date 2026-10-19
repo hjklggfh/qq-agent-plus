@@ -159,17 +159,16 @@ export class EhentaiManager {
     const lines = items.map((item, index) => `${index + 1}. ${safeTitle(item.title)}${item.date ? ` · ${item.date}` : ''}${item.pages ? ` · ${item.pages}页` : ''}`);
     await this.send(chatKey, `${title} · 第${page}页\n${lines.join('\n')}\n回复 1—${items.length} 获取 PDF；“下一页”“上一页”或“第N页”翻页。`, runId, signal);
   }
-  async downloadImage(link, index, settings, signal, directClient, failedHosts = new Set()) {
+  async downloadImage(link, index, settings, signal, directClient, hostFailures = new Map()) {
     let pageUrl = link;
     let lastError;
-    let pageLoads = 0, staleLoads = 0, nlUses = 0;
+    let pageLoads = 0, staleLoads = 0, nlUses = 0, pageErrors = 0;
     const tries = new Map();
     const totalTries = () => [...tries.values()].reduce((sum, count) => sum + count, 0);
-    // 图片页每次普通加载都可能重新分配 H@H 节点，而且不消耗强制重载额度；?nl= 重载只在
-    // 另一个小池子里轮换，还会计入站点图片额度。所以失败后先用普通加载换节点，连续多次
-    // 拿不到新节点时才用一次 nl 换池。坏节点（高端口常见）由站点分配，等再久也不会通，
-    // 不能因为“不是 443”就跳过下载，也不能锁死在 nl 池里。
-    while (pageLoads < 14 && totalTries() < 6) {
+    // 同一页的普通加载通常反复分配同一个 H@H 节点，十几次加载仍可能拿不到可用节点。
+    // 只在首次遇到节点时下载；短暂故障允许重试，但同一节点连续失败两次后本画廊跳过。
+    // ?nl= 可能只在两个坏节点之间轮换，试一次后仍回到普通加载。
+    while (pageLoads < 64 && totalTries() < 8) {
       signal.throwIfAborted();
       pageLoads++;
       let pageHtml;
@@ -177,9 +176,11 @@ export class EhentaiManager {
         pageHtml = await this.html(pageUrl, signal, directClient);
       } catch (error) {
         lastError = error;
+        if (++pageErrors >= 3) break;
         pageUrl = link;
         continue;
       }
+      pageErrors = 0;
       const url = parseImagePage(pageHtml);
       if (!url) { lastError = new Error('图片地址无效'); break; }
       let host = '', port = '';
@@ -191,13 +192,12 @@ export class EhentaiManager {
         continue;
       }
       const reloadUrl = reloadImagePage(pageHtml, link);
-      // 超时才算死节点（跨页也不再试）；几秒内就失败的更可能是瞬时网络抖动，
-      // 换过几次节点后可以再给同一节点机会，最多试 3 次，避免把偶尔抖一下的好节点永久拉黑。
       const count = tries.get(host) || 0;
-      const canTry = count === 0 || (count < 3 && staleLoads >= 2);
-      if (failedHosts.has(host) || !canTry) {
+      const canTry = (hostFailures.get(host) || 0) < 2
+        && (count === 0 || (count < 2 && staleLoads >= 10));
+      if (!canTry) {
         staleLoads++;
-        if (pageLoads >= 12 && staleLoads >= 3 && nlUses < 1 && reloadUrl) {
+        if (pageLoads >= 10 && staleLoads >= 6 && nlUses < 1 && reloadUrl) {
           pageUrl = reloadUrl; nlUses++; staleLoads = 0;
         } else pageUrl = link;
         continue;
@@ -206,16 +206,17 @@ export class EhentaiManager {
       staleLoads = 0;
       const started = Date.now();
       try {
-        const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, port ? 8000 : 15000))]);
+        const imageSignal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(settings.timeoutMs, port ? 6000 : 10000))]);
         const buffer = await this.fetch(url, settings.maxImageBytes, imageSignal, link, directClient);
         const type = imageType(buffer);
         if (!type) throw new Error('站点返回了不受支持的图片');
+        hostFailures.delete(host);
         return { buffer, type };
       } catch (error) {
         lastError = error;
         if (signal.aborted || /超过大小上限/.test(error.message)) throw error;
         const elapsed = Date.now() - started;
-        if (elapsed >= 3000) failedHosts.add(host);
+        hostFailures.set(host, Math.min(2, (hostFailures.get(host) || 0) + 1));
         const cause = error.cause?.code || error.cause?.message || '';
         this.options.log?.(`E站第${index + 1}页：节点 ${host} 获取失败（${elapsed}ms，${error.message}${cause ? `：${cause}` : ''}），重新分配节点`);
       }
@@ -276,7 +277,7 @@ export class EhentaiManager {
       await this.send(chatKey, `📥 已找到 ${total} 页，${cachedCount ? `已缓存 ${cachedCount} 张，继续下载` : '开始下载图片'}…`, runId, signal);
       const failed = new AbortController();
       const downloadSignal = AbortSignal.any([signal, failed.signal]);
-      const failedHosts = new Set();
+      const hostFailures = new Map();
       let next = 0, completed = cachedCount, firstError = null, lastReported = cachedCount, lastReportAt = 0;
       let progress = Promise.resolve();
       const report = () => {
@@ -294,7 +295,7 @@ export class EhentaiManager {
             const index = next++;
             if (index >= links.length) break;
             if (files[index]) continue;
-            const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient, failedHosts);
+            const { buffer, type } = await this.downloadImage(links[index], index, s, downloadSignal, directClient, hostFailures);
             bytes += buffer.length;
             if (bytes > s.maxPdfBytes) throw new Error('图片总量超过 PDF 上限，未发送 PDF');
             const source = path.join(cache, `${String(index + 1).padStart(4, '0')}.${type.split('/')[1]}`);
