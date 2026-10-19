@@ -177,6 +177,40 @@ describe('Orchestrator', () => {
     assert.ok(!JSON.stringify(turns).includes('【系统补正】'));
   });
 
+  it('repairs an unsent group reply after image lookup in all-response mode', async (t) => {
+    const { cfg, runner, sessions, append } = fixture(t);
+    cfg.store.randomPercent = 100;
+    setRuntimeConfig(cfg);
+    append(79, '看看这张图');
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      const request = JSON.parse(options.body);
+      requests.push(request);
+      if (requests.length === 1) return Response.json({
+        choices: [{ message: { tool_calls: [{ id: 'read', type: 'function', function: {
+          name: 'get_message_images', arguments: JSON.stringify({ messageId: '79' })
+        } }] } }], usage: { total_tokens: 10 }
+      });
+      if (requests.length === 2) return Response.json({
+        choices: [{ message: { content: '这张真像我\n就是有点太软了' } }],
+        usage: { total_tokens: 10 }
+      });
+      if (requests.length === 3) return Response.json({
+        choices: [{ message: { tool_calls: [{ id: 'send', type: 'function', function: {
+          name: 'send_message', arguments: JSON.stringify({ messages: ['这张真像我', '就是有点太软了'] })
+        } }] } }], usage: { total_tokens: 10 }
+      });
+      return Response.json({ choices: [{ message: { content: '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('group:1');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(session.triggerKind, 'all');
+    assert.equal(session.replyRepairAttempted, true);
+    assert.match(requests[2].messages.at(-1).content, /【系统补正】/);
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['这张真像我', '就是有点太软了']);
+    assert.equal(session.status, 'done');
+  });
+
   it('keeps plain group text silent when the group did not address the bot', async (t) => {
     const { runner, sessions, append } = fixture(t);
     append(78, '随便聊聊');

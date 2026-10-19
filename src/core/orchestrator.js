@@ -2000,12 +2000,15 @@ export class Orchestrator {
         this.emit('session-update', session.id);
       }
       if (!toolCalls.length) {
-        // 明确找机器人说话时，部分模型会写出回复文本却忘记调用发送工具。
-        // 只补一次模型轮次，让它自己决定发送或保持沉默；原文本绝不直接外发。
+        // 明确找机器人说话，或「全部响应」群聊里已调用看图工具时，部分模型会
+        // 写出回复文本却忘记调用发送工具。只补一次模型轮次，让它自己决定发送
+        // 或保持沉默；原文本绝不直接外发。其他普通群聊仍可直接静默结束。
         const needsReplyRepair = !replyRepairAttempted
           && !proactive && !privateProactive && !manual
           && session.sent.length === 0
-          && ['private', 'mention', 'reply'].includes(session.triggerKind)
+          && (['private', 'mention', 'reply'].includes(session.triggerKind)
+            || (session.triggerKind === 'all' && session.messages.some((entry) =>
+              entry.toolCall?.name === 'get_message_images')))
           && rawContent.trim().length > 0
           && toolDefs.some((definition) => definition.name === 'send_message');
         if (needsReplyRepair) {
