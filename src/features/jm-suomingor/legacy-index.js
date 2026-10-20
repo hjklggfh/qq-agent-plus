@@ -2341,7 +2341,9 @@ export const hooks = {
     try {
       recordCallers(ctx);
       if (!api || cfg().enabled === false) return;
-      const entries = Array.isArray(ctx.triggerEntries) ? ctx.triggerEntries : [];
+      // 文件名是附件元数据，不应在后续模型轮次中被当作 JM 指令。
+      const entries = Array.isArray(ctx.triggerEntries)
+        ? ctx.triggerEntries.filter((entry) => entry?.eventKind !== 'file-attachment') : [];
 
       // ── 「开启JM / 关闭JM / JM群列表 / JM所有群开放」群开关指令 ─────────────
       // 由 group_toggle 工具执行（权限校验在工具里做：群主或机主）。

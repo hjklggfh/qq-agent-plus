@@ -1027,11 +1027,11 @@ export function createApp({
     // 放在最前面：连合并转发展开这种网络请求都不值得为它做。
     if (kind === 'group' && senderId && (cfgNow.blocklist?.[id] || []).map(String).includes(senderId)) return;
     const media = segments ? extractMediaFromSegments(segments) : [];
+    const hasFileSegment = Boolean(segments?.some((segment) => segment?.type === 'file'));
     // QQ 下载文件时可能把文件卡片重新上报成对方的私聊消息。
     // 文件名只是附件元数据，不能当作用户输入的 JM/PID 等指令；无文字的普通文件仅存档。
     // 音频/视频文件仍交给媒体处理流程。
-    const passiveFileOnly = !isSelf && Array.isArray(segments)
-      && segments.some((segment) => segment?.type === 'file')
+    const passiveFileOnly = !isSelf && hasFileSegment
       && segments.every((segment) => segment?.type === 'file'
         || (segment?.type === 'text' && !String(segment?.data?.text ?? '').trim()))
       && media.length === 0;
@@ -1072,6 +1072,11 @@ export function createApp({
       // 否则这种部署形态下群友文本可以原样伪造段标记
       text = sanitizeUserText(String(event.raw_message ?? event.message ?? '').trim());
     }
+    // 附件名可包含 JM/PID 等编号；只有用户实际键入的文字能成为下载指令。
+    const commandText = hasFileSegment
+      ? sanitizeUserText(segments.filter((segment) => segment?.type === 'text')
+        .map((segment) => String(segment.data?.text ?? '')).join('').trim())
+      : text;
 
     // 合并转发：占位符 → 展开真实内容（模型要读懂、看懂转发的聊天记录）
     // 优先使用当前转发卡片的资源 id，兼容仅支持 message_id 的旧适配器。
@@ -1095,12 +1100,12 @@ export function createApp({
     const trpgAction = !isSelf && trpg.isAction(chatKey, String(senderId), text);
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
-    const pidCommand = !isSelf && pixivCommand(text);
-    const ehCommand = !isSelf && ehentaiCommand(text, ehentai.hasList(chatKey));
-    const haiguiCommand = !isSelf && haiguiTangCommand(text, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
+    const pidCommand = !isSelf && pixivCommand(commandText);
+    const ehCommand = !isSelf && ehentaiCommand(commandText, ehentai.hasList(chatKey));
+    const haiguiCommand = !isSelf && haiguiTangCommand(commandText, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
     const adminAccessCommand = !isSelf && kind === 'private' && senderId === id
       && senderId === String(cfgNow.admin?.ownerUin || '')
-      ? parseAdminChatAccessCommand(text) : null;
+      ? parseAdminChatAccessCommand(commandText) : null;
     const message = {
       mid: event.message_id,
       ts: event.time ? Math.round(Number(event.time) * 1000) : Date.now(),
@@ -1114,7 +1119,7 @@ export function createApp({
       mentionsSelf: mentionsSelf || trpgAction,
       // 引擎发的游戏私聊（身份/查验结果/行动回执）标成 game-secret：提示词构建时会过滤掉，
       // 模型在私聊里不该是上帝视角（2026-09-29 审查 P2）
-      eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
+      eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : hasFileSegment && !isSelf ? 'file-attachment' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
       recordOnly: passiveFileOnly || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
@@ -1237,7 +1242,7 @@ export function createApp({
             preserveCode: false
           })
         }, {
-          text,
+          text: commandText,
           senderId,
           senderName,
           atMe: mentionsSelf,

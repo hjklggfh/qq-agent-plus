@@ -38,4 +38,10 @@ test('file download echo is recorded without triggering JM or chat; real text an
   assert.equal(wakes, 1);
   await event(3, [{ type: 'file', data: { name: '会议录音.m4a', file: 'audio', url: 'https://example.test/audio' } }]);
   assert.equal(wakes, 2);
+  await event(4, [
+    { type: 'text', data: { text: '你好' } },
+    { type: 'file', data: { name: 'JM1483633-漫画.pdf', file: 'abc' } }
+  ]);
+  assert.equal(wakes, 3, '带文字的文件消息仍进入普通聊天');
+  assert.equal(sends, 0, '文件名中的 JM 编号不能成为下载指令');
 });
