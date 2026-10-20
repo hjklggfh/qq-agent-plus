@@ -179,6 +179,27 @@ describe('Orchestrator', () => {
     assert.ok(!JSON.stringify(turns).includes('【系统补正】'));
   });
 
+  it('executes arg_key/arg_value send_message text from the correction round', async (t) => {
+    const { cfg, runner, store, sessions } = fixture(t);
+    cfg.allow.private = ['777'];
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:777', { mid: 770, text: '好吃就行', senderId: '777' });
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ choices: [{ message: { content: calls === 1
+        ? '行 能吃就成'
+        : '<tool_call>send_message<arg_key>messages</arg_key><arg_value>["行 能吃就成"]</arg_value></tool_call>'
+      } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:777');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(calls, 2);
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['行 能吃就成']);
+    assert.equal(session.replyCorrection, 'corrected');
+    assert.equal(session.status, 'done');
+  });
+
   it('明确私聊补正仍未发送时只发固定说明，不泄露模型草稿', async (t) => {
     const { cfg, runner, store, sessions } = fixture(t);
     cfg.allow.private = ['777'];

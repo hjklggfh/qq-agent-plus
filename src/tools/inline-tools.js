@@ -5,6 +5,7 @@
 //   2. <tool_call> {"name":"send_message","arguments":{...}} </tool_call>
 //   3. <tool_call> send_message \n {"messages":"..."} </tool_call>
 //   4. 整段就是一个带 name 的 JSON（没有 <tool_call> 包裹）
+//   5. <tool_call>send_message<arg_key>messages</arg_key><arg_value>["..."]</arg_value></tool_call>
 
 /**
  * `arguments` 经常是 **JSON 字符串**（OpenAI 的 function.arguments 就是这个形态）：
@@ -46,7 +47,26 @@ function parseInlineBlock(block) {
   }
   if (name && fnMatch) return { name, args };
 
-  // 3) 首行是函数名，其余是 JSON 参数（GLM/Qwen 部分格式）
+  // 3) 部分模型使用连续的 arg_key/arg_value 标签，函数名直接写在块开头。
+  // 只接受整个块由函数名和成对参数组成，避免从普通叙述中误提取发送指令。
+  const pairRe = /<arg_key>\s*([^<]+?)\s*<\/arg_key>\s*<arg_value>([\s\S]*?)<\/arg_value>/gi;
+  const pairs = [...block.matchAll(pairRe)];
+  if (pairs.length) {
+    const prefix = block.slice(0, pairs[0].index).trim();
+    const remainder = block.replace(pairRe, '').trim();
+    if (/^[a-zA-Z_][\w.-]*$/.test(prefix) && remainder === prefix
+      && pairs.every((pair) => /^[a-zA-Z_][\w.-]*$/.test(pair[1].trim()))) {
+      const pairArgs = {};
+      for (const pair of pairs) {
+        let value = pair[2].trim();
+        try { value = JSON.parse(value); } catch { /* 非 JSON 参数保留原文 */ }
+        pairArgs[pair[1].trim()] = value;
+      }
+      return { name: prefix, args: pairArgs };
+    }
+  }
+
+  // 4) 首行是函数名，其余是 JSON 参数（GLM/Qwen 部分格式）
   const lines = block.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (!name && lines.length >= 2 && /^[a-zA-Z_][\w.-]*$/.test(lines[0])) {
     name = lines[0];
