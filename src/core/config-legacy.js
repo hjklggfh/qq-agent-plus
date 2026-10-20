@@ -366,6 +366,7 @@ export const DEFAULT_CONFIG = {
     silentIdleMs: 300000,            // lifecycle：沉默状态 5 分钟无消息即结束
     activeIdleMs: 1200000,           // lifecycle：活跃状态 20 分钟无消息即结束
     hardLifetimeMs: 1800000,         // lifecycle：绝对生命周期上限 30 分钟
+    replyGuardEnabled: true,         // 明确叫到机器人却没发出时，补正后发送固定短句
     rolloverArmedMs: 600000,         // 活跃线程撞硬上限后，一次性任意消息触发期限
     lifecycleContextCount: 100,      // 生命周期首次运行携带的历史条数
     lifecycleRolloverInputTokens: 32000, // 上次实际输入达到此值时，下一批先换代

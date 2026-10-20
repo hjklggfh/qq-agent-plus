@@ -128,6 +128,7 @@ timer 每小时唤醒一次，应用配置中的 `intervalHours` 决定是否已
 ## 失败策略
 
 检查、测试或部署失败都会在 `data/auto-update.json` 保存失败阶段、脱敏错误和目标提交，并在服务可用且协议端（OneBot）已连接后向管理员发送一次通知。
+测试阶段失败时，状态错误会优先写入失败用例名和断言原因；完整测试输出仍在更新服务的 journal 中。
 
 `disableOnFailure=true` 时：
 

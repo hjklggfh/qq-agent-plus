@@ -17,6 +17,7 @@ import {
   retryUpdateOperation
 } from '../src/update-network.js';
 import { checkForUpdate, githubApiBase } from '../src/update-notice.js';
+import { updateFailureDetail } from './update-failure-diagnostic.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -81,7 +82,8 @@ function command(binary, args, {
   cwd = appDir,
   env = process.env,
   timeout = 20 * 60 * 1000,
-  allowFailure = false
+  allowFailure = false,
+  testDiagnostics = false
 } = {}) {
   const result = spawnSync(binary, args, {
     cwd,
@@ -95,7 +97,7 @@ function command(binary, args, {
   if (allowFailure) return result;
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim().slice(-2000);
+    const detail = updateFailureDetail(result, { tests: testDiagnostics });
     const error = new Error(`${path.basename(binary)} ${args[0] || ''} failed`
       + `${detail ? `: ${detail}` : ` with exit ${result.status}`}`);
     error.status = result.status;
@@ -117,7 +119,7 @@ function networkGitArgs(args) {
 
 function commandFailure(binary, args, result) {
   if (result?.error) return result.error;
-  const detail = String(result?.stderr || result?.stdout || '').trim().slice(-2000);
+  const detail = updateFailureDetail(result);
   const error = new Error(`${path.basename(binary)} ${args[0] || ''} failed`
     + `${detail ? `: ${detail}` : ` with exit ${result?.status}`}`);
   error.status = result?.status;
@@ -954,6 +956,7 @@ async function run() {
   command(process.execPath, ['--test', ...tests], {
     cwd: workDir,
     timeout: 20 * 60 * 1000,
+    testDiagnostics: true,
     env: {
       ...runtimeEnv,
       NODE_ENV: 'test',

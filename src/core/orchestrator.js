@@ -113,7 +113,7 @@ import { vendorOfConfig, vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { budgetStatus } from './budget.js';
 import { readOwnerUin } from './notify-owner.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
-import { buildSystemPrompt, buildUserPrompt, resolveContextTier } from '../llm/prompt.js';
+import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
 import { trpgToolDefs } from '../features/trpg/tools.js';
@@ -164,6 +164,43 @@ function lastSentText(session) {
     .filter(Boolean)
     .join('；')
     .slice(0, 600);
+}
+
+function containsStandaloneName(text, name) {
+  const isNameChar = (char) => Boolean(char) && /[\w\u3400-\u9fff]/u.test(char);
+  let index = text.indexOf(name);
+  while (index !== -1) {
+    const before = text[index - 1];
+    if (before !== '@' && !isNameChar(before)) {
+      const after = text[index + name.length];
+      if (!isNameChar(after) || name.length >= 3) return true;
+    }
+    index = text.indexOf(name, index + 1);
+  }
+  return false;
+}
+
+/** 仅用于漏回复兜底：判断这批消息是否明确在叫机器人。 */
+export function isDirectedAtBot({ kind, triggerEntries = [], persona = {}, selfId = '', accountNickname = '' } = {}) {
+  if (kind === 'private') return true;
+  const names = [persona.selfNickname, persona.botName, accountNickname]
+    .map((name) => String(name || '').trim()).filter(Boolean);
+  const lowered = names.map((name) => name.toLowerCase());
+  const nameSet = new Set(lowered);
+  return (Array.isArray(triggerEntries) ? triggerEntries : []).some((message) => {
+    if (message?.mentionsSelf === true) return true;
+    if (message?.reply) {
+      if (selfId && String(message.reply.senderId || '') === String(selfId)) return true;
+      const sender = String(message.reply.sender || '').trim().toLowerCase();
+      if (sender && nameSet.has(sender)) return true;
+    }
+    const raw = String(message?.text || '');
+    if (/^\[(?:合并转发|卡片聊天记录)/.test(raw)) return false;
+    const body = raw.replace(/^\[引用[^\]]*\]/, '');
+    if (isAtMe(body, { selfNickname: persona.selfNickname, botName: persona.botName, selfId })) return true;
+    const lowerBody = body.toLowerCase();
+    return lowered.some((name) => containsStandaloneName(lowerBody, name));
+  });
 }
 
 function hasInlineImage(messages) {
@@ -1514,6 +1551,120 @@ export class Orchestrator {
     }
   }
 
+  /** 明确被叫到却没有任何可见发送时，最多再请求一次模型；仍失败只发固定说明。 */
+  async #ensureDirectedReply({
+    session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
+    manual, signal, runLimits, replyRepairAttempted, roundsExhausted
+  }) {
+    if (replyRepairAttempted && session.sent.length) {
+      session.replyCorrection = 'corrected';
+      session.finishReason ||= '该回未发，已自动纠正';
+      return;
+    }
+    if (getConfig().conversation?.replyGuardEnabled === false || proactive || privateProactive || manual) return;
+    if (!triggerEntries?.length || session.sent.length || this.store.hasEffects(session.leaseId)) return;
+    if (!isDirectedAtBot({
+      kind, triggerEntries, persona: getConfig().persona,
+      selfId: this.onebot.selfId, accountNickname: this.onebot.selfNickname
+    })) return;
+    if (this.store.hasUncertainEffects(session.leaseId)) return;
+    if (session.replyRepairSendBlocked) {
+      session.replyCorrection = 'failed';
+      return;
+    }
+    const sendTool = toolDefs.find((tool) => tool.name === 'send_message');
+    if (!sendTool) return;
+    const sendTools = [sendTool];
+    const fallbackText = roundsExhausted
+      ? '这条我还没处理完，稍后再试。'
+      : '这条我暂时处理不了，稍后再试。';
+    const correctionMessages = [...messages, {
+      role: 'user',
+      content: '你刚才没有通过 send_message 回复，QQ 用户看不到普通文本。请只调用 send_message 直接回复；如果处理不了，请简短说明原因。不要重做其他操作。'
+    }];
+    const estimated = estimateNextPromptTokens({
+      messages: correctionMessages,
+      tools: toOpenAiTools(sendTools),
+      previousPromptTokens: Number(session.callUsage?.at(-1)?.promptTokens) || 0,
+      previousEstimateChars: Number(session.inputEstimateChars) || 0,
+      previousImageCount: Number(session.inputImageCount) || 0
+    }).estimatedPromptTokens;
+    const budgetLeft = (Number(session.usage?.totalTokens) || 0) + estimated + 2048 <= runLimits.maxRunTokens;
+    if (!replyRepairAttempted && budgetLeft) {
+      try {
+        const response = await chatCompletionWithRetry({
+          messages: correctionMessages,
+          tools: toOpenAiTools(sendTools),
+          signal,
+          purpose: 'chat'
+        });
+        signal.throwIfAborted();
+        addUsage(session.usage, response.usage);
+        session.usage.calls += 1;
+        session.model = response.model || session.model;
+        if (response.channelChanged && response.originBaseUrl) {
+          session.vendor = vendorOfBaseUrl(getConfig(), response.originBaseUrl) || session.vendor;
+        }
+        const promptTokens = Number(response.usage?.prompt_tokens) || 0;
+        const cachedTokens = Number(response.usage?.prompt_tokens_details?.cached_tokens
+          ?? response.usage?.prompt_cache_hit_tokens ?? response.usage?.cached_tokens) || 0;
+        session.callUsage ||= [];
+        session.callUsage.push({
+          round: (session.rounds || 0) + 1,
+          promptTokens, cachedTokens: Math.min(promptTokens, cachedTokens),
+          cacheHitRate: promptTokens ? Math.min(1, cachedTokens / promptTokens) : 0,
+          completionTokens: Number(response.usage?.completion_tokens) || 0,
+          totalTokens: Number(response.usage?.total_tokens) || 0,
+          correction: true
+        });
+        session.replyRepairAttempted = true;
+        let calls = (Array.isArray(response.message?.tool_calls) ? response.message.tool_calls : [])
+          .filter((call) => call?.function?.name === 'send_message')
+          .map((call) => call.function.arguments);
+        if (!calls.length && typeof response.message?.content === 'string') {
+          calls = parseInlineToolCalls(response.message.content)
+            .filter((call) => call?.name === 'send_message')
+            .map((call) => JSON.stringify(call.args ?? {}));
+        }
+        for (const args of calls) {
+          const before = session.sent.length;
+          const result = await executeTool(sendTools, ctx, 'send_message', args);
+          if (this.store.hasUncertainEffects(session.leaseId)) {
+            throw new Error('Delivery uncertain; batch held for operator review');
+          }
+          if (session.sent.length === before && /禁言|限频|频率|太快|muted|rate.?limit/i.test(String(result?.content || ''))) {
+            session.replyRepairSendBlocked = true;
+          }
+        }
+      } catch (error) {
+        if (signal.aborted || this.store.hasUncertainEffects(session.leaseId)) throw error;
+        log.warn(`[reply-guard] ${session.chatKey} 纠正请求失败：${error?.message ?? error}`);
+      }
+    }
+    if (session.sent.length || this.store.hasEffects(session.leaseId)) {
+      session.replyCorrection = 'corrected';
+      session.finishReason ||= '该回未发，已自动纠正';
+      return;
+    }
+    if (session.replyRepairSendBlocked) {
+      session.replyCorrection = 'failed';
+      return;
+    }
+    // 不转发内部草稿；固定短句仍走同一个发送器和 outbox 记账。
+    try {
+      const result = await executeTool(sendTools, ctx, 'send_message', JSON.stringify({ messages: [fallbackText] }));
+      if (this.store.hasUncertainEffects(session.leaseId)) {
+        throw new Error('Delivery uncertain; batch held for operator review');
+      }
+      if (!session.sent.length) log.warn(`[reply-guard] ${session.chatKey} 固定兜底未发出：${String(result?.content || '').slice(0, 120)}`);
+    } catch (error) {
+      if (signal.aborted || this.store.hasUncertainEffects(session.leaseId)) throw error;
+      log.warn(`[reply-guard] ${session.chatKey} 固定兜底失败：${error?.message ?? error}`);
+    }
+    session.replyCorrection = session.sent.length ? 'fallback' : 'failed';
+    if (session.sent.length) session.finishReason ||= '该回未发，已发送兜底说明';
+  }
+
   async #runAgent(session, {
     kind,
     chatId,
@@ -1843,6 +1994,7 @@ export class Orchestrator {
     let finish = false;
     let completed = false;
     let replyRepairAttempted = false;
+    let replyRepairPending = false;
     let replyRepairTranscriptStart = -1;
     let webSearchCount = 0;
     session.activity = '';
@@ -1855,15 +2007,21 @@ export class Orchestrator {
     for (let round = 0; round < maxRounds + Number(replyRepairAttempted) && !finish; round++) {
       signal.throwIfAborted();
       if (this.aborted || !canRun(chatKey)) throw new Error('Run cancelled');
+      const correctionRound = replyRepairPending;
+      const roundToolDefs = correctionRound
+        ? toolDefs.filter((definition) => definition.name === 'send_message')
+        : toolDefs;
+      const roundTools = correctionRound ? toOpenAiTools(roundToolDefs) : openAiTools;
+      replyRepairPending = false;
       const maxRunTokens = runLimits.maxRunTokens;
       const requestPayloadChars = JSON.stringify({
         messages,
-        tools: openAiTools
+        tools: roundTools
       }).length;
       const previousCall = session.callUsage?.at(-1);
       const estimate = estimateNextPromptTokens({
         messages,
-        tools: openAiTools,
+        tools: roundTools,
         previousPromptTokens: Number(previousCall?.promptTokens) || 0,
         previousEstimateChars: Number(session.inputEstimateChars) || 0,
         previousImageCount: Number(session.inputImageCount) || 0
@@ -1899,7 +2057,7 @@ export class Orchestrator {
       // 网络抖动/5xx/429 会自动重试（同一轮请求，messages 不变，幂等不重复发言）
       const response = await chatCompletionWithRetry({
         messages,
-        tools: openAiTools,
+        tools: roundTools,
         signal,
         cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
         purpose: 'chat'
@@ -2006,12 +2164,14 @@ export class Orchestrator {
         // 其他普通群聊仍可直接静默结束。
         const needsReplyRepair = !replyRepairAttempted
           && !proactive && !privateProactive && !manual
+          && cfg.conversation?.replyGuardEnabled !== false
           && session.sent.length === 0
           && ['private', 'mention', 'reply', 'all'].includes(session.triggerKind)
           && rawContent.trim().length > 0
           && toolDefs.some((definition) => definition.name === 'send_message');
         if (needsReplyRepair) {
           replyRepairAttempted = true;
+          replyRepairPending = true;
           replyRepairTranscriptStart = messages.length - 1;
           session.replyRepairAttempted = true;
           messages.push({
@@ -2044,10 +2204,15 @@ export class Orchestrator {
         if (!canRun(chatKey)) throw new Error('Run cancelled');
         const name = call?.function?.name ?? '';
         const argsRaw = call?.function?.arguments ?? '{}';
-        if (name === 'web_search' || name === 'web_fetch') webSearchCount += 1;
+        if (!correctionRound && (name === 'web_search' || name === 'web_fetch')) webSearchCount += 1;
         session.webSearchCount = webSearchCount;
         markActivity(`正在调用 ${name}…`);
-        const result = await executeTool(toolDefs, ctx, name, argsRaw);
+        const beforeSend = session.sent.length;
+        const result = await executeTool(roundToolDefs, ctx, name, argsRaw);
+        if (correctionRound && name === 'send_message' && session.sent.length === beforeSend
+          && /禁言|限频|频率|太快|muted|rate.?limit/i.test(String(result?.content || ''))) {
+          session.replyRepairSendBlocked = true;
+        }
         if (
           result.isError
           && result.incidentCaptured !== true
@@ -2108,10 +2273,19 @@ export class Orchestrator {
       messages.push(...toolResults.map(({ role, tool_call_id, name, content }) => ({ role, tool_call_id, content, name })));
       // 图片消息跟随在全部 tool 结果之后（OpenAI 校验要求每个 tool_call 都有对应 tool 消息）
       messages.push(...imageUserMessages);
+      // 补正轮只准发送，并且到此结束；不再恢复完整工具表开新轮，避免重复执行外部操作。
+      if (correctionRound) {
+        completed = true;
+        break;
+      }
       // 给 UI 的简化消息流（跳过纯 tool 结果的重复展示）
     }
 
     signal.throwIfAborted();
+    await this.#ensureDirectedReply({
+      session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
+      manual, signal, runLimits, replyRepairAttempted, roundsExhausted: !finish && !completed
+    });
     // 轮次用尽是"干不完活"的护栏，不是"需要人工核对"的故障：与 token 预算同口径，
     // 当作本轮正常收尾（已经说的话照常发出、消息正常 ack），并在会话里标注原因。
     // 不能标成可重试去重跑整轮：一条跑满 maxRounds 的会话重跑同样会跑满，成本放大且无解。

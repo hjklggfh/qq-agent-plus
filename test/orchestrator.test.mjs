@@ -8,6 +8,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-orchestrator-'));
 process.env.QQ_AGENT_DATA_DIR = root;
 const {
   Orchestrator,
+  isDirectedAtBot,
   estimateNextPromptTokens,
   followUpPlan,
   proactiveProbability,
@@ -167,14 +168,88 @@ describe('Orchestrator', () => {
     };
     await runner.wake('private:777');
     const session = sessions.get(sessions.listSummaries(1)[0].id);
-    assert.equal(requests.length, 3);
+    assert.equal(requests.length, 2);
     assert.match(requests[1].messages.at(-1).content, /【系统补正】/);
+    assert.deepEqual(requests[1].tools.map((tool) => tool.function.name), ['send_message']);
     assert.equal(session.replyRepairAttempted, true);
     assert.equal(session.status, 'done');
     assert.deepEqual(session.sent.map((entry) => entry.text), ['？算得快叫猜得快']);
     const thread = store.getConversationThread('private:777');
     const turns = store.getThreadTurns(thread.threadId);
     assert.ok(!JSON.stringify(turns).includes('【系统补正】'));
+  });
+
+  it('明确私聊补正仍未发送时只发固定说明，不泄露模型草稿', async (t) => {
+    const { cfg, runner, store, sessions } = fixture(t);
+    cfg.allow.private = ['777'];
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:777', { mid: 78, text: '在吗', senderId: '777' });
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ choices: [{ message: { content: calls === 1 ? '内部草稿不能发送' : '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:777');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(calls, 2);
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['这条我暂时处理不了，稍后再试。']);
+    assert.equal(session.replyCorrection, 'fallback');
+  });
+
+  it('点名判定不把转述或更长的 @ 名字误认成叫机器人', () => {
+    const options = { kind: 'group', persona: { botName: '小鲸' }, selfId: '888' };
+    assert.equal(isDirectedAtBot({ ...options, triggerEntries: [{ text: '@小鲸鱼 在吗' }] }), false);
+    assert.equal(isDirectedAtBot({ ...options, triggerEntries: [{ text: '[合并转发] 小鲸 在吗' }] }), false);
+    assert.equal(isDirectedAtBot({ ...options, triggerEntries: [{ text: '小鲸，在吗' }] }), true);
+    assert.equal(isDirectedAtBot({ ...options, triggerEntries: [{ text: '[CQ:at,qq=888] 在吗' }] }), true);
+  });
+
+  it('补正发送被禁言拒绝后不重复尝试固定兜底', async (t) => {
+    let sends = 0;
+    const sender = { sendTextBatch: async () => {
+      sends += 1;
+      return { sent: [], failed: [{ error: '群内禁言' }] };
+    } };
+    const { cfg, runner, store, sessions } = fixture(t, { sender });
+    cfg.allow.private = ['777'];
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:777', { mid: 79, text: '在吗', senderId: '777' });
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return Response.json({ choices: [{ message: calls === 1
+        ? { content: '该回一句' }
+        : calls === 2 ? { tool_calls: [{ id: 'send', type: 'function', function: {
+          name: 'send_message', arguments: JSON.stringify({ messages: '在的' })
+        } }] } : { content: '' } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:777');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(sends, 1);
+    assert.equal(session.replyCorrection, 'failed');
+    assert.deepEqual(session.sent, []);
+  });
+
+  it('补正轮即使幻觉出其他工具也不执行，并在该轮终止', async (t) => {
+    const { cfg, runner, store, sessions } = fixture(t);
+    cfg.allow.private = ['777'];
+    setRuntimeConfig(cfg);
+    store.appendIncoming('private:777', { mid: 80, text: '在吗', senderId: '777' });
+    const requests = [];
+    globalThis.fetch = async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return Response.json({ choices: [{ message: requests.length === 1
+        ? { content: '草稿' }
+        : { tool_calls: [{ id: 'rogue', type: 'function', function: {
+          name: 'web_search', arguments: JSON.stringify({ query: '不该执行' })
+        } }] } }], usage: { total_tokens: 10 } });
+    };
+    await runner.wake('private:777');
+    const session = sessions.get(sessions.listSummaries(1)[0].id);
+    assert.equal(requests.length, 2);
+    assert.deepEqual(requests[1].tools.map((tool) => tool.function.name), ['send_message']);
+    assert.equal(session.webSearchCount, 0);
+    assert.deepEqual(session.sent.map((entry) => entry.text), ['这条我暂时处理不了，稍后再试。']);
   });
 
   it('repairs an unsent group reply after image lookup in all-response mode', async (t) => {
@@ -1043,34 +1118,35 @@ describe('Orchestrator', () => {
       return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
     };
     const hasAudioTool = (body) => body.tools.some((tool) => tool.function.name === 'get_message_audio');
+    const primary = () => [...bodies].reverse().find((body) => body.tools.length > 1);
     // 1) 没配 key：不注入（调用必失败，也防意外计费）
     append(1, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasAudioTool(bodies.at(-1)), false, '没 key 不该注入 ASR 工具');
+    assert.equal(hasAudioTool(primary()), false, '没 key 不该注入 ASR 工具');
     // 2) 有 key 且开关默认打开：注入，提示词同步换成"可以转文字"的口径
     cfg.asr.provider = 'volc';   // 默认是 API Key 的托管服务（openai）；这条用例测的是火山
     cfg.asr.apiKey = 'test-asr-key';
     setRuntimeConfig(cfg);
     append(2, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasAudioTool(bodies.at(-1)), true, '配了 key 应注入');
-    assert.match(bodies.at(-1).messages[0].content, /get_message_audio/);
+    assert.equal(hasAudioTool(primary()), true, '配了 key 应注入');
+    assert.match(primary().messages[0].content, /get_message_audio/);
     // 视频要两样都说清：画面（get_message_images 帧条）+ 声音（转写），否则模型会以为只能听
-    assert.match(bodies.at(-1).messages[0].content, /别人发视频时两样都能拿到/);
+    assert.match(primary().messages[0].content, /别人发视频时两样都能拿到/);
     // 3) 关掉联网搜索但 ASR 开关仍开着：语音转写不该跟着消失（审查意见）
     cfg.webSearch.enabled = false;
     setRuntimeConfig(cfg);
     append(3, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasAudioTool(bodies.at(-1)), true, '关搜索不该顺带关掉语音转写');
+    assert.equal(hasAudioTool(primary()), true, '关搜索不该顺带关掉语音转写');
     // 4) ASR 自己的开关关掉：工具与提示词引导一起消失
     cfg.asr.enabled = false;
     setRuntimeConfig(cfg);
     append(4, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasAudioTool(bodies.at(-1)), false);
-    assert.doesNotMatch(bodies.at(-1).messages[0].content, /get_message_audio/);
-    const offPrompt = bodies.at(-1).messages[0].content;
+    assert.equal(hasAudioTool(primary()), false);
+    assert.doesNotMatch(primary().messages[0].content, /get_message_audio/);
+    const offPrompt = primary().messages[0].content;
     assert.match(offPrompt, /听不了语音/);
     // 但视频的"画面"不归 ASR 管：关掉 ASR 也该能看帧条（2026-09-26 用户反馈"发视频只会说听声音"）
     assert.match(offPrompt, /get_message_images/);
@@ -1085,35 +1161,36 @@ describe('Orchestrator', () => {
       return Response.json({ choices: [{ message: { content: 'done' } }], usage: { total_tokens: 10 } });
     };
     const hasImageTool = (body) => body.tools.some((tool) => tool.function.name === 'generate_image');
+    const primary = () => [...bodies].reverse().find((body) => body.tools.length > 1);
     // 1) 默认关：不注入，提示词里也不该有画图引导
     append(1, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasImageTool(bodies.at(-1)), false, '默认关不该注入画图工具');
-    assert.doesNotMatch(bodies.at(-1).messages[0].content, /generate_image/);
+    assert.equal(hasImageTool(primary()), false, '默认关不该注入画图工具');
+    assert.doesNotMatch(primary().messages[0].content, /generate_image/);
     // 2) 开了但没填模型：仍不注入（调用必然失败，还会白花一次请求）
     cfg.imageGen = { ...(cfg.imageGen || {}), enabled: true, model: '' };
     setRuntimeConfig(cfg);
     append(2, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasImageTool(bodies.at(-1)), false, '没填模型不该注入');
+    assert.equal(hasImageTool(primary()), false, '没填模型不该注入');
     // 提示词的口径必须与工具过滤一致：只看 enabled 的话，这里会一边摘掉工具、
     // 一边还在教模型去调 generate_image（2026-09-30 审查：探针复现提示词含该工具）
-    assert.doesNotMatch(bodies.at(-1).messages[0].content, /generate_image/, '没填模型时提示词也不该提画图');
+    assert.doesNotMatch(primary().messages[0].content, /generate_image/, '没填模型时提示词也不该提画图');
     // 3) 开 + 有模型（地址留空 = 与模型同域）：注入，提示词同步给画图引导
     cfg.imageGen = { ...cfg.imageGen, enabled: true, model: 'gpt-image-1', baseUrl: '' };
     setRuntimeConfig(cfg);
     append(3, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasImageTool(bodies.at(-1)), true, '配齐了应注入');
-    assert.match(bodies.at(-1).messages[0].content, /generate_image/);
-    assert.match(bodies.at(-1).messages[0].content, /按张计费/);
+    assert.equal(hasImageTool(primary()), true, '配齐了应注入');
+    assert.match(primary().messages[0].content, /generate_image/);
+    assert.match(primary().messages[0].content, /按张计费/);
     // 4) 再关掉：工具与引导一起消失
     cfg.imageGen = { ...cfg.imageGen, enabled: false };
     setRuntimeConfig(cfg);
     append(4, '在吗', '42');
     await runner.wake('group:1');
-    assert.equal(hasImageTool(bodies.at(-1)), false);
-    assert.doesNotMatch(bodies.at(-1).messages[0].content, /generate_image/);
+    assert.equal(hasImageTool(primary()), false);
+    assert.doesNotMatch(primary().messages[0].content, /generate_image/);
   });
 
   it('keeps slang injection retired even with legacy config and slang assets', async (t) => {
@@ -1258,10 +1335,11 @@ describe('Orchestrator', () => {
     });
     await runner.wake('group:1');
 
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     const latest = runner.sessions.get(runner.sessions.listSummaries(1)[0].id);
     assert.equal(latest.contextTier, 5);
     assert.equal(latest.contextReason, '续接：引用机器人');
+    assert.deepEqual(latest.sent.map((entry) => entry.text), ['这条我暂时处理不了，稍后再试。']);
   });
 
   it('supports per-group lifecycle mode and reuses the append-only DeepSeek transcript', async (t) => {
