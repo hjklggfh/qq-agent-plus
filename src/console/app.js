@@ -1027,6 +1027,14 @@ export function createApp({
     // 放在最前面：连合并转发展开这种网络请求都不值得为它做。
     if (kind === 'group' && senderId && (cfgNow.blocklist?.[id] || []).map(String).includes(senderId)) return;
     const media = segments ? extractMediaFromSegments(segments) : [];
+    // QQ 下载文件时可能把文件卡片重新上报成对方的私聊消息。
+    // 文件名只是附件元数据，不能当作用户输入的 JM/PID 等指令；无文字的普通文件仅存档。
+    // 音频/视频文件仍交给媒体处理流程。
+    const passiveFileOnly = !isSelf && Array.isArray(segments)
+      && segments.some((segment) => segment?.type === 'file')
+      && segments.every((segment) => segment?.type === 'file'
+        || (segment?.type === 'text' && !String(segment?.data?.text ?? '').trim()))
+      && media.length === 0;
     const mentionsSelf = Boolean(segments?.some((segment) =>
       segment?.type === 'at'
       && String(segment?.data?.qq ?? '') === String(onebot.selfId || '')));
@@ -1109,7 +1117,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1119,6 +1127,7 @@ export function createApp({
         log('[sticker] 自动收藏失败:', error?.message ?? error));
     }
     emit('chat-update', chatKey);
+    if (passiveFileOnly) return;
     // 管理员私聊指令先于跑团/下载器/模型消费，避免其他玩法接管时误解配置操作。
     if (adminAccessCommand) {
       store.markRead(chatKey, [stored.id]);
