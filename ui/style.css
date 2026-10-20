@@ -1932,6 +1932,52 @@ html.boot-show .loading-overlay { opacity: 1; }
   overflow-y: auto;
   padding: 22px 26px 40px;
 }
+
+/* 首页总览：沿用控制台配色，不依赖图表库。 */
+.overview-pane { flex: 1; min-width: 0; overflow-y: auto; padding: 24px 28px 42px; }
+.overview-wrap { max-width: 1540px; margin: 0 auto; display: grid; gap: 18px; }
+.overview-heading, .overview-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.overview-heading h1 { margin: 0 0 3px; font-size: 22px; }
+.overview-heading p, .overview-panel-head p { margin: 0; color: var(--muted); font-size: 12px; }
+.overview-notice { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: var(--muted); }
+.overview-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.overview-card, .overview-panel { min-width: 0; background: var(--bg-2); border: 1px solid var(--border); border-radius: 13px; }
+.overview-card { padding: 16px 18px; display: grid; gap: 7px; }
+.overview-card > span, .overview-card small { color: var(--muted); }
+.overview-card > span { font-size: 12px; }
+.overview-card strong { font-size: 23px; line-height: 1.2; overflow-wrap: anywhere; }
+.overview-card small { font-size: 11px; line-height: 1.4; }
+.overview-card.good { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
+.overview-card.warn { border-color: color-mix(in srgb, var(--orange) 35%, var(--border)); }
+.overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.overview-panel { padding: 18px 20px; }
+.overview-panel-head { margin-bottom: 18px; }
+.overview-panel-head h2 { margin: 0 0 3px; font-size: 15px; }
+.overview-link { background: transparent; border: 0; color: var(--accent); cursor: pointer; white-space: nowrap; font: inherit; font-size: 12px; padding: 2px; }
+.overview-link:hover { text-decoration: underline; }
+.overview-facts { display: grid; gap: 12px; margin: 0; }
+.overview-facts > div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 12px; font-size: 13px; }
+.overview-facts dt { color: var(--muted); }
+.overview-facts dd { margin: 0; overflow-wrap: anywhere; }
+.overview-incidents { display: grid; }
+.overview-incident { display: grid; grid-template-columns: 90px auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); font-size: 12px; }
+.overview-incident:first-child { border-top: 0; }
+.overview-incident time, .overview-incident small { color: var(--muted); white-space: nowrap; }
+.overview-incident-message { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.overview-empty { color: var(--muted); padding: 18px 0; font-size: 13px; }
+.overview-chart { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; height: 180px; }
+.overview-chart-day { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); }
+.overview-chart-day strong { height: 16px; font-weight: 600; }
+.overview-chart-track { flex: 1; width: min(52px, 70%); display: flex; align-items: flex-end; }
+.overview-chart-track i { display: block; width: 100%; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--accent); }
+.overview-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px; }
+.overview-resource { min-width: 0; display: grid; gap: 9px; font-size: 12px; }
+.overview-resource > div:first-child { display: flex; justify-content: space-between; gap: 8px; }
+.overview-resource > div:first-child span, .overview-resource small { color: var(--muted); }
+.overview-resource-bar { height: 7px; background: var(--bg-3); border-radius: 99px; overflow: hidden; }
+.overview-resource-bar i { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
+@media (max-width: 1050px) { .overview-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } .overview-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .overview-pane { padding: 16px; } .overview-cards, .overview-resources { grid-template-columns: 1fr; } .overview-incident { grid-template-columns: 70px auto minmax(0, 1fr); } .overview-incident small { display: none; } }
 .asset-head {
   display: flex;
   align-items: center;

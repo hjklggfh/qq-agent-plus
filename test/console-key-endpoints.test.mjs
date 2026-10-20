@@ -118,6 +118,19 @@ test('GET /api/status 带版本号（控制台版本徽标的数据来源）', a
   assert.match(String(res.body?.version || ''), /^\d+\.\d+\.\d+/);
 });
 
+test('GET /api/overview/host 只向已授权控制台返回资源摘要', async (t) => {
+  const { port, get: fetchPath } = await boot(t);
+  const res = await fetchPath(port, '/api/overview/host', { host: `127.0.0.1:${port}` });
+  assert.equal(res.status, 200, res.text);
+  assert.ok(res.body?.memory?.total > 0);
+  assert.ok(res.body?.cpuCount >= 1);
+  assert.equal(typeof res.body?.processUptimeSeconds, 'number');
+  assert.equal(/secret-abcdef|secret-ghijkl/.test(res.text), false);
+
+  const denied = await fetchPath(port, '/api/overview/host', { host: 'evil.example.com' });
+  assert.equal(denied.status, 401, denied.text);
+});
+
 test('/api/config 仍然脱敏 OneBot 令牌（控制台不能从配置里白读明文）', async (t) => {
   const { port, get: fetchPath } = await boot(t);
   const res = await fetchPath(port, '/api/config', { host: `127.0.0.1:${port}` });

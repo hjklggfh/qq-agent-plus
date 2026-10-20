@@ -20,6 +20,7 @@ import { lifecycleStateOf } from './core/lifecycle-labels.js';
 import { QARegistry } from './core/registry.js';
 import { state } from './core/state.js';
 import { loadExperimentalFeatureStatuses } from './pages/features.js';
+import { loadOverview } from './pages/overview.js';
 import { loadDailyMomentsStatus, loadQzoneInteractionStatus } from './pages/moments.js';
 import { lifecycleAggregate, loadTimeControlStatus } from './pages/status.js';
 QARegistry.override('refreshStatus', async function refreshStatus() {
@@ -90,6 +91,7 @@ QARegistry.override('refreshStatus', async function refreshStatus() {
     }
     if (state.tab === 'identity') loadIdentityFeaturePage();
     if (state.tab === 'incidents') loadIncidentFeaturePage();
+    if (state.tab === 'overview') loadOverview({ status: s });
     renderBanner();
   } catch (e) { /* 忽略瞬时错误 */ }
 });

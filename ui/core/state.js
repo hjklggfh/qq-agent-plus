@@ -9,7 +9,8 @@ import { $, $$ } from './dom.js';
 import { lifecycleRemainingText } from './lifecycle-labels.js';
 import { renderMemoryList } from '../pages/memory.js';
 const state = {
-  tab: 'sessions',
+  tab: 'overview',
+  overviewLoadSeq: 0,
   trpgData: null,
   integrationStatus: null,
   autoUpdateStatus: null,

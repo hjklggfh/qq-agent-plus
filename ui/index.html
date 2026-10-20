@@ -52,8 +52,9 @@
       </div>
 
       <nav id="tabs" data-page-node-id="E9BCxQoSdlNgyXwJBELj6z">
+        <button class="tab active" data-icon="◉" data-tab="overview">总览</button>
         <div class="nav-group-label">对话</div>
-        <button class="tab active" data-icon="💬" data-tab="sessions" data-page-node-id="QA2pcdHYdARJK2APBNKZmC">会话</button>
+        <button class="tab" data-icon="💬" data-tab="sessions" data-page-node-id="QA2pcdHYdARJK2APBNKZmC">会话</button>
         <button class="tab" data-icon="🗂" data-tab="chats" data-page-node-id="AdXD0D2NiWH5UBfpPQqzQ2">存档</button>
         <button class="tab" data-icon="🎛" data-tab="control" data-page-node-id="qcontrolnav">控制</button>
         <div class="nav-group-label">记忆</div>
@@ -97,13 +98,16 @@
       <div id="banner" class="banner hidden" data-page-node-id="XwcKf16gobwX1Rec9tqlEn"></div>
 
   <main id="layout" data-page-node-id="hvuDZ0DOoYC7fFheJnpiGZ">
+    <section id="view-overview" class="view active">
+      <div id="overview-page" class="overview-pane"></div>
+    </section>
     <!-- 统一控制入口 -->
     <section id="view-control" class="view" data-page-node-id="qcontrolview">
       <div id="control-page" class="control-pane" data-page-node-id="qcontrolpage"></div>
     </section>
 
     <!-- 会话视图 -->
-    <section id="view-sessions" class="view active" data-page-node-id="EfuI6TFTs4KY9veb0pkva1">
+    <section id="view-sessions" class="view" data-page-node-id="EfuI6TFTs4KY9veb0pkva1">
       <aside id="session-list" class="list-pane" data-page-node-id="NNTSUz4evxhvLGzuY26viB">
         <div class="list-head muted" data-page-node-id="aSFyF0LvBNUq4BH2sydWl0"><span id="session-count"></span></div>
         <div id="session-items" data-page-node-id="q9NIG3lrlhe4Pg8LqGJIuV"></div>
@@ -294,6 +298,7 @@
   <script type="module" src="/core/lifecycle-labels.js"></script>
   <!-- 页面域（app.js 在**加载期**就 QARegistry.register 引用这些渲染入口，故必须排在 app.js 之前） -->
   <script type="module" src="/pages/status.js"></script>
+  <script type="module" src="/pages/overview.js"></script>
   <script type="module" src="/pages/usage.js"></script>
   <script type="module" src="/pages/sessions.js"></script>
   <script type="module" src="/pages/chat.js"></script>

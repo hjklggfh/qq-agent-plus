@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
+import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRouter } from './router.js';
@@ -103,7 +104,8 @@ const UI_DIR = path.resolve(__dirname, '..', '..', 'ui');
 function uiBuildStamp() {
   return [
     'index.html', 'app.js', 'style.css', 'stable-features.js', 'status-refresh.js',
-    'auto-update-network.js', 'pages/plugins.js', 'pages/settings.js', 'pages/settings-save.js'
+    'auto-update-network.js', 'pages/plugins.js', 'pages/settings.js', 'pages/settings-save.js',
+    'pages/overview.js'
   ]
     .map((name) => {
       try {
@@ -3311,6 +3313,25 @@ export function createApp({
       } : {}),
       paused: orchestrator.paused,
       pauseReason: orchestrator.pauseReason ?? null
+    });
+  });
+  router.add('GET', '/api/overview/host', async (req, res) => {
+    // 仅用于已鉴权的总览页；磁盘口径是数据目录所在文件系统，不扫描用户文件。
+    let disk = null;
+    try {
+      const info = fs.statfsSync(DATA_DIR, { bigint: true });
+      const total = Number(info.blocks * info.bsize);
+      const free = Number(info.bavail * info.bsize);
+      if (total > 0) disk = { total, used: Math.max(0, total - free) };
+    } catch { /* 数据目录暂不可读取时，其他指标仍可展示。 */ }
+    return json(res, 200, {
+      hostname: os.hostname(),
+      platform: os.platform(),
+      cpuCount: os.cpus().length,
+      loadAverage: os.loadavg(),
+      memory: { total: os.totalmem(), used: os.totalmem() - os.freemem() },
+      disk,
+      processUptimeSeconds: Math.round(process.uptime())
     });
   });
   router.add('GET', '/api/usage/stats', async (req, res, params, url) => {

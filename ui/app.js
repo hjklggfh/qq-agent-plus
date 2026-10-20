@@ -35,6 +35,7 @@ import {
 import { loadMemoryView, renderMemoryList } from './pages/memory.js';
 import { renderExperimentalSettingsSectionImpl } from './pages/moments.js';
 import { loadPluginPage } from './pages/plugins.js';
+import { loadOverview } from './pages/overview.js';
 import { loadTrpgPage } from './pages/trpg.js';
 import { loadSessionDetail, loadSessions } from './pages/sessions.js';
 import {
@@ -148,6 +149,7 @@ function switchTab(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
   state.tab = name;
+  if (name === 'overview') loadOverview();
   if (name === 'control') loadControlHub();
   if (name === 'sessions') loadSessions();
   if (name === 'chats') loadChats();
@@ -1151,6 +1153,7 @@ async function init() {
   refreshStatus();
   setInterval(refreshStatus, refreshIntervalMs(15000));
   connectSSE();
+  loadOverview();
   // 首次 startListPoller() 在配置加载前执行，会落到 4000ms 兜底值，导致会话列表每 4 秒重建一次（界面闪烁）；
   // 配置就绪后重新校准一次轮询间隔
   startListPoller();
