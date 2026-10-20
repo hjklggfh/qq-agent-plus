@@ -20,10 +20,15 @@ import {
 } from '../core/lifecycle-labels.js';
 import { startLifecycleTicker, startWaitTicker, state } from '../core/state.js';
 function sessionStatusText(s) {
-  const base = STATUS_LABEL[s.status] || s.status;
-  return s.conversationMode === 'lifecycle' && ['done', 'noreply'].includes(s.status)
+  const visualStatus = sessionVisualStatus(s);
+  const base = visualStatus === 'fallback' ? '异常回' : STATUS_LABEL[visualStatus] || visualStatus;
+  return s.conversationMode === 'lifecycle' && visualStatus !== 'fallback' && ['done', 'noreply'].includes(s.status)
     ? `本轮${base}`
     : base;
+}
+
+function sessionVisualStatus(s) {
+  return s.status === 'done' && s.replyCorrection === 'fallback' ? 'fallback' : s.status;
 }
 
 function conversationStatusText(s) {
@@ -226,7 +231,7 @@ function renderSessionList() {
         </div>
         <div class="session-trigger"><span class="trigger-method">${esc(triggerLabel)}</span><span>${esc(s.trigger || '')}${runLabel ? ` · ${runLabel}` : ''}</span></div>
         <div class="session-meta">
-          <span class="status-badge status-${s.status}">${esc(sessionStatusText(s))}</span>
+          <span class="status-badge status-${sessionVisualStatus(s)}" title="${sessionVisualStatus(s) === 'fallback' ? '模型未能正常回复，已发送临时说明' : ''}">${esc(sessionStatusText(s))}</span>
           <span class="mode-chip mode-${mode}">${esc(conversationStatusText(s))}</span>
           ${s.persona ? `<span class="persona-chip" title="这次运行用的角色卡">人设 ${esc(s.persona)}</span>` : ''}
           ${lifecycleRemain}
@@ -526,7 +531,7 @@ function renderSessionDetail(s, {
   if (!detail) return;
   // 内容没变（轮询/SSE 重复推送）→ 完全不动 DOM，保住滚动位置和展开状态
   // json 模式切换也要触发重渲染
-  const fp = `${s.id}|${s.status}|${s.conversationMode || 'legacy'}|${s.threadState || ''}|${s.lifecycle?.state || ''}|${s.lifecycle?.deadline || 0}|${s.triggerKind || ''}|${s.rounds || 0}|${s.inputRound || 0}|${s.inputPayloadChars || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${s.sessionMetrics?.estimatedCost || 0}|${state.sessionInspectorTab}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
+  const fp = `${s.id}|${s.status}|${s.replyCorrection || ''}|${s.conversationMode || 'legacy'}|${s.threadState || ''}|${s.lifecycle?.state || ''}|${s.lifecycle?.deadline || 0}|${s.triggerKind || ''}|${s.rounds || 0}|${s.inputRound || 0}|${s.inputPayloadChars || 0}|${(s.messages || []).length}|${(s.sent || []).length}|${s.error ? 1 : 0}|${s.activity || ''}|${s.sessionMetrics?.estimatedCost || 0}|${state.sessionInspectorTab}|${state.sessionJsonMode === s.id ? 'json' : 'ui'}`;
   if (state.lastDetailFp === fp) return;
   const firstRender = state.lastDetailFp === null;
   state.lastDetailFp = fp;
@@ -538,7 +543,7 @@ function renderSessionDetail(s, {
     ?? detail.querySelector('.thread-run-list')?.scrollLeft
     ?? 0;
   const chatName = formatChatTitle(s.chatKey, chatNameOf(s.chatKey));
-  const statusBadge = `<span class="status-badge status-${s.status}">${esc(sessionStatusText(s))}</span>`;
+  const statusBadge = `<span class="status-badge status-${sessionVisualStatus(s)}" title="${sessionVisualStatus(s) === 'fallback' ? '模型未能正常回复，已发送临时说明' : ''}">${esc(sessionStatusText(s))}</span>`;
   const metrics = sessionMetricsOf(s);
 
   const html = [];

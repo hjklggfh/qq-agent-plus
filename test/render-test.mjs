@@ -2525,6 +2525,8 @@ try {
     && triggerLabel({ triggerKind: 'keyword' }) === '关键词触发'
     && triggerLabel({ triggerKind: 'probability' }) === '传统概率触发'
     && statusText({ status: 'done', conversationMode: 'legacy' }) === '已发言'
+    && statusText({ status: 'done', replyCorrection: 'fallback', conversationMode: 'legacy' }) === '异常回'
+    && statusText({ status: 'done', replyCorrection: 'fallback', conversationMode: 'lifecycle' }) === '异常回'
     && modeBand(lifecycleSession).includes('session-mode-band mode-lifecycle')
     && modeBand(lifecycleSession).includes('线程 12345678')
   ) {

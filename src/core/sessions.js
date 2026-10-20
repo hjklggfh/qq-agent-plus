@@ -104,6 +104,7 @@ export class SessionRegistry {
       startedAt: s.startedAt,
       endedAt: s.endedAt ?? null,
       status: s.status,                      // waiting | running | done | noreply | error | aborted
+      replyCorrection: s.replyCorrection ?? null,
       waitUntil: s.waitUntil ?? null,
       activity: s.activity ?? '',
       webSearchCount: s.webSearchCount ?? 0,

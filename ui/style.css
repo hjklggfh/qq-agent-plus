@@ -9,7 +9,7 @@
      --border                    常规边框
      --text / --muted / --faint  正文 / 次要 / 极弱文字
      --accent                    强调色（品牌蓝）
-     --green / --red / --orange  状态色
+     --green / --red / --orange / --violet  状态色
      --hover / --active          交互态叠加层（中性，随主题变化）
      --overlay                   模态遮罩
      --shadow*                   阴影（亮色更明显，暗色更弱）
@@ -33,6 +33,7 @@
   --green: #2fd07a;
   --red: #ff6b6b;
   --orange: #f7b955;
+  --violet: #c49aff;
 
   /* 交互态：暗色下用白色提亮 */
   --hover: rgba(255, 255, 255, .05);
@@ -61,6 +62,7 @@
   --green: #1f9d55;
   --red: #d94a4a;
   --orange: #c97a12;
+  --violet: #7843b8;
 
   /* 交互态：亮色下用黑色压暗 */
   --hover: rgba(0, 0, 0, .045);
@@ -2884,6 +2886,9 @@ input::placeholder, textarea::placeholder { color: var(--faint); }
 }
 .status-noreply {
   background: rgba(247, 185, 85, .09); border-color: rgba(247, 185, 85, .28); color: color-mix(in srgb, var(--orange) 82%, var(--text));
+}
+.status-fallback {
+  background: rgba(181, 125, 255, .12); border-color: rgba(181, 125, 255, .36); color: var(--violet);
 }
 
 /* ── 气泡 ── */

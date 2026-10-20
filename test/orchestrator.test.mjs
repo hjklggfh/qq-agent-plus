@@ -215,6 +215,7 @@ describe('Orchestrator', () => {
     assert.equal(calls, 2);
     assert.deepEqual(session.sent.map((entry) => entry.text), ['这条我暂时处理不了，稍后再试。']);
     assert.equal(session.replyCorrection, 'fallback');
+    assert.equal(sessions.listSummaries(1)[0].replyCorrection, 'fallback');
   });
 
   it('点名判定不把转述或更长的 @ 名字误认成叫机器人', () => {
