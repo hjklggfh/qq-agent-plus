@@ -28,7 +28,10 @@ test('file download echo is recorded without triggering JM or chat; real text an
     sender: { user_id: 123456, nickname: '用户' }, message
   });
 
-  await event(1, [{ type: 'file', data: { name: 'JM1483633-漫画.pdf', file: 'abc' } }]);
+  await event(1, [{ type: 'file', data: {
+    file: 'abc', file_id: 'abc', file_size: 73059613,
+    name: 'JM1483633-漫画.pdf', size: 73059613, id: 'abc', url: '', file_hash: 'hash'
+  } }]);
   assert.equal(wakes, 0);
   assert.equal(sends, 0);
   assert.equal(app.store.unreadCount('private:123456'), 0);
@@ -44,4 +47,11 @@ test('file download echo is recorded without triggering JM or chat; real text an
   ]);
   assert.equal(wakes, 3, '带文字的文件消息仍进入普通聊天');
   assert.equal(sends, 0, '文件名中的 JM 编号不能成为下载指令');
+
+  await event(5, '[CQ:file,file=abc,name=JM1483633-漫画.pdf]');
+  assert.equal(wakes, 3, 'CQ 字符串格式的纯文件事件也不能唤醒聊天');
+  assert.equal(sends, 0);
+  await event(6, '你好[CQ:file,file=abc,name=JM1483633-漫画.pdf]');
+  assert.equal(wakes, 4, 'CQ 字符串格式的文字仍进入普通聊天');
+  assert.equal(sends, 0, 'CQ 文件名不能成为下载指令');
 });

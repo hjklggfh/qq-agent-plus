@@ -1027,13 +1027,18 @@ export function createApp({
     // 放在最前面：连合并转发展开这种网络请求都不值得为它做。
     if (kind === 'group' && senderId && (cfgNow.blocklist?.[id] || []).map(String).includes(senderId)) return;
     const media = segments ? extractMediaFromSegments(segments) : [];
-    const hasFileSegment = Boolean(segments?.some((segment) => segment?.type === 'file'));
+    const rawMessage = segments ? '' : String(event.message ?? event.raw_message ?? '');
+    const cqFileText = rawMessage.replace(/\[CQ:file,[^\]]+\]/gi, '');
+    const hasFileSegment = Boolean(segments?.some((segment) => segment?.type === 'file'))
+      || cqFileText !== rawMessage;
     // QQ 下载文件时可能把文件卡片重新上报成对方的私聊消息。
     // 文件名只是附件元数据，不能当作用户输入的 JM/PID 等指令；无文字的普通文件仅存档。
     // 音频/视频文件仍交给媒体处理流程。
     const passiveFileOnly = !isSelf && hasFileSegment
-      && segments.every((segment) => segment?.type === 'file'
-        || (segment?.type === 'text' && !String(segment?.data?.text ?? '').trim()))
+      && (segments
+        ? segments.every((segment) => segment?.type === 'file'
+          || (segment?.type === 'text' && !String(segment?.data?.text ?? '').trim()))
+        : !cqFileText.trim())
       && media.length === 0;
     const mentionsSelf = Boolean(segments?.some((segment) =>
       segment?.type === 'at'
@@ -1074,8 +1079,10 @@ export function createApp({
     }
     // 附件名可包含 JM/PID 等编号；只有用户实际键入的文字能成为下载指令。
     const commandText = hasFileSegment
-      ? sanitizeUserText(segments.filter((segment) => segment?.type === 'text')
-        .map((segment) => String(segment.data?.text ?? '')).join('').trim())
+      ? sanitizeUserText(segments
+        ? segments.filter((segment) => segment?.type === 'text')
+          .map((segment) => String(segment.data?.text ?? '')).join('').trim()
+        : cqFileText.trim())
       : text;
 
     // 合并转发：占位符 → 展开真实内容（模型要读懂、看懂转发的聊天记录）
