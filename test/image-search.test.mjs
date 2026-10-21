@@ -237,9 +237,9 @@ test('找鸡优先展示社交平台帖子，不把商品标题当名字或原�
     { title: 'Video post', source: 'TikTok (tiktok.com)', kind: 'post', match: 'visual', account: '@sampleuser', url: 'https://www.tiktok.com/@sampleuser/video/456' }
   ] });
   assert.match(reply, /平台：TikTok/);
-  assert.match(reply, /名字：未确认/);
+  assert.match(reply, /名字：sampleuser/);
   assert.match(reply, /账号：@sampleuser/);
-  assert.match(reply, /链接账号也可能只是转载者/);
+  assert.match(reply, /不代表真实姓名或原创作者/);
   assert.doesNotMatch(reply, /ebay\.com/);
 });
 

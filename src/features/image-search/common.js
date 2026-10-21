@@ -72,8 +72,8 @@ export function formatFindReply(report) {
   const kind = { post: '帖子', profile: '资料页', search: '搜索页', page: '网页' }[row.kind] || '网页';
   const match = row.match === 'exact' ? '完全匹配线索' : row.match === 'cropped_visual' ? '自动裁剪后的相似图片线索' : '视觉匹配线索';
   const title = cleanTitle(row.title, 100) || '未确认';
-  const name = '未确认';
   const account = row.match === 'cropped_visual' ? '未确认' : cleanTitle(row.account, 40) || '未确认';
+  const name = account !== '未确认' && ['post', 'profile'].includes(row.kind) ? account.replace(/^@/, '') : '未确认';
   lines.push(`\n🌐 平台：${platform}`);
   lines.push(`🔎 匹配：${match} · ${kind}`);
   lines.push(`👤 名字：${name}`);
@@ -84,6 +84,6 @@ export function formatFindReply(report) {
     ? '\n⚠️ 这只是搜索／发现页，尚未确认具体账号或原帖，请自行核对。'
     : row.match === 'cropped_visual'
       ? '\n⚠️ 原图无结果，仅找到裁剪后的相似图片；账号可能与原图无关，请自行核对。'
-      : '\n⚠️ 识图可能有误，链接账号也可能只是转载者，请自行核对。');
+      : '\n⚠️ 名字默认取链接账号名，不代表真实姓名或原创作者；识图可能有误，请自行核对。');
   return lines.join('\n');
 }
