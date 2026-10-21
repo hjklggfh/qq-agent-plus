@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { imageSearchConfig, validateImageSearchPatch, validateRelayUrl } from '../src/features/image-search/config.js';
 import { imageSearchCommand, searchSegments } from '../src/features/image-search/command.js';
-import { boundedBody, formatSearchReply } from '../src/features/image-search/common.js';
+import { boundedBody, formatFindReply, formatSearchReply } from '../src/features/image-search/common.js';
 import { parseYandex, parseTrace, searchProvider, providerRequest } from '../src/features/image-search/providers.js';
 import { googleResultRows, googleLens } from '../src/features/image-search/google.js';
 import { parseSerpApiRows, prepareSerpApiImage, serpApiLens } from '../src/features/image-search/serpapi.js';
@@ -25,7 +25,7 @@ const okReport = (platform = 'google') => ({ platform, status: 'ok', results: [{
 function fixture(t, overrides = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-search-test-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  const config = { imageSearch: imageSearchConfig({ enabled: true, relayUrl: 'http://127.0.0.1:3220', relayToken: 'a'.repeat(40), allowedGroups: ['100001'], cooldownSeconds: 0 }) };
+  const config = { imageSearch: imageSearchConfig({ enabled: true, relayUrl: 'http://127.0.0.1:3220', relayToken: 'a'.repeat(40), allowedGroups: ['100001'], cooldownSeconds: 0, platforms: { serpapi: true } }) };
   const sends = [], calls = [];
   const manager = new ImageSearchManager({ dataDir: dir, getConfig: () => config, canRun: () => true,
     download: async () => ({ buffer: png }), send: async (...args) => sends.push(args), onebot: {}, store: {},
@@ -54,13 +54,16 @@ test('搜图中转只允许本机 HTTP 或无凭据 HTTPS 根地址', () => {
 });
 
 test('精确搜图指令兼容图片、引用、at 和 CQ 字符串，不误接普通聊天', () => {
-  assert.equal(imageSearchCommand(imageMessage()).platform, 'auto');
+  assert.equal(imageSearchCommand(imageMessage()).platform, 'serpapi');
+  assert.equal(imageSearchCommand(imageMessage('找鸡')).mode, 'find');
+  assert.equal(imageSearchCommand('[CQ:reply,id=123]找鸡').platform, 'serpapi');
   assert.equal(imageSearchCommand(imageMessage('/搜图 Google')).platform, 'google');
   assert.equal(imageSearchCommand('搜图 trace.moe').platform, 'trace');
   assert.equal(imageSearchCommand('搜图 SerpApi').platform, 'serpapi');
   assert.equal(imageSearchCommand('搜图 全部').platform, 'all');
   assert.equal(imageSearchCommand('搜图 baidu').platform, 'invalid');
   assert.equal(imageSearchCommand('我想搜图'), null);
+  assert.equal(imageSearchCommand('帮我找鸡'), null);
   const command = imageSearchCommand('[CQ:at,qq=111111]搜图 yandex[CQ:reply,id=123][CQ:image,url=https://x.test/a?a=1&#44;b=2]');
   assert.equal(command.platform, 'yandex');
   assert.equal(command.segments.find((s) => s.type === 'image').data.url, 'https://x.test/a?a=1,b=2');
@@ -186,6 +189,16 @@ test('结果按平台分组且清理 CQ 控制码、低级协议', () => {
   assert.equal(text.includes('[CQ:'), false);
 });
 
+test('找鸡文字格式标来源账号，并把搜索页标为待核对线索', () => {
+  const reply = formatFindReply({ platform: 'serpapi', status: 'ok', results: [{ title: '[CQ:at,qq=all]南忆一依怡nayee', source: 'TikTok (tiktok.com)', kind: 'search', match: 'exact', account: '', url: 'https://www.tiktok.com/discover/nayee' }] });
+  assert.match(reply, /🎯 找鸡结果/);
+  assert.match(reply, /🌐 平台：TikTok/);
+  assert.match(reply, /🔎 匹配：完全匹配线索 · 搜索页/);
+  assert.match(reply, /🆔 账号：未确认/);
+  assert.match(reply, /https:\/\/www\.tiktok\.com\/discover\/nayee/);
+  assert.equal(reply.includes('[CQ:'), false);
+});
+
 test('中转响应限制字节数，防止超大结果占用内存', async () => {
   await assert.rejects(boundedBody(new Response('123456'), 5), /大小限制/);
 });
@@ -212,21 +225,45 @@ test('宿主 observe/paused/白名单拒绝时不下载、不发送', async (t) 
   assert.equal(f.calls.length, 0);
 });
 
-test('自动搜图遇到 Google 拦截后切 Yandex，成功即停止，不调用模型', async (t) => {
+test('搜图和找鸡都只查询 SerpApi，不因无结果自动切换其他平台', async (t) => {
   const calls = [];
   const f = fixture(t, { fetchImpl: async (_url, options) => {
     const p = options.headers['x-search-platform']; calls.push(p);
     assert.equal(options.redirect, 'error');
     assert.ok(options.signal);
-    return Response.json(p === 'google' ? { platform: p, status: 'blocked', message: '验证码', results: [] } : okReport(p));
+    return Response.json({ platform: p, status: 'empty', message: '没有线索', results: [] });
   } });
   await f.manager.start(imageSearchCommand(imageMessage()), 'group:100001', 1);
   await f.manager.task;
-  assert.deepEqual(calls, ['google', 'yandex']);
-  assert.equal(f.sends.length, 1);
-  assert.match(f.sends[0][1][0], /验证码/);
-  assert.equal(f.manager.history[0].status, 'done');
+  await f.manager.start(imageSearchCommand(imageMessage('找鸡')), 'group:100001', 2);
+  await f.manager.task;
+  assert.deepEqual(calls, ['serpapi', 'serpapi']);
+  assert.equal(f.sends.length, 2);
+  assert.match(f.sends[0][1][0], /没有线索/);
+  assert.match(f.sends[1][1][0], /找鸡结果/);
+  assert.equal(f.manager.history[0].status, 'no-result');
   assert.equal(fs.readFileSync(f.manager.file, 'utf8').includes('a'.repeat(40)), false);
+});
+
+test('找鸡固定发文字，搜图继续按设置走原有合并转发', async (t) => {
+  const forwarded = [];
+  const f = fixture(t, { forward: async (...args) => forwarded.push(args), fetchImpl: async () => Response.json({
+    platform: 'serpapi', status: 'ok', results: [{ title: '南忆一依怡nayee', source: 'TikTok (tiktok.com)', kind: 'search', match: 'exact', account: '', url: 'https://www.tiktok.com/discover/nayee' }]
+  }) });
+  f.config.imageSearch.sendImages = true;
+  await f.manager.start(imageSearchCommand(imageMessage('找鸡')), 'group:100001', 1);
+  await f.manager.task;
+  assert.equal(f.sends.length, 1);
+  assert.equal(forwarded.length, 0);
+  assert.match(f.sends[0][1][0], /平台：TikTok/);
+  assert.match(f.sends[0][1][0], /账号：未确认/);
+  assert.match(f.sends[0][1][0], /搜索／发现页/);
+  await f.manager.start(imageSearchCommand(imageMessage()), 'group:100001', 2);
+  await f.manager.task;
+  assert.equal(forwarded.length, 1);
+  assert.equal(f.sends.length, 1);
+  assert.equal(f.manager.history[0].status, 'done');
+  assert.match(forwarded[0][1].nodes[1].data.content[0].data.text, /以图搜图结果/);
 });
 
 test('指定平台不回退，全部查询跳过关闭的平台', async (t) => {
@@ -237,7 +274,7 @@ test('指定平台不回退，全部查询跳过关闭的平台', async (t) => {
   f.config.imageSearch.platforms.google = false;
   await f.manager.start(imageSearchCommand(imageMessage('搜图 全部')), 'group:100001', 2);
   await f.manager.task;
-  assert.deepEqual(f.calls, ['trace', 'yandex', 'trace']);
+  assert.deepEqual(f.calls, ['trace', 'serpapi', 'yandex', 'trace']);
 });
 
 test('引用图片只读本会话已入库消息，禁止猜ID读取其他会话', async (t) => {
@@ -436,7 +473,7 @@ test('附图阶段拒绝超限和非图片响应，取消时不返回待发卡�
 test('合并卡片发送未知不补发文字，历史不落盘图片或凭证', async (t) => {
   let forwards = 0;
   const f = fixture(t, { forward: async () => { forwards++; throw new Error('unknown send'); },
-    fetchImpl: async (url) => url.endsWith('/v1/image') ? new Response(png) : Response.json({ ...okReport(), results: [{ title: '来源', url: 'https://a.test/', imageKey: '00000000-0000-0000-0000-000000000000' }] }) });
+    fetchImpl: async (url) => url.endsWith('/v1/image') ? new Response(png) : Response.json({ ...okReport('serpapi'), results: [{ title: '来源', url: 'https://a.test/', imageKey: '00000000-0000-0000-0000-000000000000' }] }) });
   f.config.imageSearch.sendImages = true;
   await f.manager.start(imageSearchCommand(imageMessage()), 'group:100001', 333);
   await f.manager.task;

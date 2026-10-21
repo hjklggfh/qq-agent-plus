@@ -32,6 +32,9 @@ test('搜图独立设置渲染默认关闭和四个平台，群名单语义明�
   assert.equal(doc.querySelector('#image-search-enabled').checked, false);
   assert.equal(doc.querySelectorAll('[id^="image-search-platform-"]').length, 4);
   assert.equal(doc.querySelector('#image-search-platform-serpapi').checked, false);
+  assert.equal(doc.querySelector('#image-search-default'), null);
+  assert.match(doc.body.textContent, /“找鸡”和“搜图”需要开启 SerpApi/);
+  assert.match(doc.body.textContent, /“找鸡”始终只发普通文字/);
   assert.match(doc.body.textContent, /空名单表示所有群均不允许/);
   assert.equal(doc.querySelector('#image-search-token').type, 'password');
   assert.equal(doc.querySelector('#image-search-token').value, '');

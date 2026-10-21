@@ -7,21 +7,19 @@ const SEARCH_LABELS = { google: 'Google Lens（浏览器）', serpapi: 'Google L
 function renderImageSearchSection(config) {
   const s = config.imageSearch || {};
   return `<h3>以图搜图</h3>
-    <p class="hint">发送“搜图＋一张图片”，或回复图片发送“搜图”。可指定：搜图 SerpApi、搜图 Google、搜图 Yandex、搜图 trace.moe、搜图 全部。明确指令不调用聊天模型。</p>
+    <p class="hint">回复图片发送“找鸡”或“搜图”，也可与图片同条发送。两个关键词都使用 SerpApi：“找鸡”返回单条来源线索文字，“搜图”沿用原有结果和附图方式。明确指令不调用聊天模型。</p>
     <div class="field"><label><input id="image-search-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用以图搜图</label></div>
     <div class="field"><label>东京中转地址</label><input id="image-search-url" type="url" placeholder="http://127.0.0.1:3220" value="${esc(s.relayUrl || '')}"><div class="hint">推荐通过 SSH 隧道连接东京。地址和令牌按部署文档填写。</div></div>
     <div class="field"><label id="image-search-token-label" for="image-search-token">中转令牌${s.hasRelayToken ? '（已保存，留空保留）' : '（尚未保存）'}</label><input id="image-search-token" type="password" autocomplete="new-password" placeholder="留空保留原令牌"><label><input id="image-search-clear-token" type="checkbox"> 清除已保存的令牌</label></div>
-    <div class="field-row"><div class="field"><label>默认平台</label><select id="image-search-default">${Object.entries(SEARCH_LABELS).map(([key, label]) => `<option value="${key}" ${(s.defaultPlatform || 'google') === key ? 'selected' : ''}>${label}</option>`).join('')}</select></div>
-    <div class="field"><label><input id="image-search-fallback" type="checkbox" ${s.fallback !== false ? 'checked' : ''}> 失败或无结果时尝试其他已开启的平台</label></div></div>
-    <div class="field">${Object.entries(SEARCH_LABELS).map(([key, label]) => `<label><input id="image-search-platform-${key}" type="checkbox" ${(s.platforms?.[key] ?? key !== 'serpapi') ? 'checked' : ''}> ${label}</label>`).join(' ')}<div class="hint">SerpApi Key 只配置在东京中转的环境文件中，不在网页或宿主配置保存；按部署文档设置。</div></div>
+    <div class="field">${Object.entries(SEARCH_LABELS).map(([key, label]) => `<label><input id="image-search-platform-${key}" type="checkbox" ${(s.platforms?.[key] ?? key !== 'serpapi') ? 'checked' : ''}> ${label}</label>`).join(' ')}<div class="hint">“找鸡”和“搜图”需要开启 SerpApi；其他平台只在指定“搜图 Google / Yandex / trace.moe / 全部”时使用。Key 只配置在东京中转环境文件中。</div></div>
     <div class="field"><label>允许使用的群号（每行一个，空名单表示所有群均不允许）</label><textarea id="image-search-groups" rows="3">${esc((s.allowedGroups || []).join('\n'))}</textarea></div>
     <div class="field"><label><input id="image-search-private" type="checkbox" ${s.allowPrivate ? 'checked' : ''}> 允许私聊搜图（仍受宿主私聊白名单限制）</label></div>
-    <div class="field"><label><input id="image-search-images" type="checkbox" ${s.sendImages ? 'checked' : ''}> 返回匹配图片及来源链接（合并转发，最多3张）</label><div class="hint">优先匹配图原文件，失败时尝试缩略图并标明；动画返回预览帧。图片总计最多8MB，原图防盗链或过大时仍保留链接。</div></div>
+    <div class="field"><label><input id="image-search-images" type="checkbox" ${s.sendImages ? 'checked' : ''}> “搜图”返回匹配图片及来源链接（合并转发，最多3张）</label><div class="hint">“找鸡”始终只发普通文字。搜图优先匹配图原文件，失败时尝试缩略图并标明；图片总计最多8MB。</div></div>
     <div class="field-row"><div class="field"><label>每个平台超时（秒）</label><input id="image-search-timeout" type="number" min="10" max="90" value="${esc(s.timeoutSeconds ?? 45)}"></div>
     <div class="field"><label>每个平台最多返回</label><input id="image-search-limit" type="number" min="1" max="5" value="${esc(s.limit ?? 3)}"></div>
     <div class="field"><label>同会话冷却（秒）</label><input id="image-search-cooldown" type="number" min="0" max="3600" value="${esc(s.cooldownSeconds ?? 15)}"></div>
     <div class="field"><label>动画最低相似度（0.8—1）</label><input id="image-search-similarity" type="number" min="0.8" max="1" step="0.01" value="${esc(s.traceMinSimilarity ?? 0.9)}"></div></div>
-    <p class="hint">搜图会把选中的图片提交给实际查询的平台。“搜图 全部”查询全部已开启的平台。SerpApi 结果标注网站来源与页面类型，搜索页或资料页不能当作原帖；动画时间对应匹配片源。</p>
+    <p class="hint">搜图会把选中的图片提交给实际查询的平台。“搜图 全部”查询全部已开启的平台。找鸡的名字和账号只是来源线索；搜索页或资料页不能当作原帖。</p>
     <button type="button" class="btn" id="image-search-health">测试已保存的中转连接</button>
     <button type="button" class="btn" id="image-search-refresh">刷新任务记录</button>
     <p class="hint" id="image-search-health-result"></p><div id="image-search-history" style="overflow-wrap:anywhere"></div>`;
@@ -31,8 +29,6 @@ async function saveImageSearchSettings() {
   const patch = {
     enabled: $('#image-search-enabled').checked,
     relayUrl: $('#image-search-url').value.trim(),
-    defaultPlatform: $('#image-search-default').value,
-    fallback: $('#image-search-fallback').checked,
     allowPrivate: $('#image-search-private').checked,
     sendImages: $('#image-search-images').checked,
     allowedGroups: [...new Set($('#image-search-groups').value.split(/[\s,，]+/).filter(Boolean))],

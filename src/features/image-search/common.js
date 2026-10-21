@@ -54,3 +54,26 @@ export function formatSearchReply(reports, limit = 3) {
   }
   return lines.join('\n');
 }
+
+export function formatFindReply(report) {
+  const lines = ['🎯 找鸡结果'];
+  if (report?.status !== 'ok' || !report.results?.length) {
+    lines.push(`\n🔎 匹配：${cleanTitle(report?.message || '没有找到可核对的公开线索')}`);
+    return lines.join('\n');
+  }
+  const row = report.results.find((item) => publicLink(item.url));
+  if (!row) return `${lines[0]}\n\n🔎 匹配：没有找到可核对的公开线索`;
+  const site = cleanTitle(row.source, 80) || new URL(row.url).hostname;
+  const platform = site.startsWith('X (') ? 'X (Twitter)' : site.replace(/ \([^)]*\)$/, '');
+  const kind = { post: '帖子', profile: '资料页', search: '搜索页', page: '网页' }[row.kind] || '网页';
+  const match = row.match === 'exact' ? '完全匹配线索' : '视觉匹配线索';
+  lines.push(`\n🌐 平台：${platform}`);
+  lines.push(`🔎 匹配：${match} · ${kind}`);
+  lines.push(`👤 名字：${cleanTitle(row.title, 100) || '未确认'}`);
+  lines.push(`🆔 账号：${cleanTitle(row.account, 40) || '未确认'}`);
+  lines.push(`🔗 来源：${publicLink(row.url)}`);
+  lines.push(row.kind === 'search'
+    ? '\n⚠️ 这只是搜索／发现页，尚未确认具体账号或原帖，请自行核对。'
+    : '\n⚠️ 识图可能有误，来源也可能是转载，请自行核对。');
+  return lines.join('\n');
+}

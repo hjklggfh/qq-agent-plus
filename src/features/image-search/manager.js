@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { imageSearchConfig, IMAGE_SEARCH_PLATFORMS } from './config.js';
-import { MAX_IMAGE_BYTES, boundedBody, formatSearchReply } from './common.js';
+import { MAX_IMAGE_BYTES, boundedBody, formatFindReply, formatSearchReply } from './common.js';
 import { searchSegments } from './command.js';
 import { imageType } from '../../core/image-type.js';
 import { searchResultNodes } from './result-images.js';
@@ -71,7 +71,7 @@ export class ImageSearchManager {
     signal.throwIfAborted();
     const item = segments.find((s) => s.type === 'image');
     const url = item?.data?.url || item?.data?.file;
-    if (!url || !/^https?:\/\//i.test(url)) throw new Error('请发送“搜图＋一张图片”，或回复本会话已记录的图片发送“搜图”。');
+    if (!url || !/^https?:\/\//i.test(url)) throw new Error('请发送图片并输入“搜图”或“找鸡”，或回复本会话已记录的图片发送关键词。');
     const { buffer } = await this.download(url, MAX_IMAGE_BYTES, signal);
     const type = imageType(buffer);
     if (!type || buffer.length > MAX_IMAGE_BYTES) throw new Error('仅支持不超过8MB的 PNG、JPEG、GIF、WebP 图片');
@@ -87,7 +87,7 @@ export class ImageSearchManager {
     if (!settings.enabled) reason = '以图搜图尚未启用，请在控制台“设置 → 以图搜图”配置。';
     else if (kind === 'private' && !settings.allowPrivate || kind === 'group' && !settings.allowedGroups.includes(id)) reason = '当前会话未获准使用以图搜图。';
     else if (!settings.relayUrl || !settings.relayToken) reason = '请先配置搜图中转地址和令牌。';
-    else if (command.platform === 'invalid') reason = '可用指令：搜图、搜图 SerpApi、搜图 Google、搜图 Yandex、搜图 trace.moe、搜图 全部。';
+    else if (command.platform === 'invalid') reason = '可用指令：找鸡、搜图、搜图 Google、搜图 Yandex、搜图 trace.moe、搜图 全部。';
     else if (this.active) reason = '已有搜图任务正在运行，请稍后再试。';
     else if (Date.now() - (this.cooldowns.get(chatKey) || 0) < settings.cooldownSeconds * 1000) reason = '搜图请求过于频繁，请稍后再试。';
     if (reason) return reply(reason);
@@ -110,8 +110,7 @@ export class ImageSearchManager {
     try {
       this.save();
       const image = await this.image(command, chatKey, signal);
-      const platforms = command.platform === 'all' ? IMAGE_SEARCH_PLATFORMS : command.platform === 'auto'
-        ? [settings.defaultPlatform, ...(settings.fallback ? IMAGE_SEARCH_PLATFORMS.filter((p) => p !== settings.defaultPlatform) : [])] : [command.platform];
+      const platforms = command.platform === 'all' ? IMAGE_SEARCH_PLATFORMS : [command.platform];
       const enabled = platforms.filter((p) => settings.platforms[p]);
       if (!enabled.length) throw new Error('所选搜图平台已关闭');
       const reports = [];
@@ -132,13 +131,12 @@ export class ImageSearchManager {
           signal.throwIfAborted();
           reports.push({ platform, status: 'error', message: '查询失败或超时，请检查中转服务及平台状态', results: [] });
         }
-        if (command.platform === 'auto' && reports.at(-1).status === 'ok' && reports.at(-1).results.length) break;
       }
       record.platforms = reports.map((r) => ({ platform: r.platform, status: r.status, count: r.results.length }));
       record.status = reports.some((r) => r.status === 'ok' && r.results.length) ? 'done' : 'no-result';
       record.finishedAt = new Date().toISOString();
       this.save();
-      const nodes = settings.sendImages && this.forward && reports.some((r) => r.status === 'ok' && r.results.length)
+      const nodes = command.mode !== 'find' && settings.sendImages && this.forward && reports.some((r) => r.status === 'ok' && r.results.length)
         ? await searchResultNodes(reports, settings, { signal, fetch: this.fetch, selfId: this.onebot.selfId, name: this.onebot.selfNickname }) : null;
       this.enforce();
       if (this.settings().enabled && this.canRun(chatKey) && !signal.aborted) {
@@ -146,7 +144,7 @@ export class ImageSearchManager {
         try {
           const sent = nodes
             ? await this.forward(chatKey, { nodes, label: '以图搜图结果' }, { runId, signal })
-            : await this.send(chatKey, [formatSearchReply(reports, settings.limit)], { runId, preserveCode: false, signal });
+            : await this.send(chatKey, [command.mode === 'find' ? formatFindReply(reports[0]) : formatSearchReply(reports, settings.limit)], { runId, preserveCode: false, signal });
           if (sent?.failed?.length) throw new Error('部分发送未确认');
         } catch {
           record.status = 'send-unknown';

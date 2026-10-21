@@ -19,7 +19,8 @@ export function searchSegments(message) {
 export function imageSearchCommand(message) {
   const segments = searchSegments(message);
   const text = segments.filter((s) => s?.type === 'text').map((s) => s.data?.text || '').join('').trim();
+  if (/^\/?找鸡$/.test(text)) return { platform: 'serpapi', mode: 'find', segments };
   const match = text.match(/^\/?搜图(?:\s+(\S+))?\s*$/i);
   if (!match) return null;
-  return { platform: match[1] ? ALIASES[match[1].toLowerCase()] || 'invalid' : 'auto', segments };
+  return { platform: match[1] ? ALIASES[match[1].toLowerCase()] || 'invalid' : 'serpapi', mode: 'search', segments };
 }
