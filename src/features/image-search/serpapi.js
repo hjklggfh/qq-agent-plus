@@ -32,7 +32,7 @@ function linkedAccount(url) {
   const parsed = new URL(url);
   const host = parsed.hostname.toLowerCase();
   const segment = parsed.pathname.split('/').filter(Boolean)[0] || '';
-  if (/^(?:.+\.)?(?:x|twitter|instagram)\.com$/.test(host) && /^[a-zA-Z0-9_.]{1,30}$/.test(segment) && !['search', 'explore', 'discover'].includes(segment)) return `@${segment}`;
+  if (/^(?:.+\.)?(?:x|twitter|instagram)\.com$/.test(host) && /^[a-zA-Z0-9_.]{1,30}$/.test(segment) && !['search', 'explore', 'discover', 'p', 'reel', 'i', 'home', 'hashtag'].includes(segment)) return `@${segment}`;
   if (/^(?:.+\.)?tiktok\.com$/.test(host) && /^@[a-zA-Z0-9_.]{2,30}$/.test(segment)) return segment;
   return '';
 }
@@ -105,8 +105,8 @@ export async function serpApiLens(image, options = {}) {
     const ordered = [
       ...exact.filter((row) => row.kind === 'post'),
       ...exact.filter((row) => row.kind === 'page').slice(0, 2),
-      ...visual.filter((row) => row.kind === 'post'),
       ...exact.filter((row) => ['search', 'profile'].includes(row.kind)).slice(0, 1),
+      ...visual.filter((row) => row.kind === 'post'),
       ...visual.filter((row) => row.kind !== 'post')
     ];
     const results = ordered.filter((row) => {

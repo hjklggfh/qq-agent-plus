@@ -106,13 +106,15 @@ test('SerpApi 区分来源平台、帖子和发现页，过滤无效或重复链
     { title: '创作者帖子', source: 'X', link: 'https://x.com/example/status/123/photo/1' },
     { title: '同帖语言版', source: 'X', link: 'https://x.com/example/status/123?lang=bg' },
     { title: '发现页', source: 'TikTok', link: 'https://www.tiktok.com/discover/name' },
+    { title: 'Instagram 帖子', source: 'Instagram', link: 'https://www.instagram.com/p/ABC123/' },
     { title: '坏链接', link: 'javascript:alert(1)' }
   ] }, 'exact_matches');
-  assert.deepEqual(rows.map((row) => row.kind), ['post', 'search']);
+  assert.deepEqual(rows.map((row) => row.kind), ['post', 'search', 'post']);
   assert.match(rows[0].source, /X \(x\.com\)/);
   assert.equal(rows[0].account, '@example');
   assert.match(rows[1].source, /TikTok/);
   assert.equal(rows[1].account, '');
+  assert.equal(rows[2].account, '');
 });
 
 test('SerpApi 大图压缩后上传，保留 TikTok 来源并不将发现页称为原帖', async () => {
@@ -139,8 +141,8 @@ test('SerpApi 大图压缩后上传，保留 TikTok 来源并不将发现页称�
   } });
   assert.equal(report.status, 'ok');
   assert.deepEqual(calls.length, 3);
-  assert.deepEqual(report.results.map((row) => row.kind), ['post', 'search']);
-  assert.equal(report.results[0].account, '@nayee');
+  assert.deepEqual(report.results.map((row) => row.kind), ['search', 'post']);
+  assert.equal(report.results[1].account, '@nayee');
   assert.match(formatSearchReply([report]), /来源：TikTok/);
   assert.match(formatSearchReply([report]), /链接账号 @nayee/);
   assert.match(formatSearchReply([report]), /搜索页/);
