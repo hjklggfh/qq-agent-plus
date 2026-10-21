@@ -1,4 +1,4 @@
-const ALIASES = Object.freeze({ google: 'google', '谷歌': 'google', lens: 'google', yandex: 'yandex', trace: 'trace', 'trace.moe': 'trace', '动画': 'trace', all: 'all', '全部': 'all' });
+const ALIASES = Object.freeze({ google: 'google', '谷歌': 'google', lens: 'google', serpapi: 'serpapi', '谷歌api': 'serpapi', yandex: 'yandex', trace: 'trace', 'trace.moe': 'trace', '动画': 'trace', all: 'all', '全部': 'all' });
 
 // OneBot 字符串模式仅解析已知 CQ 段；图片 URL 仍须经过宿主安全下载层。
 export function searchSegments(message) {

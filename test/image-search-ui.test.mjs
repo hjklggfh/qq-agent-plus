@@ -27,10 +27,11 @@ function page(t) {
   return { window, doc: window.document, context, calls, state };
 }
 
-test('搜图独立设置渲染默认关闭和三个平台，群名单语义明确', { skip }, (t) => {
+test('搜图独立设置渲染默认关闭和四个平台，群名单语义明确', { skip }, (t) => {
   const { doc } = page(t);
   assert.equal(doc.querySelector('#image-search-enabled').checked, false);
-  assert.equal(doc.querySelectorAll('[id^="image-search-platform-"]').length, 3);
+  assert.equal(doc.querySelectorAll('[id^="image-search-platform-"]').length, 4);
+  assert.equal(doc.querySelector('#image-search-platform-serpapi').checked, false);
   assert.match(doc.body.textContent, /空名单表示所有群均不允许/);
   assert.equal(doc.querySelector('#image-search-token').type, 'password');
   assert.equal(doc.querySelector('#image-search-token').value, '');
@@ -64,6 +65,7 @@ test('刷新历史不覆盖正在输入的中转地址，连接测试不声称�
   doc.querySelector('#image-search-health').click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.match(doc.querySelector('#image-search-health-result').textContent, /尚未配置 Google 浏览器/);
+  assert.match(doc.querySelector('#image-search-health-result').textContent, /SerpApi 未配置/);
 });
 
 test('搜图保存失败向统一保存入口抛错，不能被覆盖为保存成功', { skip }, async (t) => {

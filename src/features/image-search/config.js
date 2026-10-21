@@ -1,7 +1,7 @@
-export const IMAGE_SEARCH_PLATFORMS = Object.freeze(['google', 'yandex', 'trace']);
+export const IMAGE_SEARCH_PLATFORMS = Object.freeze(['google', 'serpapi', 'yandex', 'trace']);
 export const DEFAULT_IMAGE_SEARCH_CONFIG = Object.freeze({
   enabled: false, relayUrl: '', relayToken: '', defaultPlatform: 'google',
-  platforms: Object.freeze({ google: true, yandex: true, trace: true }),
+  platforms: Object.freeze({ google: true, serpapi: false, yandex: true, trace: true }),
   fallback: true, sendImages: false, allowPrivate: false, allowedGroups: Object.freeze([]),
   timeoutSeconds: 45, limit: 3, cooldownSeconds: 15, traceMinSimilarity: 0.9
 });

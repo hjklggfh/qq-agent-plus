@@ -9,6 +9,7 @@ import { imageSearchCommand, searchSegments } from '../src/features/image-search
 import { boundedBody, formatSearchReply } from '../src/features/image-search/common.js';
 import { parseYandex, parseTrace, searchProvider, providerRequest } from '../src/features/image-search/providers.js';
 import { googleResultRows, googleLens } from '../src/features/image-search/google.js';
+import { parseSerpApiRows, prepareSerpApiImage, serpApiLens } from '../src/features/image-search/serpapi.js';
 import { ImageSearchManager } from '../src/features/image-search/manager.js';
 import { createImageSearchRelay } from '../src/features/image-search/relay.js';
 import { installImageSearchRoutes } from '../src/features/image-search/routes.js';
@@ -36,6 +37,7 @@ test('搜图默认关闭、独立配置且不共享可变平台表', () => {
   const a = imageSearchConfig(), b = imageSearchConfig();
   assert.equal(a.enabled, false);
   assert.equal(a.allowPrivate, false);
+  assert.equal(a.platforms.serpapi, false);
   assert.deepEqual(a.allowedGroups, []);
   a.platforms.google = false;
   assert.equal(b.platforms.google, true);
@@ -55,6 +57,7 @@ test('精确搜图指令兼容图片、引用、at 和 CQ 字符串，不误接�
   assert.equal(imageSearchCommand(imageMessage()).platform, 'auto');
   assert.equal(imageSearchCommand(imageMessage('/搜图 Google')).platform, 'google');
   assert.equal(imageSearchCommand('搜图 trace.moe').platform, 'trace');
+  assert.equal(imageSearchCommand('搜图 SerpApi').platform, 'serpapi');
   assert.equal(imageSearchCommand('搜图 全部').platform, 'all');
   assert.equal(imageSearchCommand('搜图 baidu').platform, 'invalid');
   assert.equal(imageSearchCommand('我想搜图'), null);
@@ -96,6 +99,52 @@ test('Google 未配置浏览器可降级，不假装返回结果', async () => {
   delete process.env.IMAGE_SEARCH_CHROME;
   try { assert.equal((await googleLens({ buffer: png, type: 'image/png' })).status, 'unavailable'); }
   finally { if (saved !== undefined) process.env.IMAGE_SEARCH_CHROME = saved; }
+});
+
+test('SerpApi 区分来源平台、帖子和发现页，过滤无效或重复链接', () => {
+  const rows = parseSerpApiRows({ exact_matches: [
+    { title: '创作者帖子', source: 'X', link: 'https://x.com/example/status/123/photo/1' },
+    { title: '同帖语言版', source: 'X', link: 'https://x.com/example/status/123?lang=bg' },
+    { title: '发现页', source: 'TikTok', link: 'https://www.tiktok.com/discover/name' },
+    { title: '坏链接', link: 'javascript:alert(1)' }
+  ] }, 'exact_matches');
+  assert.deepEqual(rows.map((row) => row.kind), ['post', 'search']);
+  assert.match(rows[0].source, /X \(x\.com\)/);
+  assert.equal(rows[0].account, '@example');
+  assert.match(rows[1].source, /TikTok/);
+  assert.equal(rows[1].account, '');
+});
+
+test('SerpApi 大图压缩后上传，保留 TikTok 来源并不将发现页称为原帖', async () => {
+  const noisy = Buffer.alloc(1200 * 1000 * 3);
+  let seed = 123456789;
+  for (let i = 0; i < noisy.length; i++) { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; noisy[i] = seed & 255; }
+  const sharp = (await import('sharp')).default;
+  const large = await sharp(noisy, { raw: { width: 1200, height: 1000, channels: 3 } }).png().toBuffer();
+  assert.ok(large.length > 500_000);
+  const prepared = await prepareSerpApiImage({ buffer: large, type: 'image/png' });
+  assert.ok(prepared.buffer.length <= 500_000);
+  const calls = [];
+  const report = await serpApiLens({ buffer: large, type: 'image/png' }, { serpApiKey: 'test-secret', limit: 3, fetchImpl: async (url, options) => {
+    calls.push(String(url));
+    if (String(url).endsWith('/image')) {
+      assert.ok(options.body instanceof FormData);
+      assert.equal(options.body.get('api_key'), 'test-secret');
+      assert.ok(options.body.get('image').size <= 500_000);
+      return Response.json({ image_id: 'valid-image-id-12345' });
+    }
+    const type = new URL(url).searchParams.get('type');
+    if (type === 'exact_matches') return Response.json({ exact_matches: [{ title: '南忆一依怡nayee', source: 'TikTok', link: 'https://www.tiktok.com/discover/nayee' }] });
+    return Response.json({ visual_matches: [{ title: '作品视频', source: 'TikTok', link: 'https://www.tiktok.com/@nayee/video/12345' }] });
+  } });
+  assert.equal(report.status, 'ok');
+  assert.deepEqual(calls.length, 3);
+  assert.deepEqual(report.results.map((row) => row.kind), ['post', 'search']);
+  assert.equal(report.results[0].account, '@nayee');
+  assert.match(formatSearchReply([report]), /来源：TikTok/);
+  assert.match(formatSearchReply([report]), /链接账号 @nayee/);
+  assert.match(formatSearchReply([report]), /搜索页/);
+  assert.equal(JSON.stringify(report).includes('test-secret'), false);
 });
 
 test('平台 HTTP 403 不泄露原始响应，不伪装成无结果', async () => {

@@ -29,7 +29,7 @@ export function createImageSearchRelay(options = {}) {
     const received = Buffer.from(req.headers.authorization || '');
     const expected = Buffer.from(`Bearer ${token}`);
     if (received.length !== expected.length || !timingSafeEqual(received, expected)) { respond(res, 401, { error: '未授权' }); req.resume(); return; }
-    if (req.url === '/healthz' && req.method === 'GET') { respond(res, 200, { ok: true, busy, googleConfigured: Boolean(options.chromePath || process.env.IMAGE_SEARCH_CHROME) }); return; }
+    if (req.url === '/healthz' && req.method === 'GET') { respond(res, 200, { ok: true, busy, googleConfigured: Boolean(options.chromePath || process.env.IMAGE_SEARCH_CHROME), serpapiConfigured: Boolean(options.serpApiKey || process.env.IMAGE_SEARCH_SERPAPI_API_KEY) }); return; }
     const imageRequest = req.url === '/v1/image';
     if (req.url !== '/v1/search' && !imageRequest) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
     if (req.method !== 'POST') { respond(res, 405, { error: '仅支持 POST' }); req.resume(); return; }
@@ -78,7 +78,7 @@ export function createImageSearchRelay(options = {}) {
         return;
       }
       const report = await provider(platform, { buffer, type }, {
-        signal: controller.signal, timeoutSeconds: seconds, chromePath: options.chromePath,
+        signal: controller.signal, timeoutSeconds: seconds, chromePath: options.chromePath, serpApiKey: options.serpApiKey,
         limit: Math.min(5, Math.max(1, Math.floor(Number(req.headers['x-search-limit']) || 3))),
         traceMinSimilarity: Math.min(1, Math.max(0.8, Number(req.headers['x-trace-min-similarity']) || 0.9))
       });

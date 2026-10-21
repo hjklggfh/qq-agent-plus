@@ -50,7 +50,7 @@ export class ImageSearchManager {
       if (!res.ok) throw new Error('unavailable');
       const data = JSON.parse((await boundedBody(res, 4096, signal)).toString('utf8'));
       if (data.ok !== true) throw new Error('invalid');
-      return { ok: true, busy: data.busy === true, googleConfigured: data.googleConfigured === true };
+      return { ok: true, busy: data.busy === true, googleConfigured: data.googleConfigured === true, serpapiConfigured: data.serpapiConfigured === true };
     } catch { throw new Error('中转连接失败，请检查 SSH 隧道、地址及令牌'); }
   }
   async stop() { this.active?.controller.abort(); await this.task; }
@@ -87,7 +87,7 @@ export class ImageSearchManager {
     if (!settings.enabled) reason = '以图搜图尚未启用，请在控制台“设置 → 以图搜图”配置。';
     else if (kind === 'private' && !settings.allowPrivate || kind === 'group' && !settings.allowedGroups.includes(id)) reason = '当前会话未获准使用以图搜图。';
     else if (!settings.relayUrl || !settings.relayToken) reason = '请先配置搜图中转地址和令牌。';
-    else if (command.platform === 'invalid') reason = '可用指令：搜图、搜图 Google、搜图 Yandex、搜图 trace.moe、搜图 全部。';
+    else if (command.platform === 'invalid') reason = '可用指令：搜图、搜图 SerpApi、搜图 Google、搜图 Yandex、搜图 trace.moe、搜图 全部。';
     else if (this.active) reason = '已有搜图任务正在运行，请稍后再试。';
     else if (Date.now() - (this.cooldowns.get(chatKey) || 0) < settings.cooldownSeconds * 1000) reason = '搜图请求过于频繁，请稍后再试。';
     if (reason) return reply(reason);

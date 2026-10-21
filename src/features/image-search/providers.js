@@ -1,6 +1,7 @@
 import { parse } from 'node-html-parser';
 import { boundedBody, cleanTitle, publicLink } from './common.js';
 import { googleLens } from './google.js';
+import { serpApiLens } from './serpapi.js';
 
 const USER_AGENT = 'Mozilla/5.0';
 
@@ -76,6 +77,7 @@ export async function searchProvider(platform, image, options = {}) {
   try {
     let results;
     if (platform === 'google') return await googleLens(image, options);
+    if (platform === 'serpapi') return await serpApiLens(image, options);
     const form = new FormData();
     form.set(platform === 'trace' ? 'image' : 'upfile', new Blob([image.buffer], { type: image.type }), 'search-image');
     if (platform === 'trace') {
