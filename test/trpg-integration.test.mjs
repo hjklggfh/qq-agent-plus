@@ -62,6 +62,7 @@ test('跑团完整模型链路：仅注入游戏工具，真实检定、落盘�
   cfg.persona.customRules = '附加风格标记：每次都卖萌。';
   cfg.api.model = 'test'; cfg.api.baseUrl = 'https://model.invalid'; cfg.api.apiKey = 'test-key';
   cfg.api.maxRounds = 6;
+  cfg.conversation.replyGuardEnabled = false;
   cfg.sticker.enabled = false;
   cfg.memory.consolidateEnabled = false;
   cfg.trpg = { enabled: true, maxPlayers: 6, allowedGroups: ['100001'], allowedPrivate: [] };

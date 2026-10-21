@@ -26,6 +26,7 @@ function fixture(t, mode = 'legacy') {
   cfg.memory.consolidateEnabled = false;
   cfg.sticker.enabled = false;
   cfg.conversation.mode = mode;
+  cfg.conversation.replyGuardEnabled = false;
   cfg.wakeDelayMs = 100;
   cfg.wakeDelayMinMs = 100;
   cfg.wakeDelayMaxMs = 100;

@@ -76,13 +76,17 @@ export class EhentaiDirect {
     const ips = this.ip ? [this.ip, ...this.ips.filter((ip) => ip !== this.ip)] : this.ips;
     let lastError;
     for (const ip of ips) {
-      const attemptSignal = AbortSignal.any([options.signal, AbortSignal.timeout(this.attemptTimeoutMs)]);
+      // AbortSignal.timeout() uses an unref'ed timer in Node. If a stalled attempt
+      // is the only pending work, the process can exit before the timeout fires.
+      const timeout = new AbortController();
+      const timer = setTimeout(() => timeout.abort(new Error('E站直连超时')), this.attemptTimeoutMs);
+      const attemptSignal = AbortSignal.any([options.signal, timeout.signal]);
       try { return await this.attempt(url, { ...options, signal: attemptSignal }, ip); }
       catch (error) {
         lastError = error;
         this.close();
         if (options.signal.aborted || /内容超过大小上限/.test(error.message)) throw error;
-      }
+      } finally { clearTimeout(timer); }
     }
     throw new Error(`E站直连失败：${lastError?.message || '无法连接'}`);
   }
