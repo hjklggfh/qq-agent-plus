@@ -223,7 +223,7 @@ test('结果按平台分组且清理 CQ 控制码、低级协议', () => {
 
 test('找鸡文字格式标来源账号，并把搜索页标为待核对线索', () => {
   const reply = formatFindReply({ platform: 'serpapi', status: 'ok', results: [{ title: '[CQ:at,qq=all]南忆一依怡nayee', source: 'TikTok (tiktok.com)', kind: 'search', match: 'exact', account: '', url: 'https://www.tiktok.com/discover/nayee' }] });
-  assert.match(reply, /🎯 找鸡结果/);
+  assert.match(reply, /🎯 搜索结果/);
   assert.match(reply, /🌐 平台：TikTok/);
   assert.match(reply, /🔎 匹配：完全匹配线索 · 搜索页/);
   assert.match(reply, /🆔 账号：未确认/);
@@ -284,7 +284,7 @@ test('搜图和找鸡都只查询 SerpApi，不因无结果自动切换其他平
   assert.deepEqual(calls, ['serpapi', 'serpapi']);
   assert.equal(f.sends.length, 2);
   assert.match(f.sends[0][1][0], /没有线索/);
-  assert.match(f.sends[1][1][0], /找鸡结果/);
+  assert.match(f.sends[1][1][0], /搜索结果/);
   assert.equal(f.manager.history[0].status, 'no-result');
   assert.equal(fs.readFileSync(f.manager.file, 'utf8').includes('a'.repeat(40)), false);
 });

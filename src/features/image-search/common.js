@@ -56,7 +56,7 @@ export function formatSearchReply(reports, limit = 3) {
 }
 
 export function formatFindReply(report) {
-  const lines = ['🎯 找鸡结果'];
+  const lines = ['🎯 搜索结果'];
   if (report?.status !== 'ok' || !report.results?.length) {
     lines.push(`\n🔎 匹配：${cleanTitle(report?.message || '没有找到可核对的公开线索')}`);
     return lines.join('\n');
