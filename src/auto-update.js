@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { normalizeUpdateNetworkSettings } from './update-network.js';
 
 const STATE_FILE = 'auto-update.json';
@@ -9,6 +10,9 @@ const ACTIVE_STATES = new Set(['queued', 'checking', 'testing', 'deploying']);
 const REQUEST_MODES = new Set(['manual', 'scheduled', 'probe']);
 // 活跃状态超过这个时长还不动，就当它卡住了：不再抑制"发现新版本"提示，让人能再点一次
 const PENDING_TTL_MS = 30 * 60 * 1000;
+const STATE_LOCK_WAIT_MS = 5_000;
+const STATE_LOCK_STALE_MS = 30_000;
+const lockSleep = new globalThis.Int32Array(new globalThis.SharedArrayBuffer(4));
 
 function cleanText(value, max = 1200) {
   return String(value ?? '')
@@ -46,11 +50,71 @@ export function autoUpdatePaths(dataDir) {
   const root = path.resolve(dataDir);
   return {
     state: path.join(root, STATE_FILE),
+    stateLock: path.join(root, `${STATE_FILE}.lock`),
     request: path.join(root, REQUEST_FILE),
     lock: path.join(root, '.auto-update.lock'),
     repository: path.join(root, 'update-repository.git'),
     workRoot: path.join(root, 'update-work')
   };
+}
+
+// The agent and the independent updater both call writeAutoUpdateState. Keep the
+// read/merge/write in one cross-process critical section; the updater's own
+// .auto-update.lock only prevents two updater instances from deploying together.
+function withStateLock(dataDir, action) {
+  const lock = autoUpdatePaths(dataDir).stateLock;
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + STATE_LOCK_WAIT_MS;
+  const stale = (directory) => {
+    let age;
+    try { age = Date.now() - fs.statSync(directory).mtimeMs; }
+    catch (error) { if (error?.code === 'ENOENT') return false; throw error; }
+    if (age <= STATE_LOCK_STALE_MS) return false;
+    try {
+      const pid = Number(fs.readFileSync(path.join(directory, 'owner'), 'utf8'));
+      if (Number.isInteger(pid) && pid > 0) {
+        try { process.kill(pid, 0); return false; }
+        catch (error) { if (error?.code !== 'ESRCH') return false; }
+      }
+    } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    return true;
+  };
+  while (true) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      fs.writeFileSync(path.join(lock, 'owner'), String(process.pid), { mode: 0o600 });
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    // A dead process may leave the directory behind. A separate takeover
+    // directory serializes stale-lock removal so two waiters cannot remove
+    // each other's newly acquired lock.
+    const takeover = `${lock}.takeover`;
+    try {
+      if (stale(lock)) {
+        try {
+          fs.mkdirSync(takeover, { mode: 0o700 });
+          try {
+            if (stale(lock)) {
+              fs.rmSync(lock, { recursive: true, force: true });
+            }
+          } finally { fs.rmdirSync(takeover); }
+        } catch (error) {
+          if (error?.code !== 'EEXIST' && error?.code !== 'ENOENT') throw error;
+        }
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (Date.now() >= deadline) throw new Error('自动更新状态文件正被其他进程写入，请稍后重试');
+    Atomics.wait(lockSleep, 0, 0, 10);
+  }
+  try {
+    return action();
+  } finally {
+    fs.rmSync(lock, { recursive: true, force: true });
+  }
 }
 
 export function readAutoUpdateState(dataDir) {
@@ -87,24 +151,28 @@ export function readAutoUpdateState(dataDir) {
   });
 }
 
-export function writeAutoUpdateState(dataDir, patch) {
-  const current = readAutoUpdateState(dataDir);
-  const next = {
-    ...current,
-    ...patch,
-    version: 1,
-    updatedAt: Date.now(),
-    connectivity: {
-      ...(current.connectivity || {}),
-      ...(patch.connectivity || {})
-    },
-    notification: {
-      ...(current.notification || {}),
-      ...(patch.notification || {})
-    }
-  };
-  writeObject(autoUpdatePaths(dataDir).state, next);
-  return next;
+export function writeAutoUpdateState(dataDir, patchOrFactory) {
+  return withStateLock(dataDir, () => {
+    const current = readAutoUpdateState(dataDir);
+    const patch = typeof patchOrFactory === 'function' ? patchOrFactory.call(null, current) : patchOrFactory;
+    if (patch == null) return current;
+    const next = {
+      ...current,
+      ...patch,
+      version: 1,
+      updatedAt: Date.now(),
+      connectivity: {
+        ...(current.connectivity || {}),
+        ...(patch.connectivity || {})
+      },
+      notification: {
+        ...(current.notification || {}),
+        ...(patch.notification || {})
+      }
+    };
+    writeObject(autoUpdatePaths(dataDir).state, next);
+    return next;
+  });
 }
 
 export function writeAutoUpdateRequest(dataDir, mode = 'manual') {
@@ -447,7 +515,7 @@ export class AutoUpdateManager {
             latencyMs: 0,
             error: message
           },
-          notification: { pending: false }
+          notification: { pending: false, deliveryUnknown: false }
         });
         throw updateError(message);
       }
@@ -468,6 +536,8 @@ export class AutoUpdateManager {
         autoDisabled: policy.disableOnFailure,
         notification: {
           pending: true,
+          attemptId: randomUUID(),
+          deliveryUnknown: false,
           ownerUin,
           sentAt: 0,
           error: ''
@@ -531,16 +601,18 @@ export class AutoUpdateManager {
   async #notifyPending() {
     const state = readAutoUpdateState(this.dataDir);
     if (!state.notification?.pending || !this.notify || !this.notifyAvailable()) return state;
+    const sameNotification = (current, expected) =>
+      JSON.stringify(current.notification || {}) === JSON.stringify(expected || {});
     const ownerUin = String(
       state.notification.ownerUin || autoUpdateOwner(this.config())
     ).trim();
     if (!/^\d{5,15}$/.test(ownerUin)) {
-      return writeAutoUpdateState(this.dataDir, {
+      return writeAutoUpdateState(this.dataDir, (current) => sameNotification(current, state.notification) ? {
         notification: {
-          ...state.notification,
+          ...current.notification,
           error: '未配置有效的全局管理员 QQ'
         }
-      });
+      } : null);
     }
     const mode = state.mode === 'manual' ? '手动更新' : '定时更新';
     const currentEnabled = this.config().autoUpdate?.enabled === true;
@@ -561,18 +633,25 @@ export class AutoUpdateManager {
       action,
       '处理入口：控制台 → 控制 → 更新部署'
     ].join('\n');
+    let claimed = false;
+    let sendingNotification = null;
     try {
       // 发送前先把状态落成"结果未知"：这条链路没有 outbox 那样的 sending 落盘，原来
       // 发送途中崩溃/重启的话 pending 还是 true，重启 resumeNotifications 会把同一条
       // 失败通知再发一遍。先落 unknown（pending=false）；确定没发出去的情况由下面的
       // catch 恢复成 pending 等重试，其余失败保持 unknown 等人工确认。
-      writeAutoUpdateState(this.dataDir, {
-        notification: { ...state.notification, pending: false, deliveryUnknown: true, ownerUin, error: '' }
+      const sending = writeAutoUpdateState(this.dataDir, (current) => {
+        if (!sameNotification(current, state.notification)) return null;
+        claimed = true;
+        sendingNotification = { ...current.notification, pending: false, deliveryUnknown: true, ownerUin, error: '' };
+        return { notification: sendingNotification };
       });
+      if (!claimed) return sending; // a newer failure replaced this notification before we claimed it
       await this.notify(text, ownerUin);
-      const updated = writeAutoUpdateState(this.dataDir, {
+      const updated = writeAutoUpdateState(this.dataDir, (current) =>
+        sameNotification(current, sendingNotification) ? {
         notification: {
-          ...state.notification,
+          ...current.notification,
           pending: false,
           ownerUin,
           sentAt: Date.now(),
@@ -581,7 +660,7 @@ export class AutoUpdateManager {
           // 否则 data/auto-update.json 会一直显示"需人工确认"，与 docs/AUTO_UPDATE.md 的语义对不上。
           deliveryUnknown: false
         }
-      });
+      } : null);
       this.emit('auto-update', this.status());
       return updated;
     } catch (error) {
@@ -589,9 +668,10 @@ export class AutoUpdateManager {
       // onebot.sendText，超时属于结果未知。此前 pending 一直留着，于是 30 秒一次的定时器
       // 会把同一条【更新部署失败】反复发给管理员（项目规则：结果未知不外发重试）。
       const definitelyNotSent = error?.beforeWrite === true;
-      writeAutoUpdateState(this.dataDir, {
+      if (claimed) writeAutoUpdateState(this.dataDir, (current) =>
+        sameNotification(current, sendingNotification) ? {
         notification: {
-          ...state.notification,
+          ...current.notification,
           pending: definitelyNotSent,
           ownerUin,
           error: cleanText(error?.message ?? error, 500),
@@ -599,7 +679,7 @@ export class AutoUpdateManager {
           // 否则"未连接"这种可重试的失败也会被标成结果未知
           deliveryUnknown: !definitelyNotSent
         }
-      });
+      } : null);
       throw error;
     }
   }

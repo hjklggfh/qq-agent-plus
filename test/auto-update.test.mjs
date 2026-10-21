@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import {
   AutoUpdateManager,
   autoUpdatePaths,
@@ -342,6 +343,71 @@ test('失败通知发送前先落"结果未知"：发送途中崩溃重启不会
   const state = readAutoUpdateState(f.dataDir);
   assert.equal(state.notification.pending, false, '结果未知的失败不保留 pending（否则 30 秒定时器会重发）');
   assert.equal(Boolean(state.notification.deliveryUnknown), true);
+});
+
+test('新失败发生在旧通知发送期间时，新通知仍待发送', async (t) => {
+  const f = fixture(t);
+  let resolveSend;
+  let started;
+  const sendStarted = new Promise((resolve) => { started = resolve; });
+  f.manager.notify = async () => {
+    started();
+    await new Promise((resolve) => { resolveSend = resolve; });
+  };
+  writeAutoUpdateState(f.dataDir, {
+    status: 'failed', mode: 'scheduled', phase: 'testing', error: 'first',
+    notification: { pending: true, ownerUin: '900001', sentAt: 0, error: '' }
+  });
+  const sending = f.manager.resumeNotifications();
+  await sendStarted;
+  writeAutoUpdateState(f.dataDir, {
+    status: 'failed', phase: 'deploying', error: 'second',
+    notification: { pending: true, ownerUin: '900001', sentAt: 0, error: '' }
+  });
+  resolveSend();
+  await sending;
+  const state = readAutoUpdateState(f.dataDir);
+  assert.equal(state.notification.pending, true);
+  assert.equal(state.error, 'second');
+});
+
+test('state writer waits for another process and preserves both patches', async (t) => {
+  const f = fixture(t);
+  const lock = autoUpdatePaths(f.dataDir).stateLock;
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner'), String(process.pid));
+  t.after(() => { try { fs.rmSync(lock, { recursive: true, force: true }); } catch { /* released */ } });
+  const moduleUrl = new URL('../src/auto-update.js', import.meta.url).href;
+  const script = `import { writeAutoUpdateState } from ${JSON.stringify(moduleUrl)};\n`
+    + `process.stdout.write('READY\\n');\n`
+    + `writeAutoUpdateState(${JSON.stringify(f.dataDir)}, { childField: 'child' });`;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  await new Promise((resolve, reject) => {
+    child.stdout.once('data', (chunk) => String(chunk).includes('READY') ? resolve() : reject(new Error('child not ready')));
+    child.once('error', reject);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(fs.existsSync(autoUpdatePaths(f.dataDir).state), false, 'child must wait while lock is held');
+  fs.rmSync(lock, { recursive: true, force: true });
+  const exit = await new Promise((resolve) => child.once('exit', resolve));
+  assert.equal(exit, 0, stderr);
+  writeAutoUpdateState(f.dataDir, { parentField: 'parent' });
+  assert.equal(readAutoUpdateState(f.dataDir).childField, 'child');
+  assert.equal(readAutoUpdateState(f.dataDir).parentField, 'parent');
+});
+
+test('state writer reclaims an abandoned lock after the grace period', (t) => {
+  const f = fixture(t);
+  const lock = autoUpdatePaths(f.dataDir).stateLock;
+  fs.mkdirSync(lock);
+  const old = new Date(Date.now() - 31_000);
+  fs.utimesSync(lock, old, old);
+  writeAutoUpdateState(f.dataDir, { recovered: true });
+  assert.equal(readAutoUpdateState(f.dataDir).recovered, true);
+  assert.equal(fs.existsSync(lock), false);
 });
 
 test('currentRevision 以 deployed-revision 为准：状态文件里的旧值不能盖过它', (t) => {

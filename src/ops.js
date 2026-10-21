@@ -997,7 +997,8 @@ async function auditServer(args) {
   section('8. 运行态');
   if (!consoleInfo.token) skipLine('未设置 QQ_AGENT_CONSOLE_TOKEN，且 config.json 无 server.token，跳过控制台状态接口');
   else {
-    const status = await fetchJson(`http://127.0.0.1:${cfg.consolePort}/api/status?token=${encodeURIComponent(consoleInfo.token)}`);
+    const status = await fetchJson(`http://127.0.0.1:${cfg.consolePort}/api/status`,
+      { 'x-console-token': consoleInfo.token });
     if (!status.json) ngLine(`控制台状态接口不可达（${status.error || `HTTP ${status.status}`}）`);
     else {
       const data = status.json;
@@ -1374,7 +1375,8 @@ async function cmdWatchLogin(args) {
       const loginInfo = await fetchJson(`http://127.0.0.1:${cfg.onebotPort}/get_login_info`, { Authorization: `Bearer ${token}` }, 5000);
       say(`get_login_info: ${loginInfo.body.trim().slice(0, 300) || '（无响应）'}`);
       if (consoleInfo.token) {
-        const consoleStatus = await fetchJson(`http://127.0.0.1:${cfg.consolePort}/api/status?token=${encodeURIComponent(consoleInfo.token)}`, {}, 5000);
+        const consoleStatus = await fetchJson(`http://127.0.0.1:${cfg.consolePort}/api/status`,
+          { 'x-console-token': consoleInfo.token }, 5000);
         say(`console: ${consoleStatus.body.trim().slice(0, 400) || '（无响应）'}`);
       }
       say('--- journal ---');

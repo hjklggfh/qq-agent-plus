@@ -161,6 +161,7 @@ timer 每小时唤醒一次，应用配置中的 `intervalHours` 决定是否已
 
 ```text
 data/auto-update.json          # 状态、连通性、updateNotice（弹窗判定结果）、ignoredVersion
+data/auto-update.json.lock/    # 应用与更新器共用的短时状态写锁；进程崩溃后可回收
 data/auto-update-request.json  # 一次性请求（manual / scheduled / probe）
 data/deployed-revision         # 当前部署的 git 提交，deploy.sh 写入
 ```

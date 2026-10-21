@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import {
   autoUpdateOwner,
@@ -1045,7 +1046,7 @@ try {
         revision: '',
         error: message
       },
-      notification: { pending: false }
+      notification: { pending: false, deliveryUnknown: false }
     });
     console.error(`[auto-update] connectivity probe failed: ${message}`);
     process.exitCode = 0;
@@ -1082,6 +1083,8 @@ try {
       } : {}),
       notification: {
         pending: true,
+        attemptId: randomUUID(),
+        deliveryUnknown: false,
         ownerUin: autoUpdateOwner(currentConfig),
         sentAt: 0,
         error: ''

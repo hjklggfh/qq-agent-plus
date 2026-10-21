@@ -275,11 +275,11 @@ credentials are not returned by `/api/config`. On an untrusted network, TLS must
 be terminated in front of the service. Plain HTTP on the LAN is not encrypted.
 `/healthz` returns liveness plus the deployed version and the OneBot connection
 state. API endpoints accept
-`x-console-token`. The `?token=` query parameter is **also accepted, on every authenticated
-route** (`authorize()` reads it uniformly; the auto-login shortcut is only its intended use — this is a
-known deferred item, see `docs/KNOWN-ISSUES.md`). Treat any `?token=` URL as a full credential: use it
-only for the auto-login shortcut, never paste it elsewhere, and never over plain HTTP to a host you do
-not control.
+`x-console-token`. The `?token=` query parameter is accepted only by `/api/events` because browser
+`EventSource` cannot set a custom header. The root-page auto-login shortcut sends its token to
+`POST /api/login` and removes it from the address bar after success. Other authenticated API routes
+reject query-string tokens. Treat any `?token=` URL as a full credential: never paste it elsewhere or
+send it over plain HTTP to a host you do not control.
 
 The top selector changes observe/active mode. Observe stores messages but makes
 no automatic model calls and blocks text, stickers, pokes and test sends.
