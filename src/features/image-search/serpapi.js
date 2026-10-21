@@ -3,6 +3,7 @@ import sharp from 'sharp';
 
 const ENDPOINT = 'https://serpapi.com';
 const MAX_UPLOAD_BYTES = 500_000;
+const CANDIDATE_LIMIT = 8;
 
 function sourceFor(url, supplied) {
   const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
@@ -37,7 +38,7 @@ function linkedAccount(url) {
   return '';
 }
 
-export function parseSerpApiRows(data, section, limit = 5) {
+export function parseSerpApiRows(data, section, limit = 5, match = section === 'exact_matches' ? 'exact' : 'visual') {
   const seen = new Set();
   const rows = [];
   for (const item of Array.isArray(data?.[section]) ? data[section] : []) {
@@ -48,7 +49,7 @@ export function parseSerpApiRows(data, section, limit = 5) {
       ? parsed.pathname.match(/^\/[^/]+\/status\/\d+/)?.[0] : `${parsed.hostname}${parsed.pathname}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    rows.push({ title: cleanTitle(item.title) || '匹配网页', url, source: sourceFor(url, item.source), kind: pageKind(url), account: linkedAccount(url), match: section === 'exact_matches' ? 'exact' : 'visual', image: publicLink(item.image), thumbnail: publicLink(item.thumbnail) });
+    rows.push({ title: cleanTitle(item.title) || '匹配网页', url, source: sourceFor(url, item.source), kind: pageKind(url), account: linkedAccount(url), match, image: publicLink(item.image), thumbnail: publicLink(item.thumbnail) });
     if (rows.length >= limit) break;
   }
   return rows;
@@ -87,26 +88,30 @@ export async function serpApiLens(image, options = {}) {
     const uploaded = await jsonResponse(await fetchImpl(`${ENDPOINT}/image`, { method: 'POST', body: form, signal, redirect: 'error' }), signal);
     if (typeof uploaded.image_id !== 'string' || !/^[\w-]{10,200}$/.test(uploaded.image_id)) throw new Error('SerpApi 图片凭证无效');
 
-    const search = async (type) => {
+    const search = async (type, autoCrop = false) => {
       const url = new URL(`${ENDPOINT}/search.json`);
-      url.search = new URLSearchParams({ engine: 'google_lens', image_id: uploaded.image_id, type, safe: 'off', api_key: key }).toString();
+      url.search = new URLSearchParams({ engine: 'google_lens', image_id: uploaded.image_id, type, safe: 'off', ...(autoCrop ? { auto_crop: 'true' } : {}), api_key: key }).toString();
       return jsonResponse(await fetchImpl(url, { signal, redirect: 'error' }), signal);
     };
     let exact = [];
     let exactFailed = false;
-    try { exact = parseSerpApiRows(await search('exact_matches'), 'exact_matches', options.limit || 3); }
+    try { exact = parseSerpApiRows(await search('exact_matches'), 'exact_matches', CANDIDATE_LIMIT); }
     catch { exactFailed = true; }
     let visual = [];
     if (exactFailed || !exact.some((row) => row.kind === 'post')) {
-      try { visual = parseSerpApiRows(await search('all'), 'visual_matches', options.limit || 3); }
+      try { visual = parseSerpApiRows(await search('all'), 'visual_matches', CANDIDATE_LIMIT); }
       catch { if (exactFailed) return { platform: 'serpapi', status: 'error', message: 'SerpApi 暂时未返回搜图结果，请稍后手动重试', results: [] }; }
+    }
+    if (!exact.length && !visual.length) {
+      try { visual = parseSerpApiRows(await search('all', true), 'visual_matches', CANDIDATE_LIMIT, 'cropped_visual'); }
+      catch { /* 原图没有结果时，裁剪补查失败仍如实返回无结果。 */ }
     }
     const seen = new Set();
     const ordered = [
       ...exact.filter((row) => row.kind === 'post'),
+      ...visual.filter((row) => row.kind === 'post'),
       ...exact.filter((row) => row.kind === 'page').slice(0, 2),
       ...exact.filter((row) => ['search', 'profile'].includes(row.kind)).slice(0, 1),
-      ...visual.filter((row) => row.kind === 'post'),
       ...visual.filter((row) => row.kind !== 'post')
     ];
     const results = ordered.filter((row) => {

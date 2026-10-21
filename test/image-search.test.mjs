@@ -144,12 +144,44 @@ test('SerpApi 大图压缩后上传，保留 TikTok 来源并不将发现页称�
   } });
   assert.equal(report.status, 'ok');
   assert.deepEqual(calls.length, 3);
-  assert.deepEqual(report.results.map((row) => row.kind), ['search', 'post']);
-  assert.equal(report.results[1].account, '@nayee');
+  assert.deepEqual(report.results.map((row) => row.kind), ['post', 'search']);
+  assert.equal(report.results[0].account, '@nayee');
   assert.match(formatSearchReply([report]), /来源：TikTok/);
   assert.match(formatSearchReply([report]), /链接账号 @nayee/);
   assert.match(formatSearchReply([report]), /搜索页/);
   assert.equal(JSON.stringify(report).includes('test-secret'), false);
+});
+
+test('SerpApi 原图无结果时仅补查一次自动裁剪，并标为相似线索', async () => {
+  const calls = [];
+  const report = await serpApiLens({ buffer: png, type: 'image/png' }, { serpApiKey: 'test-secret', fetchImpl: async (url) => {
+    if (String(url).endsWith('/image')) return Response.json({ image_id: 'valid-image-id-12345' });
+    const params = new URL(url).searchParams;
+    calls.push([params.get('type'), params.get('auto_crop')]);
+    if (params.get('auto_crop') === 'true') return Response.json({ visual_matches: [{ title: '裁剪候选', source: 'X', link: 'https://x.com/example/status/123' }] });
+    return Response.json({ exact_matches: [], visual_matches: [] });
+  } });
+  assert.deepEqual(calls, [['exact_matches', null], ['all', null], ['all', 'true']]);
+  assert.equal(report.results[0].match, 'cropped_visual');
+  assert.match(formatFindReply(report), /自动裁剪后的相似图片线索/);
+  assert.match(formatFindReply(report), /账号：未确认/);
+});
+
+test('SerpApi 从前八条候选中找到靠后的社交帖子，展示数量仍受限制', async () => {
+  const report = await serpApiLens({ buffer: png, type: 'image/png' }, { serpApiKey: 'test-secret', limit: 3, fetchImpl: async (url) => {
+    if (String(url).endsWith('/image')) return Response.json({ image_id: 'valid-image-id-12345' });
+    if (new URL(url).searchParams.get('type') === 'exact_matches') return Response.json({ exact_matches: [] });
+    return Response.json({ visual_matches: [
+      { title: '商品页 A', link: 'https://shop.test/item/a' },
+      { title: '商品页 B', link: 'https://shop.test/item/b' },
+      { title: '商品页 C', link: 'https://shop.test/item/c' },
+      { title: '动态', link: 'https://www.instagram.com/p/ABC123/' },
+      { title: '其他页面', link: 'https://shop.test/item/d' }
+    ] });
+  } });
+  assert.equal(report.results.length, 3);
+  assert.equal(report.results[0].kind, 'post');
+  assert.match(formatFindReply(report), /平台：Instagram/);
 });
 
 test('平台 HTTP 403 不泄露原始响应，不伪装成无结果', async () => {
@@ -197,6 +229,18 @@ test('找鸡文字格式标来源账号，并把搜索页标为待核对线索',
   assert.match(reply, /🆔 账号：未确认/);
   assert.match(reply, /https:\/\/www\.tiktok\.com\/discover\/nayee/);
   assert.equal(reply.includes('[CQ:'), false);
+});
+
+test('找鸡优先展示社交平台帖子，不把商品标题当名字或原作者', () => {
+  const reply = formatFindReply({ platform: 'serpapi', status: 'ok', results: [
+    { title: 'Costume for sale', source: 'eBay', kind: 'page', match: 'exact', account: '', url: 'https://www.ebay.com/itm/123' },
+    { title: 'Video post', source: 'TikTok (tiktok.com)', kind: 'post', match: 'visual', account: '@sampleuser', url: 'https://www.tiktok.com/@sampleuser/video/456' }
+  ] });
+  assert.match(reply, /平台：TikTok/);
+  assert.match(reply, /名字：未确认/);
+  assert.match(reply, /账号：@sampleuser/);
+  assert.match(reply, /链接账号也可能只是转载者/);
+  assert.doesNotMatch(reply, /ebay\.com/);
 });
 
 test('中转响应限制字节数，防止超大结果占用内存', async () => {

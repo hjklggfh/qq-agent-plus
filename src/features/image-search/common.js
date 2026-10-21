@@ -40,7 +40,7 @@ export function formatSearchReply(reports, limit = 3) {
       lines.push(`${i + 1}. ${cleanTitle(row.title) || '匹配网页'}`);
       if (report.platform === 'serpapi') {
         const kind = { post: '帖子', profile: '资料页', search: '搜索页', page: '网页' }[row.kind] || '网页';
-        const match = row.match === 'exact' ? 'Lens 完全匹配分区' : 'Lens 相似图片分区';
+        const match = row.match === 'exact' ? 'Lens 完全匹配分区' : row.match === 'cropped_visual' ? 'Lens 自动裁剪相似图片分区' : 'Lens 相似图片分区';
         lines.push(`来源：${cleanTitle(row.source, 80) || new URL(url).hostname} · ${kind} · ${match}${row.account ? ` · 链接账号 ${cleanTitle(row.account, 40)}` : ''}（请核对是否原创）`);
       } else if (report.platform !== 'trace') {
         lines.push(`来源网站：${new URL(url).hostname}（请核对是否原创）`);
@@ -61,19 +61,29 @@ export function formatFindReply(report) {
     lines.push(`\n🔎 匹配：${cleanTitle(report?.message || '没有找到可核对的公开线索')}`);
     return lines.join('\n');
   }
-  const row = report.results.find((item) => publicLink(item.url));
+  const candidates = report.results.filter((item) => publicLink(item.url));
+  const score = (row) => (row.kind === 'post' ? 100 : row.kind === 'profile' ? 70 : row.kind === 'search' ? 30 : 0)
+    + (row.match === 'exact' ? 25 : 0)
+    + (row.account ? 10 : 0);
+  const row = candidates.sort((a, b) => score(b) - score(a))[0];
   if (!row) return `${lines[0]}\n\n🔎 匹配：没有找到可核对的公开线索`;
   const site = cleanTitle(row.source, 80) || new URL(row.url).hostname;
   const platform = site.startsWith('X (') ? 'X (Twitter)' : site.replace(/ \([^)]*\)$/, '');
   const kind = { post: '帖子', profile: '资料页', search: '搜索页', page: '网页' }[row.kind] || '网页';
-  const match = row.match === 'exact' ? '完全匹配线索' : '视觉匹配线索';
+  const match = row.match === 'exact' ? '完全匹配线索' : row.match === 'cropped_visual' ? '自动裁剪后的相似图片线索' : '视觉匹配线索';
+  const title = cleanTitle(row.title, 100) || '未确认';
+  const name = '未确认';
+  const account = row.match === 'cropped_visual' ? '未确认' : cleanTitle(row.account, 40) || '未确认';
   lines.push(`\n🌐 平台：${platform}`);
   lines.push(`🔎 匹配：${match} · ${kind}`);
-  lines.push(`👤 名字：${cleanTitle(row.title, 100) || '未确认'}`);
-  lines.push(`🆔 账号：${cleanTitle(row.account, 40) || '未确认'}`);
+  lines.push(`👤 名字：${name}`);
+  lines.push(`🆔 账号：${account}`);
+  lines.push(`📄 页面标题：${title}`);
   lines.push(`🔗 来源：${publicLink(row.url)}`);
   lines.push(row.kind === 'search'
     ? '\n⚠️ 这只是搜索／发现页，尚未确认具体账号或原帖，请自行核对。'
-    : '\n⚠️ 识图可能有误，来源也可能是转载，请自行核对。');
+    : row.match === 'cropped_visual'
+      ? '\n⚠️ 原图无结果，仅找到裁剪后的相似图片；账号可能与原图无关，请自行核对。'
+      : '\n⚠️ 识图可能有误，链接账号也可能只是转载者，请自行核对。');
   return lines.join('\n');
 }
