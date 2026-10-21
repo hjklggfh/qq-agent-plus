@@ -15,7 +15,7 @@ test('真实 QQ 入口：搜图先消费、重复不重搜、无模型调用，�
   cfg.runtime.mode = 'active'; cfg.runtime.paused = false;
   cfg.allow.groups = ['100001'];
   cfg.sticker.autoCollect = false;
-  cfg.imageSearch = { ...cfg.imageSearch, enabled: true, allowedGroups: ['100001'], relayUrl: 'http://127.0.0.1:3220', relayToken: 't'.repeat(40), cooldownSeconds: 0 };
+  cfg.imageSearch = { ...cfg.imageSearch, enabled: true, platforms: { ...cfg.imageSearch.platforms, serpapi: true }, allowedGroups: ['100001'], relayUrl: 'http://127.0.0.1:3220', relayToken: 't'.repeat(40), cooldownSeconds: 0 };
   setRuntimeConfig(cfg);
   const app = createApp({ log: () => {} });
   t.after(() => app.stop());
