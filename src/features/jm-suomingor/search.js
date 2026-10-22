@@ -61,7 +61,7 @@ async function coverSegment(client, albumId) {
 const text = (value) => ({ type: 'text', data: { text: value } });
 const node = (content, bot) => ({ type: 'node', data: {
   uin: String(bot.selfId || ''),
-  name: String(bot.selfNickname || bot.botName || '机器人').slice(0, 40),
+  name: '小鲸鱼',
   content
 } });
 

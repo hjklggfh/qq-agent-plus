@@ -49,6 +49,7 @@ test('JM 卡片按每页五部换算站点页码，补齐六条消息', async ()
   const result = await searchCardNodes(client, { query: '测试', page: 2, bot: { selfId: '10001', selfNickname: '机器人' } });
   assert.equal(result.pages, 3);
   assert.equal(result.nodes.length, 6);
+  assert.ok(result.nodes.every((node) => node.data.name === '小鲸鱼'));
   assert.deepEqual(result.rows.map((row) => row.id), rows.slice(5, 10).map((row) => row.id));
   assert.deepEqual(client.calls.filter(([action]) => action === 'search').map(([, , page]) => page), [1, 2]);
   const first = result.nodes[0];
