@@ -252,12 +252,12 @@ html.boot-show .loading-overlay { opacity: 1; }
 
 /* ── 侧栏 ── */
 #sidebar {
-  width: 236px;
+  width: 220px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 14px 12px 12px;
+  padding: 18px 11px 12px;
   background: var(--bg-2);
   border-right: 1px solid var(--border);
 }
@@ -295,10 +295,10 @@ html.boot-show .loading-overlay { opacity: 1; }
   border: 0;
 }
 .nav-group-label {
-  padding: 12px 10px 4px;
-  font-size: 11px;
+  padding: 10px 10px 3px;
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: .6px;
+  letter-spacing: 1px;
   color: var(--faint);
 }
 /* ⚠️ .tab 的基础定义必须完整写在这一处（历史教训：在别处再写一条 .tab 会在清理重复时被删掉）。
@@ -306,29 +306,40 @@ html.boot-show .loading-overlay { opacity: 1; }
 .tab {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
   text-align: left;
   background: none;
   border: 1px solid transparent;
   color: var(--muted);
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 7px 10px;
+  min-height: 43px;
+  border-radius: 8px;
   cursor: pointer;
   font-family: inherit;
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
   transition: background .14s ease, color .14s ease, border-color .14s ease;
 }
-.tab::before { content: attr(data-icon); font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; opacity: .95; }
+.tab::before { content: attr(data-icon); font-size: 17px; width: 18px; text-align: center; flex-shrink: 0; opacity: .9; color: var(--muted); }
+.tab-copy { display: grid; gap: 2px; min-width: 0; }
+.tab-copy strong { font-size: 12px; line-height: 1.1; font-weight: 600; }
+.tab-copy small { color: var(--faint); font-size: 10px; line-height: 1.2; font-weight: 400; }
+.tab.active .tab-copy small { color: color-mix(in srgb, var(--accent) 55%, var(--muted)); }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active {
   background: rgba(76, 141, 255, .15);
-  border-color: rgba(76, 141, 255, .34);
+  border-color: color-mix(in srgb, var(--accent) 25%, var(--border));
   color: var(--text);
   font-weight: 600;
 }
+.tab.active::before { color: var(--accent); }
+.memory-subnav { display: flex; gap: 8px; padding: 9px 22px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.memory-subnav.hidden { display: none; }
+.memory-subnav button { border: 1px solid transparent; border-radius: 7px; padding: 6px 10px; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 12px; }
+.memory-subnav button:hover { background: var(--hover); color: var(--text); }
+.memory-subnav button.active { background: var(--bg-3); color: var(--accent); border-color: var(--border); }
 
 /* ── 工作区与状态条 ── */
 #workspace { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -368,7 +379,8 @@ html.boot-show .loading-overlay { opacity: 1; }
   .side-head { padding: 0 2px 4px; }
   #tabs { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; gap: 6px; padding-bottom: 4px; }
   .nav-group-label { display: none; }
-  .tab { width: auto; flex-shrink: 0; }
+  .tab { width: auto; flex-shrink: 0; min-height: 36px; }
+  .tab-copy small { display: none; }
   .side-foot { border-top: 0; padding-top: 4px; }
 }
 
@@ -958,6 +970,7 @@ html.boot-show .loading-overlay { opacity: 1; }
 .settings-runstate .rs-row { display: flex; align-items: center; gap: 8px; }
 .settings-runstate .rs-row .dot { width: 8px; height: 8px; }
 .settings-menu { display: flex; flex-direction: column; gap: 2px; }
+.settings-menu-heading { padding: 2px 12px 9px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .08em; }
 .settings-menu-item {
   background: none; border: none; text-align: left;
   color: var(--muted); padding: 8px 12px; border-radius: 7px;
@@ -1938,20 +1951,27 @@ html.boot-show .loading-overlay { opacity: 1; }
 /* 首页总览：沿用控制台配色，不依赖图表库。 */
 .overview-pane { flex: 1; min-width: 0; overflow-y: auto; padding: 24px 28px 42px; }
 .overview-wrap { max-width: 1540px; margin: 0 auto; display: grid; gap: 18px; }
+.overview-heading { order: 0; }
+.overview-notice { order: 1; }
+.overview-cards { order: 2; }
+.overview-trend-panel { order: 3; }
+.overview-grid { order: 4; }
+.overview-host-panel { order: 5; }
 .overview-heading, .overview-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .overview-heading h1 { margin: 0 0 3px; font-size: 22px; }
 .overview-heading p, .overview-panel-head p { margin: 0; color: var(--muted); font-size: 12px; }
 .overview-notice { border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; color: var(--muted); }
 .overview-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .overview-card, .overview-panel { min-width: 0; background: var(--bg-2); border: 1px solid var(--border); border-radius: 13px; }
-.overview-card { padding: 16px 18px; display: grid; gap: 7px; }
+.overview-card { padding: 16px 18px; display: grid; gap: 6px; min-height: 106px; transition: background .18s ease, border-color .18s ease; }
+.overview-card:hover, .overview-panel:hover { border-color: color-mix(in srgb, var(--accent) 28%, var(--border)); }
 .overview-card > span, .overview-card small { color: var(--muted); }
 .overview-card > span { font-size: 12px; }
 .overview-card strong { font-size: 23px; line-height: 1.2; overflow-wrap: anywhere; }
 .overview-card small { font-size: 11px; line-height: 1.4; }
 .overview-card.good { border-color: color-mix(in srgb, var(--green) 35%, var(--border)); }
 .overview-card.warn { border-color: color-mix(in srgb, var(--orange) 35%, var(--border)); }
-.overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.overview-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 14px; }
 .overview-panel { padding: 18px 20px; }
 .overview-panel-head { margin-bottom: 18px; }
 .overview-panel-head h2 { margin: 0 0 3px; font-size: 15px; }
@@ -1971,7 +1991,32 @@ html.boot-show .loading-overlay { opacity: 1; }
 .overview-chart-day { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); }
 .overview-chart-day strong { height: 16px; font-weight: 600; }
 .overview-chart-track { flex: 1; width: min(52px, 70%); display: flex; align-items: flex-end; }
-.overview-chart-track i { display: block; width: 100%; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--accent); }
+.overview-chart-track i { display: block; width: 100%; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--accent); transform-origin: bottom; animation: overview-rise .65s cubic-bezier(.2,.8,.2,1) both; }
+.overview-chart-day:nth-child(2) i { animation-delay: .05s; }
+.overview-chart-day:nth-child(3) i { animation-delay: .1s; }
+.overview-chart-day:nth-child(4) i { animation-delay: .15s; }
+.overview-chart-day:nth-child(5) i { animation-delay: .2s; }
+.overview-chart-day:nth-child(6) i { animation-delay: .25s; }
+.overview-chart-day:nth-child(7) i { animation-delay: .3s; }
+@keyframes overview-rise { from { transform: scaleY(.08); opacity: .35; } to { transform: scaleY(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .overview-chart-track i { animation: none; } .overview-card { transition: none; } }
+.game-hub { width: 100%; max-width: 1180px; margin: 0 auto; }
+.feature-hub { width: 100%; max-width: 1180px; margin: 0 auto; }
+.feature-hub-intro { padding: 20px 22px; margin-bottom: 22px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); }
+.feature-hub-intro strong { font-size: 15px; }
+.feature-hub-intro p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.feature-hub h2 { margin: 20px 0 11px; font-size: 14px; }
+.game-hub-heading > span { color: var(--accent); font-size: 10px; letter-spacing: .17em; }
+.game-hub-heading h1 { margin: 7px 0 4px; font-size: 24px; }
+.game-hub-heading p { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
+.game-hub-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.game-hub-grid button { display: grid; align-content: start; gap: 10px; min-height: 140px; padding: 20px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); color: var(--text); text-align: left; cursor: pointer; font: inherit; transition: border-color .18s ease, transform .18s ease; }
+.game-hub-grid button:hover { border-color: var(--accent); transform: translateY(-2px); }
+.game-hub-grid strong { font-size: 16px; }
+.game-hub-grid small { color: var(--muted); font-size: 12px; }
+.game-hub-grid button > span { color: var(--accent); font-size: 12px; margin-top: 12px; }
+@media (max-width: 850px) { .game-hub-grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .game-hub-grid button { transition: none; } }
 .overview-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px; }
 .overview-resource { min-width: 0; display: grid; gap: 9px; font-size: 12px; }
 .overview-resource > div:first-child { display: flex; justify-content: space-between; gap: 8px; }

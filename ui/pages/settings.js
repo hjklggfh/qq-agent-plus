@@ -63,7 +63,7 @@ function renderSettingsSidebar() {
   const s = state.status;
   const sidebar = $('#settings-sidebar');
   if (!sidebar) return;
-  const menu = [
+  const allMenu = [
     ['api', '模型 API'],
     ['search', '搜索服务'],
     ['image-search', '以图搜图'],
@@ -87,12 +87,21 @@ function renderSettingsSidebar() {
     ['desktop', '系统'],
     ['onebot', 'OneBot']
   ];
+  const sectionsByArea = {
+    features: ['search', 'image-search', 'pixiv', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'],
+    games: ['haigui-tang', 'groupGame'],
+    settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'desktop', 'onebot']
+  };
+  const area = state.settingsArea || 'settings';
+  const menu = allMenu.filter(([id]) => (sectionsByArea[area] || sectionsByArea.settings).includes(id));
+  const areaTitle = { features: '功能', games: '游戏设置', settings: '基础设置' }[area] || '基础设置';
   sidebar.innerHTML = `
     <div class="settings-runstate">
       <div class="rs-title">机器人运行状态</div>
       <div class="rs-row" ${s?.onebot?.connected ? '' : `title="${esc(onebotIssueText(s?.onebot) || '正在等待首次连接')}"`}><span class="dot ${s?.onebot?.connected ? 'dot-on' : 'dot-off'}"></span><span>${s?.onebot?.connected ? '运行中' : '未就绪'}</span></div>
       <div class="rs-row muted">${state.paused ? '⏸ 已暂停' : (s?.orchestrator?.model ? `模型：${esc(s.orchestrator.model)}` : '模型：未设置')}</div>
     </div>
+    <div class="settings-menu-heading">${areaTitle}</div>
     <div class="settings-menu">
       ${menu.map(([id, label]) => `<button class="settings-menu-item ${state.settingsSection === id ? 'active' : ''}" data-section="${id}">${label}</button>`).join('')}
     </div>`;

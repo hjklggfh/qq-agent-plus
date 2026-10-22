@@ -146,9 +146,22 @@ function renderBanner() {
 }
 
 function switchTab(name) {
-  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
-  $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${name}`));
-  state.tab = name;
+  const featureSections = ['search', 'image-search', 'pixiv', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'];
+  const gameSections = ['haigui-tang', 'groupGame'];
+  const memoryTabs = ['memory', 'people-memory', 'identity'];
+  if (name === 'settings') {
+    state.settingsArea = featureSections.includes(state.settingsSection) ? 'features'
+      : gameSections.includes(state.settingsSection) ? 'games' : 'settings';
+  }
+  const viewName = name;
+  const navName = viewName === 'settings' ? state.settingsArea
+    : memoryTabs.includes(name) ? 'memory' : name === 'trpg' ? 'games' : name;
+  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === navName));
+  $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${viewName}`));
+  const memoryNav = $('#memory-subnav');
+  if (memoryNav) memoryNav.classList.toggle('hidden', !memoryTabs.includes(name));
+  $$('[data-memory-tab]').forEach((button) => button.classList.toggle('active', button.dataset.memoryTab === name));
+  state.tab = viewName;
   if (name === 'overview') loadOverview();
   if (name === 'control') loadControlHub();
   if (name === 'sessions') loadSessions();
@@ -162,7 +175,7 @@ function switchTab(name) {
   if (name === 'usage') loadUsageView({ force: true });
   if (name === 'plugins') loadPluginPage();
   if (name === 'trpg') loadTrpgPage();
-  if (name === 'settings') loadSettings();
+  if (viewName === 'settings') loadSettings();
 }
 
 function updateProgressStage(update = {}) {
@@ -1066,8 +1079,21 @@ function modelModalShell({ head, body, foot = '', danger = false }) {
 //    页面永远空白（轮询走的是"只更新数值"路径，骨架从未建立也救不回来）。
 //    两条路径各维护一份必然再次分叉，所以这里只准调 switchTab。
 $$('.tab').forEach((tab) => {
-  tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+  tab.addEventListener('click', () => {
+    if (tab.dataset.tab === 'settings') state.settingsSection = 'api';
+    switchTab(tab.dataset.tab);
+  });
 });
+$$('[data-memory-tab]').forEach((tab) => tab.addEventListener('click', () => switchTab(tab.dataset.memoryTab)));
+$$('[data-game-target]').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.gameTarget)));
+$$('[data-game-section]').forEach((button) => button.addEventListener('click', () => {
+  state.settingsSection = button.dataset.gameSection;
+  switchTab('settings');
+}));
+$$('[data-feature-section]').forEach((button) => button.addEventListener('click', () => {
+  state.settingsSection = button.dataset.featureSection;
+  switchTab('settings');
+}));
 
 // ── 启动 ──
 async function init() {

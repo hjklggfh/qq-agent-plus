@@ -85,9 +85,9 @@ function renderOverview({ status, usage, incidents, host, errors = [] }) {
       <section class="overview-panel"><div class="overview-panel-head"><div><h2>最近异常</h2><p>最近 5 条 · 待处理 ${number(count.open)}</p></div><button type="button" class="overview-link" data-overview-go="incidents">全部异常 →</button></div>
         ${renderIncidents(incidents)}</section>
     </div>
-    <section class="overview-panel"><div class="overview-panel-head"><div><h2>近 7 天用量</h2><p>${usage ? `${number(total.runs)} 次模型调用 · ${fmtTokens(total.totalTokens)} token · ${money(total.cost)}` : '正在等待用量数据'}</p></div>
+    <section class="overview-panel overview-trend-panel"><div class="overview-panel-head"><div><h2>近 7 天用量</h2><p>${usage ? `${number(total.runs)} 次模型调用 · ${fmtTokens(total.totalTokens)} token · ${money(total.cost)}` : '正在等待用量数据'}</p></div>
       <button type="button" class="overview-link" data-overview-go="usage">用量详情 →</button></div>${renderTrend(usage)}</section>
-    <section class="overview-panel"><div class="overview-panel-head"><div><h2>主机资源</h2><p>${host ? `${esc(host.hostname)} · ${number(host.cpuCount)} 核 · 服务运行 ${Math.floor(number(host.processUptimeSeconds) / 3600)} 小时` : '主机数据暂不可用'}</p></div></div>
+    <section class="overview-panel overview-host-panel"><div class="overview-panel-head"><div><h2>主机资源</h2><p>${host ? `${esc(host.hostname)} · ${number(host.cpuCount)} 核 · 服务运行 ${Math.floor(number(host.processUptimeSeconds) / 3600)} 小时` : '主机数据暂不可用'}</p></div></div>
       ${host ? `<div class="overview-resources">
         <div class="overview-resource"><div><span>CPU 负载</span><strong>${number(host.loadAverage?.[0]).toFixed(2)}</strong></div><small>近 1 分钟 · ${number(host.cpuCount)} 核</small></div>
         ${resource('内存', host.memory?.used, host.memory?.total, `${size(host.memory?.used)} / ${size(host.memory?.total)}`)}

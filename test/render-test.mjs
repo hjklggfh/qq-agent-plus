@@ -850,7 +850,7 @@ try {
     lastAt: Date.now()
   }]);
   const dedicatedFeaturePagesOk =
-    indexHtml.includes('data-tab="identity"')
+    indexHtml.includes('data-memory-tab="identity"')
     && indexHtml.includes('id="view-identity"')
     && indexHtml.includes('data-tab="friends"')
     && indexHtml.includes('id="view-friends"')
@@ -3604,8 +3604,13 @@ try {
     ctx.renderSettingsSidebar();
     // 渲染要按正常配置来（前面有用例把 state.config 设成 null 验过"配置未加载"）
     vm.runInContext(`state.config = ${JSON.stringify(cfg)};`, ctx);
-    const sidebarHtml = String(document.querySelector('#settings-sidebar').innerHTML || '');
-    const menuIds = [...sidebarHtml.matchAll(/data-section="([^"]+)"/g)].map((m) => m[1]);
+    const menuIds = new Set();
+    for (const area of ['settings', 'features', 'games']) {
+      vm.runInContext(`state.settingsArea = ${JSON.stringify(area)};`, ctx);
+      ctx.renderSettingsSidebar();
+      const sidebarHtml = String(document.querySelector('#settings-sidebar').innerHTML || '');
+      for (const match of sidebarHtml.matchAll(/data-section="([^"]+)"/g)) menuIds.add(match[1]);
+    }
     const outputs = new Map();
     const failed = [];
     vm.runInContext("state.settingsSection = 'api';", ctx);
@@ -3621,14 +3626,14 @@ try {
     }
     const dup = [...outputs.entries()].find(([, html], i, arr) => arr.findIndex(([, other]) => other === html) !== i);
     if (dup) failed.push(`${dup[0]}:与另一个分区输出完全相同`);
-    if (!menuIds.includes('groupGame')) failed.push('菜单里没有 groupGame');
+    if (!menuIds.has('groupGame')) failed.push('菜单里没有 groupGame');
     if (!(outputs.get('groupGame') || '').includes('id="settings-groupgame"')) failed.push('groupGame 没渲染到自己的分区');
-    const okSecs = menuIds.length >= 15 && failed.length === 0;
+    const okSecs = menuIds.size >= 15 && failed.length === 0;
     okSecs ? pass++ : fail++;
     console.log('  ' + (okSecs ? 'OK   ' : 'FAIL ')
-      + `设置侧边栏 ${menuIds.length} 个菜单项都能路由到自己的分区`
+      + `设置侧边栏 ${menuIds.size} 个菜单项都能路由到自己的分区`
       + (okSecs ? '' : ' -> ' + JSON.stringify(failed)));
-    vm.runInContext("state.settingsSection = 'api';", ctx);
+    vm.runInContext("state.settingsSection = 'api'; state.settingsArea = 'settings';", ctx);
   }
 
   // ⚠️ 设置页那些 .hint 是 **HTML**，不是 markdown：把 **…** 写进去浏览器会连星号一起显示

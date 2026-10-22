@@ -27,6 +27,7 @@ const state = {
   paused: false,
   autoFollowRunning: true,
   settingsSection: 'api',
+  settingsArea: 'settings',
   memoryView: 'events',
   currentMemoryChatKey: null,
   identityFeatureQuery: '',

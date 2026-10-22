@@ -52,23 +52,23 @@
       </div>
 
       <nav id="tabs" data-page-node-id="E9BCxQoSdlNgyXwJBELj6z">
-        <button class="tab active" data-icon="◉" data-tab="overview">总览</button>
+        <button class="tab active" data-icon="◉" data-tab="overview"><span class="tab-copy"><strong>总览</strong><small>机器人与协议端</small></span></button>
         <div class="nav-group-label">对话</div>
-        <button class="tab" data-icon="💬" data-tab="sessions" data-page-node-id="QA2pcdHYdARJK2APBNKZmC">会话</button>
-        <button class="tab" data-icon="🗂" data-tab="chats" data-page-node-id="AdXD0D2NiWH5UBfpPQqzQ2">存档</button>
-        <button class="tab" data-icon="🎛" data-tab="control" data-page-node-id="qcontrolnav">控制</button>
-        <div class="nav-group-label">记忆</div>
-        <button class="tab" data-icon="🧠" data-tab="memory" data-page-node-id="vXS9OY6wG4MkJlzQ2aLADZ">会话记忆</button>
-        <button class="tab" data-icon="👥" data-tab="people-memory" data-page-node-id="qpeoplememorynav">人物记忆</button>
-        <button class="tab" data-icon="🪪" data-tab="identity" data-feature-nav="identity">人物印象</button>
-        <button class="tab" data-icon="🤝" data-tab="friends" data-feature-nav="auto-friend">好友管理</button>
+        <button class="tab" data-icon="▤" data-tab="sessions" data-page-node-id="QA2pcdHYdARJK2APBNKZmC"><span class="tab-copy"><strong>会话</strong><small>逐条对话记录</small></span></button>
+        <button class="tab" data-icon="▣" data-tab="chats" data-page-node-id="AdXD0D2NiWH5UBfpPQqzQ2"><span class="tab-copy"><strong>存档</strong><small>分群聊天归档</small></span></button>
+        <button class="tab" data-icon="⌘" data-tab="control" data-page-node-id="qcontrolnav"><span class="tab-copy"><strong>控制</strong><small>更新与运行开关</small></span></button>
+        <div class="nav-group-label">关系与记忆</div>
+        <button class="tab" data-icon="◇" data-tab="memory" data-page-node-id="vXS9OY6wG4MkJlzQ2aLADZ"><span class="tab-copy"><strong>记忆</strong><small>会话、人物与印象</small></span></button>
+        <button class="tab" data-icon="♧" data-tab="friends" data-feature-nav="auto-friend"><span class="tab-copy"><strong>好友管理</strong><small>好友申请与派发</small></span></button>
         <div class="nav-group-label">运行</div>
-        <button class="tab" data-icon="📈" data-tab="assets" data-page-node-id="qassetobserve">观测</button>
-        <button class="tab" data-icon="💰" data-tab="usage" data-page-node-id="hcZzcXuMojNoiE7UcRVYfR">用量</button>
-        <button class="tab" data-icon="🚨" data-tab="incidents" data-feature-nav="incidents">异常处理</button>
-        <button class="tab" data-icon="🎲" data-tab="trpg">跑团</button>
+        <button class="tab" data-icon="⌁" data-tab="assets" data-page-node-id="qassetobserve"><span class="tab-copy"><strong>观测</strong><small>素材与实验状态</small></span></button>
+        <button class="tab" data-icon="▥" data-tab="usage" data-page-node-id="hcZzcXuMojNoiE7UcRVYfR"><span class="tab-copy"><strong>用量</strong><small>花费与 Token</small></span></button>
+        <button class="tab" data-icon="△" data-tab="incidents" data-feature-nav="incidents"><span class="tab-copy"><strong>异常处理</strong><small>告警与日志</small></span></button>
+        <div class="nav-group-label">扩展</div>
+        <button class="tab" data-icon="✧" data-tab="features"><span class="tab-copy"><strong>功能</strong><small>搜图、媒体与语音</small></span></button>
+        <button class="tab" data-icon="⬡" data-tab="games"><span class="tab-copy"><strong>游戏</strong><small>跑团与群游戏</small></span></button>
         <!-- 插件管理页暂不在导航中展示；页面、配置和插件数据保留。 -->
-        <button class="tab" data-icon="⚙️" data-tab="settings" data-page-node-id="4cXbRBtGmcpcL272eKvHPV">设置</button>
+        <button class="tab" data-icon="⚙" data-tab="settings" data-page-node-id="4cXbRBtGmcpcL272eKvHPV"><span class="tab-copy"><strong>设置</strong><small>模型、系统与基础配置</small></span></button>
       </nav>
 
       <div class="side-foot">
@@ -96,6 +96,12 @@
       </header>
 
       <div id="banner" class="banner hidden" data-page-node-id="XwcKf16gobwX1Rec9tqlEn"></div>
+
+      <nav id="memory-subnav" class="memory-subnav hidden" aria-label="记忆分区">
+        <button type="button" data-memory-tab="memory">会话记忆</button>
+        <button type="button" data-memory-tab="people-memory">人物记忆</button>
+        <button type="button" data-memory-tab="identity" data-feature-nav="identity">人物印象</button>
+      </nav>
 
   <main id="layout" data-page-node-id="hvuDZ0DOoYC7fFheJnpiGZ">
     <section id="view-overview" class="view active">
@@ -196,6 +202,43 @@
     <!-- 用量视图 -->
     <section id="view-usage" class="view" data-page-node-id="At5AHGr3EpuOFlDyc7dES4">
       <div id="usage-page" class="usage-pane" data-page-node-id="1AXcokyh5yiXqQgwn6X2gu"></div>
+    </section>
+
+    <!-- 独立功能集中展示；卡片打开原有的完整配置表单。 -->
+    <section id="view-features" class="view">
+      <div class="feature-hub asset-pane">
+        <div class="game-hub-heading"><span>CAPABILITIES</span><h1>功能</h1><p>常用能力集中在这里，各项设置与已有数据继续保留。</p></div>
+        <div class="feature-hub-intro"><strong>常用功能，一处进入</strong><p>图片搜索、资源处理和语音能力从基础设置中独立出来。点击卡片即可管理对应功能。</p></div>
+        <h2>图片与资源</h2>
+        <div class="game-hub-grid">
+          <button type="button" data-feature-section="image-search"><strong>以图搜图</strong><small>查找图片来源与相似结果</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="pixiv"><strong>PID 搜索</strong><small>Pixiv 作品获取与发送</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="jm"><strong>JM 禁漫下载</strong><small>下载、PDF 与文件任务</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="media"><strong>B站媒体</strong><small>识别并处理视频分享</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="ehentai"><strong>E站检索</strong><small>画廊检索与文件任务</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="asr"><strong>语音转文字</strong><small>识别收到的语音消息</small><span>打开配置 →</span></button>
+        </div>
+        <h2>日常与自动化</h2>
+        <div class="game-hub-grid">
+          <button type="button" data-feature-section="search"><strong>搜索服务</strong><small>联网搜索服务配置</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="moments"><strong>每日动态</strong><small>定时生成与发送动态</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="reminders"><strong>定时提醒</strong><small>提醒任务与会话安排</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="qzone-interactions"><strong>动态互动</strong><small>空间动态互动设置</small><span>打开配置 →</span></button>
+          <button type="button" data-feature-section="time-control"><strong>时间控制</strong><small>运行时段与会话覆盖</small><span>打开配置 →</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 游戏入口：跑团保留完整工作台；其他游戏沿用独立配置表单。 -->
+    <section id="view-games" class="view">
+      <div class="game-hub asset-pane">
+        <div class="game-hub-heading"><span>PLAY SPACE</span><h1>游戏</h1><p>跑团与群内互动游戏集中在这里。</p></div>
+        <div class="game-hub-grid">
+          <button type="button" data-game-target="trpg"><strong>跑团</strong><small>世界、角色卡、战役与存档</small><span>进入工作台 →</span></button>
+          <button type="button" data-game-section="haigui-tang"><strong>海龟汤</strong><small>题库、难度与主持设置</small><span>打开配置 →</span></button>
+          <button type="button" data-game-section="groupGame"><strong>群游戏</strong><small>群内互动规则与开关</small><span>打开配置 →</span></button>
+        </div>
+      </div>
     </section>
 
     <!-- 插件 -->

@@ -12,8 +12,9 @@ const people = read('ui/global-memory.js');
 const session = read('ui/session-memory-view.js');
 
 test('memory navigation exposes independent session and person pages', () => {
-  assert.match(index, /data-tab="memory"[^>]*>会话记忆<\/button>/);
-  assert.match(index, /data-tab="people-memory"[^>]*>人物记忆<\/button>/);
+  assert.match(index, /data-tab="memory"[^>]*>.*记忆/);
+  assert.match(index, /data-memory-tab="memory">会话记忆<\/button>/);
+  assert.match(index, /data-memory-tab="people-memory">人物记忆<\/button>/);
   assert.match(index, /id="view-memory"/);
   assert.match(index, /id="view-people-memory"/);
   assert.match(index, /id="global-memory-items"/);
@@ -23,7 +24,7 @@ test('memory navigation exposes independent session and person pages', () => {
 
 test('global person memory renders only inside the dedicated people page', () => {
   assert.match(people, /getElementById\('view-people-memory'\)/);
-  assert.match(people, /data-tab="people-memory"/);
+  assert.match(people, /data-memory-tab="people-memory"/);
   assert.doesNotMatch(people, /data-tab="memory"/);
   assert.doesNotMatch(people, /view-memory\[data-global-memory/);
   assert.match(people, /sourceChatKeys/);

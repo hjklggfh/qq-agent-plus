@@ -364,8 +364,8 @@ import { saveMemberNote } from './pages/memory.js';
       button.disabled = false;
     }
   });
-  document.querySelector('[data-tab="people-memory"]')?.addEventListener('click', () => {
-    // app.js 的通用 tab handler 先完成视图切换；随后刷新人物全局视图。
+  document.querySelector('[data-memory-tab="people-memory"]')?.addEventListener('click', () => {
+    // app.js 的记忆分区切换先完成视图切换；随后刷新人物全局视图。
     setTimeout(() => loadGlobalMemory(true), 0);
   });
 

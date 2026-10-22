@@ -1,6 +1,6 @@
 // UI 真实 DOM 冒烟（改进方案 #1 A 档）：happy-dom 提供真实 DOM 语义（对比 render-test 的
 // 手写桩件），加载 index.html 骨架 + 全部 ui/*.js（按 script 清单顺序），断言：
-// 11 个 tab 的渲染入口都不抛、api() 走 fetch 桩、登录表单提交走通。
+// 所有主导航入口都不抛、api() 走 fetch 桩、登录表单提交走通。
 // **缺 happy-dom 时自动跳过** —— D6 约定：更新器用 --omit=dev 不装 devDeps，
 // 这条 skip 路径是必须守住的（不许删；删了更新器环境会红）。
 import assert from 'node:assert/strict';
@@ -64,7 +64,7 @@ function loadPage() {
   return { window, fetchLog, errors };
 }
 
-test('真实 DOM 冒烟：加载全部脚本、11 个 tab 切换入口不抛', { skip: SKIP }, async () => {
+test('真实 DOM 冒烟：加载全部脚本、主导航切换入口不抛', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();
   try {
@@ -81,6 +81,43 @@ test('真实 DOM 冒烟：加载全部脚本、11 个 tab 切换入口不抛', {
       }
     }
     assert.deepEqual(failed, [], `这些 tab 的渲染入口抛错：${failed.join(' | ')}`);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
+test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const doc = window.document;
+    doc.querySelector('[data-tab="features"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('[data-tab="features"]').classList.contains('active'));
+    assert.ok(doc.querySelector('#view-features').classList.contains('active'));
+    doc.querySelector('[data-feature-section="image-search"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
+    assert.ok(doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="image-search"'));
+    assert.ok(!doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="api"'));
+
+    doc.querySelector('[data-tab="games"]').click();
+    assert.ok(doc.querySelector('#view-games').classList.contains('active'));
+    doc.querySelector('[data-game-section="groupGame"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
+    assert.ok(doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="groupGame"'));
+    assert.ok(doc.querySelector('[data-tab="games"]').classList.contains('active'));
+    doc.querySelector('[data-tab="games"]').click();
+    doc.querySelector('[data-game-target="trpg"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('#view-trpg').classList.contains('active'));
+    assert.ok(doc.querySelector('[data-tab="games"]').classList.contains('active'));
+
+    doc.querySelector('[data-tab="memory"]').click();
+    doc.querySelector('[data-memory-tab="people-memory"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('#view-people-memory').classList.contains('active'));
+    assert.ok(doc.querySelector('[data-tab="memory"]').classList.contains('active'));
+    assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });
 
