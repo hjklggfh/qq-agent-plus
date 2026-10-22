@@ -25,12 +25,12 @@ function card(label, value, detail, className = '') {
   return `<div class="overview-card ${className}"><span>${esc(label)}</span><strong>${esc(value)}</strong><small>${esc(detail)}</small></div>`;
 }
 
-function renderTrend(stats) {
+function renderTrend(stats, animate = false) {
   if (!stats) return '<div class="overview-empty">用量数据暂不可用</div>';
   const byDay = new Map((stats.days || []).map((day) => [day.day, day]));
   const days = lastSevenDays().map((key) => ({ key, ...byDay.get(key) }));
   const max = Math.max(1, ...days.map((day) => number(day.runs)));
-  return `<div class="overview-chart" role="img" aria-label="近 7 天模型调用次数">
+  return `<div class="overview-chart${animate ? ' is-entering' : ''}" role="img" aria-label="近 7 天模型调用次数">
     ${days.map((day) => `<div class="overview-chart-day" title="${esc(day.key)}：${number(day.runs)} 次模型调用 · ${money(day.cost)}">
       <strong>${number(day.runs) || ''}</strong><div class="overview-chart-track"><i style="height:${Math.max(number(day.runs) ? 6 : 2, percent(number(day.runs), max))}%"></i></div>
       <span>${esc(day.key.slice(5))}</span>
@@ -58,6 +58,8 @@ function resource(label, used, total, detail) {
 function renderOverview({ status, usage, incidents, host, errors = [] }) {
   const box = $('#overview-page');
   if (!box) return;
+  const animateTrend = !!usage && box.dataset.trendAnimated !== 'true';
+  if (animateTrend) box.dataset.trendAnimated = 'true';
   const ob = status?.onebot || {};
   const count = status?.incidentPilot?.counts || incidents?.status?.counts || {};
   const today = status?.usage || {};
@@ -86,7 +88,7 @@ function renderOverview({ status, usage, incidents, host, errors = [] }) {
         ${renderIncidents(incidents)}</section>
     </div>
     <section class="overview-panel overview-trend-panel"><div class="overview-panel-head"><div><h2>近 7 天用量</h2><p>${usage ? `${number(total.runs)} 次模型调用 · ${fmtTokens(total.totalTokens)} token · ${money(total.cost)}` : '正在等待用量数据'}</p></div>
-      <button type="button" class="overview-link" data-overview-go="usage">用量详情 →</button></div>${renderTrend(usage)}</section>
+      <button type="button" class="overview-link" data-overview-go="usage">用量详情 →</button></div>${renderTrend(usage, animateTrend)}</section>
     <section class="overview-panel overview-host-panel"><div class="overview-panel-head"><div><h2>主机资源</h2><p>${host ? `${esc(host.hostname)} · ${number(host.cpuCount)} 核 · 服务运行 ${Math.floor(number(host.processUptimeSeconds) / 3600)} 小时` : '主机数据暂不可用'}</p></div></div>
       ${host ? `<div class="overview-resources">
         <div class="overview-resource"><div><span>CPU 负载</span><strong>${number(host.loadAverage?.[0]).toFixed(2)}</strong></div><small>近 1 分钟 · ${number(host.cpuCount)} 核</small></div>

@@ -1991,13 +1991,14 @@ html.boot-show .loading-overlay { opacity: 1; }
 .overview-chart-day { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; font-size: 11px; color: var(--muted); }
 .overview-chart-day strong { height: 16px; font-weight: 600; }
 .overview-chart-track { flex: 1; width: min(52px, 70%); display: flex; align-items: flex-end; }
-.overview-chart-track i { display: block; width: 100%; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--accent); transform-origin: bottom; animation: overview-rise .65s cubic-bezier(.2,.8,.2,1) both; }
-.overview-chart-day:nth-child(2) i { animation-delay: .05s; }
-.overview-chart-day:nth-child(3) i { animation-delay: .1s; }
-.overview-chart-day:nth-child(4) i { animation-delay: .15s; }
-.overview-chart-day:nth-child(5) i { animation-delay: .2s; }
-.overview-chart-day:nth-child(6) i { animation-delay: .25s; }
-.overview-chart-day:nth-child(7) i { animation-delay: .3s; }
+.overview-chart-track i { display: block; width: 100%; min-height: 2px; border-radius: 5px 5px 0 0; background: var(--accent); transform-origin: bottom; }
+.overview-chart.is-entering .overview-chart-track i { animation: overview-rise .65s cubic-bezier(.2,.8,.2,1) both; }
+.overview-chart.is-entering .overview-chart-day:nth-child(2) i { animation-delay: .05s; }
+.overview-chart.is-entering .overview-chart-day:nth-child(3) i { animation-delay: .1s; }
+.overview-chart.is-entering .overview-chart-day:nth-child(4) i { animation-delay: .15s; }
+.overview-chart.is-entering .overview-chart-day:nth-child(5) i { animation-delay: .2s; }
+.overview-chart.is-entering .overview-chart-day:nth-child(6) i { animation-delay: .25s; }
+.overview-chart.is-entering .overview-chart-day:nth-child(7) i { animation-delay: .3s; }
 @keyframes overview-rise { from { transform: scaleY(.08); opacity: .35; } to { transform: scaleY(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .overview-chart-track i { animation: none; } .overview-card { transition: none; } }
 .game-hub { width: 100%; max-width: 1180px; margin: 0 auto; }

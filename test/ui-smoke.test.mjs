@@ -84,6 +84,22 @@ test('真实 DOM 冒烟：加载全部脚本、主导航切换入口不抛', { s
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('总览用量图只在首次加载时播放入场动画', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const doc = window.document;
+    window.switchTab('overview');
+    await settle();
+    assert.ok(doc.querySelector('.overview-chart.is-entering'));
+    doc.querySelector('[data-overview-refresh]').click();
+    await settle();
+    assert.ok(doc.querySelector('.overview-chart'));
+    assert.equal(doc.querySelector('.overview-chart.is-entering'), null);
+    assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();
