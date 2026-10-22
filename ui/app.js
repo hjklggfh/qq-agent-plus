@@ -27,6 +27,7 @@ import {
 import { QARegistry } from './core/registry.js';
 import { pendingSessionDetail, refreshIntervalMs, startUpdateProgressTicker, state } from './core/state.js';
 import { loadChats } from './pages/chat.js';
+import { initAppearance, renderAppearancePage } from './pages/appearance.js';
 import {
   loadAssetObservatory, loadExperimentalFeatureStatuses, loadFriendOpportunities, loadFriendProposals,
   loadIncomingFriendRequests, loadSlangFeaturePage, renderAssetObservatory, renderFriendFeaturePageImpl,
@@ -167,6 +168,7 @@ function switchTab(name) {
   $$('[data-memory-tab]').forEach((button) => button.classList.toggle('active', button.dataset.memoryTab === name));
   state.tab = viewName;
   if (name === 'overview') loadOverview();
+  if (name === 'appearance') renderAppearancePage();
   if (name === 'control') loadControlHub();
   if (name === 'sessions') loadSessions();
   if (name === 'chats') loadChats();
@@ -1100,6 +1102,7 @@ async function init() {
   // 先在配置就绪之前把轮询跑起来（兜底间隔，见下面 startListPoller 的注释）——
   // 放到这里而不是模块顶层，是因为模块求值期读 state 会踩 TDZ。
   startListPoller();
+  initAppearance();
   // 主题：先按本地偏好应用（index.html 的内联脚本已做过一次，这里同步按钮图标），
   // 再用后端配置覆盖（若用户换了设备，以后端为准）。
   applyTheme(getThemePref());

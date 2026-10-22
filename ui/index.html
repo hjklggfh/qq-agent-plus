@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" class="boot-silent" data-page-node-id="ZXebjK2cF5fnVGKycsygcn">
+<html lang="zh-CN" class="boot-silent" data-backdrop="mist" data-page-node-id="ZXebjK2cF5fnVGKycsygcn">
 <head data-page-node-id="IsCa0pdqCFHN4aOg8ZLqCH">
   <meta charset="UTF-8" data-page-node-id="8xi2lJIfYAgLleFVuOJUJ4" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" data-page-node-id="6HjAQtPOvWz7Elp6uKOeUp" />
@@ -34,6 +34,21 @@
           : (saved === 'system' ? sys : (saved || sys));
         if (theme !== 'light' && theme !== 'dark') theme = 'dark';
         document.documentElement.setAttribute('data-theme', theme);
+        var appearance = {};
+        try { appearance = JSON.parse(localStorage.getItem('qqa-appearance-v1') || '{}') || {}; } catch (ignored) { /* 损坏的外观记录不影响主题 */ }
+        var allowed = {
+          accent: ['blue', 'cyan', 'violet', 'emerald', 'amber'],
+          backdrop: ['plain', 'mist', 'grid', 'glow'],
+          surface: ['solid', 'glass', 'outline'],
+          layout: ['focus', 'standard', 'wide'],
+          density: ['compact', 'balanced', 'spacious'],
+          typography: ['system', 'reading', 'technical'],
+          motion: ['off', 'subtle', 'lively'],
+          radius: ['soft', 'square', 'round']
+        };
+        Object.keys(allowed).forEach(function (key) {
+          if (allowed[key].indexOf(appearance[key]) !== -1) document.documentElement.dataset[key] = appearance[key];
+        });
       } catch (e) {
         document.documentElement.setAttribute('data-theme', 'dark');
       }
@@ -69,6 +84,7 @@
         <button class="tab" data-icon="⬡" data-tab="games"><span class="tab-copy"><strong>游戏</strong><small>跑团与群游戏</small></span></button>
         <!-- 插件管理页暂不在导航中展示；页面、配置和插件数据保留。 -->
         <button class="tab" data-icon="⚙" data-tab="settings" data-page-node-id="4cXbRBtGmcpcL272eKvHPV"><span class="tab-copy"><strong>设置</strong><small>模型、系统与基础配置</small></span></button>
+        <button class="tab" data-icon="◐" data-tab="appearance"><span class="tab-copy"><strong>外观</strong><small>主题、色彩与页面风格</small></span></button>
       </nav>
 
       <div class="side-foot">
@@ -204,6 +220,10 @@
       <div id="usage-page" class="usage-pane" data-page-node-id="1AXcokyh5yiXqQgwn6X2gu"></div>
     </section>
 
+    <section id="view-appearance" class="view" aria-label="外观设置">
+      <div id="appearance-page" class="appearance-pane"></div>
+    </section>
+
     <!-- 游戏入口：跑团保留完整工作台；其他游戏沿用独立配置表单。 -->
     <section id="view-games" class="view">
       <div class="game-hub asset-pane">
@@ -330,6 +350,7 @@
   <script type="module" src="/pages/pixiv.js"></script>
   <script type="module" src="/pages/ehentai.js"></script>
   <script type="module" src="/pages/haigui-tang.js"></script>
+  <script type="module" src="/pages/appearance.js"></script>
   <!-- 设置域（第二轮拆出；app.js 的 loadSettings/bindSettingsEvents/saveConfig 链全靠它们） -->
   <script type="module" src="/pages/settings.js"></script>
   <script type="module" src="/pages/settings-voice.js"></script>

@@ -28,6 +28,7 @@ const state = {
   autoFollowRunning: true,
   settingsSection: 'api',
   settingsArea: 'settings',
+  appearance: null,
   memoryView: 'events',
   currentMemoryChatKey: null,
   identityFeatureQuery: '',

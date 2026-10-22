@@ -122,6 +122,36 @@ test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, asyn
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const doc = window.document;
+    doc.querySelector('[data-tab="appearance"]').click();
+    assert.ok(doc.querySelector('#view-appearance').classList.contains('active'));
+    assert.ok(doc.querySelector('[data-appearance-preset="ocean"]'));
+    assert.deepEqual(errors, []);
+    doc.querySelector('[data-appearance-preset="aurora"]').click();
+    assert.deepEqual(errors, []);
+    assert.equal(doc.documentElement.dataset.backdrop, 'glow');
+    assert.equal(doc.documentElement.dataset.surface, 'glass');
+    assert.equal(doc.documentElement.dataset.accent, 'violet');
+    assert.equal(doc.documentElement.dataset.theme, 'dark');
+    doc.querySelector('[data-appearance-key="accent"][data-appearance-value="emerald"]').click();
+    assert.equal(doc.documentElement.dataset.accent, 'emerald');
+    assert.equal(JSON.parse(window.localStorage.getItem('qqa-appearance-v1')).accent, 'emerald');
+    doc.querySelector('[data-appearance-key="layout"][data-appearance-value="wide"]').click();
+    assert.equal(doc.documentElement.dataset.layout, 'wide');
+    doc.querySelector('[data-appearance-theme="light"]').click();
+    assert.equal(doc.documentElement.dataset.theme, 'light');
+    doc.querySelector('[data-appearance-reset]').click();
+    assert.equal(doc.documentElement.dataset.backdrop, 'mist');
+    assert.equal(doc.documentElement.dataset.accent, 'blue');
+    assert.equal(doc.documentElement.dataset.theme, 'dark');
+    assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('真实 DOM 冒烟：api() 走 fetch 桩', { skip: SKIP }, async () => {
   const { window, fetchLog } = loadPage();
   await settle();
