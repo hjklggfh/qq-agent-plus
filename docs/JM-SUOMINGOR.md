@@ -14,7 +14,9 @@ JM 是宿主内置的单功能模块，不属于可安装插件，也不会出�
 
 ## 能力
 
-JM 工具由宿主内置工具表注册：`jm_download_album`、`jm_control`、`jm_group_toggle`、`jm_task_status`、`jm_today_list`、`jm_daily_updates`、`jm_library` 和 `jm_storage`。下载、PDF/图片处理、群文件上传和日更功能继续复用原 skill 实现。
+JM 工具由宿主内置工具表注册：`jm_search`、`jm_download_album`、`jm_control`、`jm_group_toggle`、`jm_task_status`、`jm_today_list`、`jm_daily_updates`、`jm_library` 和 `jm_storage`。下载、PDF/图片处理、群文件上传和日更功能继续复用原 skill 实现。
+
+私聊或已开启 JM 的白名单群均可发送「JM搜索 关键词」；群聊可直接发，也可 @机器人。搜索结果以每页五部的合并转发卡片发送，在原会话里回复「下一页」「上一页」或作品序号。翻页和序号只对应发起搜索的群成员，不会让同群其他人的消息触发下载。
 
 工具只能操作当前会话；群文件和私聊文件操作由宿主内部的受限 OneBot 门面执行。
 

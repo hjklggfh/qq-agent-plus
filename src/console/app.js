@@ -1084,6 +1084,14 @@ export function createApp({
           .map((segment) => String(segment.data?.text ?? '')).join('').trim()
         : cqFileText.trim())
       : text;
+    // 群聊的 @ 是独立消息段，可能与后面的「JM搜索」紧挨着、没有空格。
+    // 展示文本会拼成「@昵称JM搜索…」，按空白剥 @ 会误删整条指令。
+    const jmCommandText = kind === 'group'
+      ? sanitizeUserText(segments
+        ? segments.filter((segment) => segment?.type === 'text')
+          .map((segment) => String(segment.data?.text ?? '')).join('').trim()
+        : cqFileText.replace(/\[CQ:at,[^\]]+\]/gi, '').trim())
+      : commandText;
 
     // 合并转发：占位符 → 展开真实内容（模型要读懂、看懂转发的聊天记录）
     // 优先使用当前转发卡片的资源 id，兼容仅支持 message_id 的旧适配器。
@@ -1238,7 +1246,7 @@ export function createApp({
     }
     // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
     if (!isSelf && jmFeature?.handleMessage) {
-      const directJm = jmFeature.isDirectMessage?.({ chatKey, senderId, text: commandText }) === true;
+      const directJm = jmFeature.isDirectMessage?.({ chatKey, senderId, text: jmCommandText }) === true;
       // 搜索与封面请求会耗时；确定是 JM 指令时先消费入站消息，防止等待期间
       // 普通编排器领走同一条消息并再次发送搜索卡片。
       if (directJm) store.markRead(chatKey, [stored.id]);
@@ -1253,7 +1261,7 @@ export function createApp({
             preserveCode: false
           })
         }, {
-          text: commandText,
+          text: jmCommandText,
           senderId,
           senderName,
           atMe: mentionsSelf,

@@ -41,6 +41,72 @@ test('JM 直接指令等待发送时已被消费，不再交给普通聊天模�
   assert.equal(wakes, 0);
 });
 
+test('白名单群内紧贴 @ 的 JM 搜索指令由直接入口处理', async (t) => {
+  const { createApp } = await import('../src/console/app.js');
+  const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
+  const cfg = structuredClone(DEFAULT_CONFIG);
+  cfg.runtime.mode = 'active';
+  cfg.runtime.paused = false;
+  cfg.allow.groups = ['100001'];
+  cfg.jm.enabled = true;
+  cfg.sticker.autoCollect = false;
+  setRuntimeConfig(cfg);
+  const app = createApp({ log: () => {} });
+  t.after(() => app.stop());
+  let wakes = 0;
+  const sent = [];
+  app.orchestrator.onIncoming = () => { wakes += 1; };
+  app.sender.sendTextBatch = async (chatKey, messages) => {
+    sent.push({ chatKey, messages });
+    return { sent: messages.map((text) => ({ text })), failed: [] };
+  };
+  const search = `JM搜索 ${'词'.repeat(61)}`;
+  await app.onebot.onEvent({
+    post_type: 'message', message_type: 'group', group_id: 100001, user_id: 123456,
+    message_id: 1003, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 123456, nickname: '群友' },
+    message: [{ type: 'at', data: { qq: '987654' } }, { type: 'text', data: { text: search } }]
+  });
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].chatKey, 'group:100001');
+  assert.match(sent[0].messages[0], /1～60 字/);
+  assert.equal(wakes, 0, '固定指令不会再交给聊天模型');
+  assert.equal(app.store.unreadCount('group:100001'), 0);
+  await app.onebot.onEvent({
+    post_type: 'message', message_type: 'group', group_id: 100001, user_id: 123456,
+    message_id: 1006, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 123456, nickname: '群友' },
+    message: `[CQ:at,qq=987654]${search}`
+  });
+  assert.equal(sent.length, 2, 'CQ 字符串格式的 @ 同样能识别');
+  await app.onebot.onEvent({
+    post_type: 'message', message_type: 'group', group_id: 100001, user_id: 123456,
+    message_id: 1007, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 123456, nickname: '群友' }, message: search
+  });
+  assert.equal(sent.length, 3, '群内直接发送搜索指令也能识别');
+  rememberSearchPage({
+    chatKey: 'group:100001', senderId: '123456', query: '测试', page: 1, pages: 1,
+    rows: [{ id: '123450' }]
+  });
+  await app.onebot.onEvent({
+    post_type: 'message', message_type: 'group', group_id: 100001, user_id: 123456,
+    message_id: 1005, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 123456, nickname: '群友' },
+    message: [{ type: 'at', data: { qq: '987654' } }, { type: 'text', data: { text: '下一页' } }]
+  });
+  assert.equal(sent.length, 4);
+  assert.match(sent[3].messages[0], /已经是第 1 页/);
+  assert.equal(wakes, 0);
+  clearSearchSessions();
+  await app.onebot.onEvent({
+    post_type: 'message', message_type: 'group', group_id: 100002, user_id: 123456,
+    message_id: 1004, time: Math.floor(Date.now() / 1000),
+    sender: { user_id: 123456, nickname: '群友' }, message: search
+  });
+  assert.equal(sent.length, 4, '非白名单群不响应');
+});
+
 test('下一页等待站点搜索时，普通编排器不能领取同一条消息', async (t) => {
   const { createApp } = await import('../src/console/app.js');
   const { DEFAULT_CONFIG, setRuntimeConfig } = await import('../src/core/config.js');
