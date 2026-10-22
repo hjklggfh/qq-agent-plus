@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyJmDirectCommand } from '../src/features/jm-suomingor/direct-command.js';
-import { searchCardNodes, searchCardPage, searchFallbackNodes, groupForwardVisible } from '../src/features/jm-suomingor/search.js';
+import { searchCardNodes, searchCardPage, searchDetailNodes, searchFallbackNodes, groupForwardVisible } from '../src/features/jm-suomingor/search.js';
 import { clearSearchSessions, rememberSearchPage, resolveSearchFollowup, searchSenderId } from '../src/features/jm-suomingor/search-session.js';
 import { activate as activateJm } from '../src/features/jm-suomingor/index.js';
 
@@ -71,6 +71,11 @@ test('群聊完整版保留详情和封面，但不带外站直链', async () =>
   assert.doesNotMatch(first[0].data.text, /https?:\/\//);
   assert.equal(first[1].type, 'image');
   assert.equal(result.nodes.length, 6);
+  const details = searchDetailNodes(result.nodes);
+  assert.equal(details.length, 6);
+  assert.ok(details.every((item) => item.data.content.every((segment) => segment.type === 'text')));
+  assert.match(details[0].data.content[0].data.text, /标签：标签甲、标签乙.*简介：作品简介/s);
+  assert.equal(result.nodes[0].data.content[1].type, 'image', '详情版不改动先发的完整卡片');
 });
 
 test('JM 最后一页保留五个结果位置和翻页提示，越界不发卡片', async () => {

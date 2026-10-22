@@ -76,6 +76,16 @@ export function searchFallbackNodes({ rows, pages, total }, page, bot = {}) {
   return nodes;
 }
 
+export function searchDetailNodes(nodes) {
+  return nodes.map((item) => ({
+    ...item,
+    data: {
+      ...item.data,
+      content: item.data.content.filter((segment) => segment.type !== 'image')
+    }
+  }));
+}
+
 export async function groupForwardVisible(onebot, chatId, messageId, { attempts = 3, delayMs = 1500 } = {}) {
   if (!onebot?.call || messageId == null) return null;
   for (let attempt = 0; attempt < attempts; attempt++) {
