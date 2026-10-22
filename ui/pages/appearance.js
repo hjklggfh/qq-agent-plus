@@ -122,8 +122,10 @@ function renderAppearancePage() {
   if (!state.appearance) applyAppearance(readAppearance());
   bindAppearanceControls(page);
   const theme = getThemePref();
+  const advancedOpen = page.querySelector('.appearance-advanced')?.open === true;
   page.innerHTML = `
     <div class="appearance-heading"><div><span class="appearance-eyebrow">APPEARANCE</span><h1>外观</h1><p>调整控制台的色彩、背景、材质与阅读节奏。选择后立即生效，并保存在这个浏览器。</p></div><button type="button" class="btn" data-appearance-reset>恢复默认</button></div>
+    <div class="appearance-live-preview"><div><strong>即时效果预览</strong><small>悬停或点击右侧按钮，试试当前的鼠标反馈。</small></div><button type="button" class="appearance-option" aria-label="试试当前悬停和点击效果"><strong>点我试试 ↗</strong></button></div>
     <section class="appearance-group"><div class="appearance-group-heading"><h2>快速主题</h2><p>先选一个整体风格，再按喜好微调。</p></div><div class="appearance-presets">
       ${PRESETS.map(([id, label, hint]) => `<button type="button" class="appearance-preset preset-${id}${state.appearance.preset === id ? ' is-selected' : ''}" data-appearance-preset="${id}" aria-pressed="${state.appearance.preset === id}"><span class="appearance-preset-art"><i></i><i></i><i></i></span><strong>${label}</strong><small>${hint}</small></button>`).join('')}
     </div></section>
@@ -132,12 +134,6 @@ function renderAppearancePage() {
     </div></section>
     ${choiceGroup('accent', '强调色', '用于选中项、按钮和图表；状态告警颜色保持独立。')}
     <div class="appearance-color-row">${colorControl('accentColor', '自定义强调色', '选色后自动切换到自定义。')}</div>
-    ${choiceGroup('backdrop', '背景', '纹理只放在工作区，避免干扰表单阅读。')}
-    ${choiceGroup('surface', '卡片材质', '调整面板的透光度与边框质感。')}
-    ${choiceGroup('layout', '页面版式', '控制内容区域的宽度；宽屏下差异更明显。')}
-    ${choiceGroup('density', '布局密度', '调整导航、卡片和页面留白。')}
-    ${choiceGroup('radius', '边角风格', '控制主要卡片的圆角。')}
-    ${choiceGroup('typography', '排版', '选择熟悉的系统字、舒适阅读或更整齐的数字。')}
     ${choiceGroup('motion', '动态效果', '系统开启「减少动态效果」时会自动优先尊重系统设置。')}
     <section class="appearance-group"><div class="appearance-group-heading"><h2>鼠标反馈</h2><p>悬停、点击和拖尾可以分别调整。动态效果关闭时，点击与拖尾也会停止。</p></div>
       <h3>悬停</h3>${choiceGroup('hover', '', '')}
@@ -145,6 +141,14 @@ function renderAppearancePage() {
       <h3>拖尾</h3>${choiceGroup('trail', '', '')}
       <div class="appearance-color-row">${colorControl('effectColor', '悬停与点击颜色', '用于发光、涟漪与星点。')}${colorControl('trailColor', '拖尾颜色', '仅在开启拖尾时显示。')}</div>
     </section>
+    <details class="appearance-advanced"${advancedOpen ? ' open' : ''}><summary><span>更多外观选项</span><small>背景、材质、版式、密度、边角与排版</small></summary>
+      ${choiceGroup('backdrop', '背景', '纹理只放在工作区，避免干扰表单阅读。')}
+      ${choiceGroup('surface', '卡片材质', '调整面板的透光度与边框质感。')}
+      ${choiceGroup('layout', '页面版式', '控制内容区域的宽度；宽屏下差异更明显。')}
+      ${choiceGroup('density', '布局密度', '调整导航、卡片和页面留白。')}
+      ${choiceGroup('radius', '边角风格', '控制主要卡片的圆角。')}
+      ${choiceGroup('typography', '排版', '选择熟悉的系统字、舒适阅读或更整齐的数字。')}
+    </details>
     <p class="appearance-footnote">外观选项即时保存在当前浏览器；明暗模式仍使用原有的跨设备主题设置。</p>`;
 }
 
@@ -199,15 +203,27 @@ function initMouseEffects() {
   if (root.dataset.appearanceEffectsBound) return;
   root.dataset.appearanceEffectsBound = 'true';
   const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
-  const addEffect = (className, x, y, delay = 600, angle = 0) => {
+  let activeTrailDots = 0;
+  let activeTrailSegments = 0;
+  const attachTemporary = (node, delay, onRemove) => {
+    let removed = false;
+    const remove = () => {
+      if (removed) return;
+      removed = true;
+      node.remove();
+      onRemove?.();
+    };
+    document.body.appendChild(node);
+    node.addEventListener('animationend', remove, { once: true });
+    setTimeout(remove, delay);
+  };
+  const addEffect = (className, x, y, delay = 600, angle = 0, onRemove) => {
     const node = document.createElement('span');
     node.className = className;
     node.style.left = `${x}px`;
     node.style.top = `${y}px`;
     node.style.setProperty('--spark-angle', `${angle}deg`);
-    document.body.appendChild(node);
-    node.addEventListener('animationend', () => node.remove(), { once: true });
-    setTimeout(() => node.remove(), delay);
+    attachTemporary(node, delay, onRemove);
   };
   const addTrailSegment = (from, to, mode) => {
     const dx = to.x - from.x;
@@ -220,9 +236,8 @@ function initMouseEffects() {
     node.style.top = `${from.y}px`;
     node.style.width = `${length}px`;
     node.style.transform = `translateY(-50%) rotate(${Math.atan2(dy, dx)}rad)`;
-    document.body.appendChild(node);
-    node.addEventListener('animationend', () => node.remove(), { once: true });
-    setTimeout(() => node.remove(), 620);
+    activeTrailSegments++;
+    attachTemporary(node, 620, () => { activeTrailSegments--; });
   };
   let lastTrailAt = -Infinity;
   let lastTrailPoint = null;
@@ -242,14 +257,15 @@ function initMouseEffects() {
     lastTrailAt = now;
     if (continuous) {
       const point = { x: event.clientX, y: event.clientY, time: now };
-      if (lastTrailPoint && now - lastTrailPoint.time < 140 && document.querySelectorAll('.appearance-trail-segment').length < 42) {
+      if (lastTrailPoint && now - lastTrailPoint.time < 140 && activeTrailSegments < 42) {
         addTrailSegment(lastTrailPoint, point, appearance.trail);
       }
       lastTrailPoint = point;
     } else {
       lastTrailPoint = null;
-      if (document.querySelectorAll('.appearance-trail').length < 24) {
-        addEffect(`appearance-trail trail-${appearance.trail}`, event.clientX, event.clientY, 550);
+      if (activeTrailDots < 24) {
+        activeTrailDots++;
+        addEffect(`appearance-trail trail-${appearance.trail}`, event.clientX, event.clientY, 550, 0, () => { activeTrailDots--; });
       }
     }
   }, { passive: true });

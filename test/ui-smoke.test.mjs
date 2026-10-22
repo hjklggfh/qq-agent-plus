@@ -133,6 +133,8 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
     assert.equal(doc.querySelector('[data-global-admin-settings]'), null);
     assert.ok(doc.querySelector('[data-appearance-preset="ocean"]'));
+    assert.ok(doc.querySelector('.appearance-live-preview .appearance-option'));
+    assert.equal(doc.querySelector('.appearance-advanced').open, false);
     assert.deepEqual(errors, []);
     doc.querySelector('[data-appearance-preset="aurora"]').click();
     assert.deepEqual(errors, []);
@@ -186,8 +188,10 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     trailColor.value = '#ff8844';
     trailColor.dispatchEvent(new window.Event('change', { bubbles: true }));
     assert.equal(doc.documentElement.style.getPropertyValue('--trail-color'), '#ff8844');
+    doc.querySelector('.appearance-advanced').open = true;
     doc.querySelector('[data-appearance-key="layout"][data-appearance-value="wide"]').click();
     assert.equal(doc.documentElement.dataset.layout, 'wide');
+    assert.equal(doc.querySelector('.appearance-advanced').open, true);
     doc.querySelector('[data-appearance-theme="light"]').click();
     assert.equal(doc.documentElement.dataset.theme, 'light');
     doc.querySelector('[data-appearance-reset]').click();
