@@ -984,19 +984,6 @@ html.boot-show .loading-overlay { opacity: 1; }
    没人接滚轮，光标落在那边时滚轮"没反应"，只有落在中间那一列（或它贴着的滚动条）
    才滚得动 —— 反馈就是"滚轮只有放滚动条旁边才能滚"。现在整片视图一起滚。 */
 #view-settings { overflow-x: hidden; overflow-y: auto; }
-#view-settings.standalone-detail.active { display: block; }
-.settings-detail-nav {
-  width: min(100%, 912px); margin: 0 auto; padding: 24px 26px 0;
-}
-.settings-back-btn {
-  border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2);
-  color: var(--muted); font: inherit; font-size: 13px; padding: 8px 12px; cursor: pointer;
-}
-.settings-back-btn:hover { color: var(--accent); border-color: var(--accent); }
-.settings-detail-heading { margin: 22px 0 0; }
-.settings-detail-heading span { color: var(--muted); font-size: 12px; }
-.settings-detail-heading h2 { margin: 5px 0 0; font-size: 22px; }
-#view-settings.standalone-detail .settings-pane { padding-top: 18px; }
 .settings-menu { padding-top: 2px; }
 /* 阅读宽度限制放在容器内的"一列"上，而不是给容器加居中 padding。
    百分比 padding 是按父容器宽度解析的，用它给窄内容居中会把内容越挤越窄
@@ -1379,7 +1366,6 @@ html.boot-show .loading-overlay { opacity: 1; }
   .tc-days { grid-column: 1 / -1; }
 }
 @media (max-width: 600px) {
-  .settings-detail-nav { padding: 16px 16px 0; }
   #view-settings { flex-direction: column; overflow-y: auto; }
   #view-settings .settings-sidebar {
     width: 100%; flex: 0 0 auto; border-right: 0; border-bottom: 1px solid var(--border);

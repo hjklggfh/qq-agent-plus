@@ -105,8 +105,6 @@ function renderSettingsSidebar() {
     <div class="settings-menu">
       ${menu.map(([id, label]) => `<button class="settings-menu-item ${state.settingsSection === id ? 'active' : ''}" data-section="${id}">${label}</button>`).join('')}
     </div>`;
-  const detailTitle = $('#settings-detail-title');
-  if (detailTitle) detailTitle.textContent = menu.find(([id]) => id === state.settingsSection)?.[1] || '';
   sidebar.querySelectorAll('.settings-menu-item').forEach((el) => {
     el.addEventListener('click', () => {
       state.settingsSection = el.dataset.section;

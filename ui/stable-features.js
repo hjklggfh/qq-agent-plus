@@ -247,7 +247,7 @@ import { api } from './core/api.js';
   // Settings pages are rebuilt on every section switch, so install the one
   // global administrator entry exactly once per render.
   QARegistry.onAfter('renderSettings', () => {
-    if (!document.querySelector('#view-settings')?.classList.contains('standalone-detail')) installGlobalAdminPanel();
+    installGlobalAdminPanel();
     for (const selector of legacyOwnerInputs) replaceLegacyOwnerInput(selector);
     syncAdminInputs();
   });
