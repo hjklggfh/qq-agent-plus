@@ -62,6 +62,17 @@ test('JM 卡片按每页五部换算站点页码，补齐六条消息', async ()
   assert.match(result.nodes[5].data.content[0].data.text, /发送作品序号即可下载/);
 });
 
+test('群聊完整版保留详情和封面，但不带外站直链', async () => {
+  const result = await searchCardNodes(fakeClient(), {
+    query: '测试', page: 1, includeExternalLink: false
+  });
+  const first = result.nodes[0].data.content;
+  assert.match(first[0].data.text, /编号：JM123450\n标签：标签甲、标签乙\n作者：作者\n简介：作品简介/);
+  assert.doesNotMatch(first[0].data.text, /https?:\/\//);
+  assert.equal(first[1].type, 'image');
+  assert.equal(result.nodes.length, 6);
+});
+
 test('JM 最后一页保留五个结果位置和翻页提示，越界不发卡片', async () => {
   const result = await searchCardNodes(fakeClient(), { query: '测试', page: 3 });
   assert.equal(result.nodes.length, 6);

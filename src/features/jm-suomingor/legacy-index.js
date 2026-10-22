@@ -1412,7 +1412,9 @@ export function setup(injected) {
         result = await searchCardNodes(client(), {
           query, page,
           bot: { selfId: ctx.selfId, selfNickname: ctx.selfNickname, botName: ctx.botName },
-          format: toSimplified
+          format: toSimplified,
+          // 群聊先省去外站直链，保留详情与封面；是否送达仍由群历史核查。
+          includeExternalLink: ctx.kind !== 'group'
         });
         if (!result.pages) return { content: `没有找到与「${query}」相关的 JM 作品。`, notify: true };
         if (page > result.pages) return { content: `搜索「${query}」共 ${result.pages} 页，请发送「JM搜索 ${query} 第${result.pages}页」。`, isError: true };

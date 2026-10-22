@@ -96,7 +96,7 @@ function clean(value, format) {
   return format(firstString(value)).replace(/\s+/g, ' ').trim();
 }
 
-export async function searchCardNodes(client, { query, page, bot = {}, format = (value) => value }) {
+export async function searchCardNodes(client, { query, page, bot = {}, format = (value) => value, includeExternalLink = true }) {
   const result = await searchCardPage(client, query, page);
   if (!result.pages || page > result.pages) return { ...result, nodes: [] };
   const nodes = await Promise.all(result.rows.map(async (row, index) => {
@@ -113,9 +113,9 @@ export async function searchCardNodes(client, { query, page, bot = {}, format = 
       `编号：JM${albumId}`,
       `标签：${tags.length ? tags.slice(0, 12).join('、') : '暂无'}`,
       `作者：${authors.length ? authors.slice(0, 4).join('、') : '暂无'}`,
-      `简介：${description || '暂无'}`,
-      `查看：https://18comic.vip/album/${albumId}`
+      `简介：${description || '暂无'}`
     ];
+    if (includeExternalLink) lines.push(`查看：https://18comic.vip/album/${albumId}`);
     const cover = await coverSegment(client, albumId);
     return node([text(lines.join('\n')), cover], bot);
   }));
