@@ -52,7 +52,9 @@ const OPTIONS = {
   ],
   trail: [
     ['off', '关闭', '默认，不占用画面'], ['dots', '微光点', '短暂点状拖尾'],
-    ['comet', '流光', '柔和的短尾迹']
+    ['comet', '流光点', '柔和的点状光晕'],
+    ['line', '连续光线', '沿移动路径连成细线'],
+    ['ribbon', '柔光丝带', '沿移动路径连成宽光带']
   ],
   radius: [
     ['square', '利落直角', '更像工作台'], ['soft', '柔和圆角', '默认风格'],
@@ -207,16 +209,52 @@ function initMouseEffects() {
     node.addEventListener('animationend', () => node.remove(), { once: true });
     setTimeout(() => node.remove(), delay);
   };
+  const addTrailSegment = (from, to, mode) => {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy);
+    if (length < 1 || length > 240) return;
+    const node = document.createElement('span');
+    node.className = `appearance-trail-segment trail-${mode}`;
+    node.style.left = `${from.x}px`;
+    node.style.top = `${from.y}px`;
+    node.style.width = `${length}px`;
+    node.style.transform = `translateY(-50%) rotate(${Math.atan2(dy, dx)}rad)`;
+    document.body.appendChild(node);
+    node.addEventListener('animationend', () => node.remove(), { once: true });
+    setTimeout(() => node.remove(), 620);
+  };
   let lastTrailAt = -Infinity;
+  let lastTrailPoint = null;
+  let lastTrailMode = null;
   document.addEventListener('pointermove', (event) => {
     if (event.pointerType && event.pointerType !== 'mouse') return;
     const appearance = state.appearance;
-    if (!appearance || appearance.trail === 'off' || appearance.motion === 'off' || reducedMotion()) return;
+    if (!appearance || appearance.trail === 'off' || appearance.motion === 'off' || reducedMotion()) {
+      lastTrailPoint = null;
+      return;
+    }
     const now = performance.now();
-    if (now - lastTrailAt < 38 || document.querySelectorAll('.appearance-trail').length >= 24) return;
+    const continuous = appearance.trail === 'line' || appearance.trail === 'ribbon';
+    if (lastTrailMode !== appearance.trail) lastTrailPoint = null;
+    lastTrailMode = appearance.trail;
+    if (now - lastTrailAt < (continuous ? 12 : 38)) return;
     lastTrailAt = now;
-    addEffect(`appearance-trail trail-${appearance.trail}`, event.clientX, event.clientY, 550);
+    if (continuous) {
+      const point = { x: event.clientX, y: event.clientY, time: now };
+      if (lastTrailPoint && now - lastTrailPoint.time < 140 && document.querySelectorAll('.appearance-trail-segment').length < 42) {
+        addTrailSegment(lastTrailPoint, point, appearance.trail);
+      }
+      lastTrailPoint = point;
+    } else {
+      lastTrailPoint = null;
+      if (document.querySelectorAll('.appearance-trail').length < 24) {
+        addEffect(`appearance-trail trail-${appearance.trail}`, event.clientX, event.clientY, 550);
+      }
+    }
   }, { passive: true });
+  document.addEventListener('pointerleave', () => { lastTrailPoint = null; });
+  window.addEventListener('blur', () => { lastTrailPoint = null; });
   document.addEventListener('pointerdown', (event) => {
     const appearance = state.appearance;
     if (!appearance || appearance.click === 'off' || appearance.motion === 'off' || reducedMotion()) return;

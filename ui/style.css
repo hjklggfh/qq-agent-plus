@@ -3553,12 +3553,15 @@ dialog { margin: auto; max-height: 88vh; }
 :root[data-hover='off'] .game-hub-grid button:hover,
 :root[data-hover='off'] .overview-card:hover,
 :root[data-hover='off'] .overview-panel:hover { transform: none; box-shadow: none; }
-.appearance-trail, .appearance-click-ripple, .appearance-click-spark { position: fixed; pointer-events: none; z-index: 9999; }
+.appearance-trail, .appearance-trail-segment, .appearance-click-ripple, .appearance-click-spark { position: fixed; pointer-events: none; z-index: 9999; }
 .appearance-trail { width: 7px; height: 7px; border-radius: 50%; background: var(--trail-color); box-shadow: 0 0 11px var(--trail-color); transform: translate(-50%, -50%); animation: appearance-trail-fade .5s ease-out both; }
 .appearance-trail.trail-comet { width: 17px; height: 17px; background: radial-gradient(circle, var(--trail-color), transparent 72%); box-shadow: none; }
+.appearance-trail-segment { height: 2px; transform-origin: left center; background: var(--trail-color); box-shadow: 0 0 8px var(--trail-color); border-radius: 999px; animation: appearance-segment-fade .6s ease-out both; }
+.appearance-trail-segment.trail-ribbon { height: 9px; background: linear-gradient(180deg, transparent, var(--trail-color) 50%, transparent); filter: blur(2px); box-shadow: 0 0 12px var(--trail-color); }
 .appearance-click-ripple { width: 18px; height: 18px; border: 2px solid var(--effect-color); border-radius: 50%; box-shadow: 0 0 12px color-mix(in srgb, var(--effect-color) 40%, transparent); animation: appearance-ripple .55s ease-out both; }
 .appearance-click-spark { width: 5px; height: 5px; border-radius: 50%; background: var(--effect-color); box-shadow: 0 0 9px var(--effect-color); animation: appearance-spark .55s ease-out both; }
 @keyframes appearance-trail-fade { from { opacity: .68; transform: translate(-50%, -50%) scale(1); } to { opacity: 0; transform: translate(-50%, -50%) scale(.1); } }
+@keyframes appearance-segment-fade { from { opacity: .75; } to { opacity: 0; } }
 @keyframes appearance-ripple { from { opacity: .8; transform: translate(-50%, -50%) scale(.3); } to { opacity: 0; transform: translate(-50%, -50%) scale(3.5); } }
 @keyframes appearance-spark { from { opacity: 1; transform: translate(-50%, -50%) rotate(var(--spark-angle)) translateX(0); } to { opacity: 0; transform: translate(-50%, -50%) rotate(var(--spark-angle)) translateX(35px); } }
 @media (max-width: 900px) {

@@ -159,6 +159,25 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     Object.defineProperties(move, { clientX: { value: 210 }, clientY: { value: 130 }, pointerType: { value: 'mouse' } });
     doc.dispatchEvent(move);
     assert.ok(doc.querySelector('.appearance-trail'));
+    doc.querySelector('[data-appearance-key="trail"][data-appearance-value="line"]').click();
+    const moveTo = (x, y) => {
+      const event = new window.Event('pointermove', { bubbles: true });
+      Object.defineProperties(event, { clientX: { value: x }, clientY: { value: y }, pointerType: { value: 'mouse' } });
+      doc.dispatchEvent(event);
+    };
+    await settle(18);
+    moveTo(220, 140);
+    await settle(18);
+    moveTo(260, 160);
+    const line = doc.querySelector('.appearance-trail-segment.trail-line');
+    assert.ok(line, '连续光线应连接相邻鼠标位置');
+    assert.ok(Number.parseFloat(line.style.width) > 40);
+    doc.querySelector('[data-appearance-key="trail"][data-appearance-value="ribbon"]').click();
+    await settle(18);
+    moveTo(280, 170);
+    await settle(18);
+    moveTo(320, 190);
+    assert.ok(doc.querySelector('.appearance-trail-segment.trail-ribbon'), '柔光丝带应有连续线段');
     const press = new window.Event('pointerdown', { bubbles: true });
     Object.defineProperties(press, { clientX: { value: 210 }, clientY: { value: 130 } });
     doc.querySelector('[data-appearance-reset]').dispatchEvent(press);
