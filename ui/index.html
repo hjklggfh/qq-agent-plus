@@ -228,11 +228,11 @@
     <!-- 游戏入口：跑团保留完整工作台；其他游戏沿用独立配置表单。 -->
     <section id="view-games" class="view">
       <div class="game-hub asset-pane">
-        <div class="game-hub-heading"><span>PLAY SPACE</span><h1>游戏</h1><p>跑团与群内互动游戏集中在这里。</p></div>
+        <div class="game-hub-heading"><div><span>PLAY SPACE</span><h1>游戏</h1><p>选择玩法，进入工作台或调整对应设置。</p></div><small>3 种玩法</small></div>
         <div class="game-hub-grid">
-          <button type="button" data-game-target="trpg"><strong>跑团</strong><small>世界、角色卡、战役与存档</small><span>进入工作台 →</span></button>
-          <button type="button" data-game-section="haigui-tang"><strong>海龟汤</strong><small>题库、难度与主持设置</small><span>打开配置 →</span></button>
-          <button type="button" data-game-section="groupGame"><strong>群游戏</strong><small>群内互动规则与开关</small><span>打开配置 →</span></button>
+          <button type="button" class="game-card game-card-primary" data-game-target="trpg"><span class="game-card-top"><span class="game-card-glyph" aria-hidden="true">◇</span><span class="game-card-type">叙事与战役</span></span><span class="game-card-copy"><strong>跑团</strong><small>创建世界、管理角色卡，继续已有战役与存档。</small></span><span class="game-card-link">进入工作台 <span aria-hidden="true">↗</span></span></button>
+          <button type="button" class="game-card" data-game-section="haigui-tang"><span class="game-card-top"><span class="game-card-glyph" aria-hidden="true">?</span><span class="game-card-type">推理与猜谜</span></span><span class="game-card-copy"><strong>海龟汤</strong><small>管理题库、难度、提示与会话范围。</small></span><span class="game-card-link">打开设置 <span aria-hidden="true">↗</span></span></button>
+          <button type="button" class="game-card" data-game-section="groupGame"><span class="game-card-top"><span class="game-card-glyph" aria-hidden="true">♢</span><span class="game-card-type">多人互动</span></span><span class="game-card-copy"><strong>群游戏</strong><small>选择玩法，调整群内规则与开关。</small></span><span class="game-card-link">打开设置 <span aria-hidden="true">↗</span></span></button>
         </div>
       </div>
     </section>

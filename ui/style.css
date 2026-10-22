@@ -296,10 +296,10 @@ html.boot-show .loading-overlay { opacity: 1; }
 }
 .nav-group-label {
   padding: 10px 10px 3px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 1px;
-  color: var(--faint);
+  letter-spacing: .06em;
+  color: var(--muted);
 }
 /* ⚠️ .tab 的基础定义必须完整写在这一处（历史教训：在别处再写一条 .tab 会在清理重复时被删掉）。
    追加属性请合并进下面这条规则。 */
@@ -324,8 +324,8 @@ html.boot-show .loading-overlay { opacity: 1; }
 }
 .tab::before { content: attr(data-icon); font-size: 17px; width: 18px; text-align: center; flex-shrink: 0; opacity: .9; color: var(--muted); }
 .tab-copy { display: grid; gap: 2px; min-width: 0; }
-.tab-copy strong { font-size: 12px; line-height: 1.1; font-weight: 600; }
-.tab-copy small { color: var(--faint); font-size: 10px; line-height: 1.2; font-weight: 400; }
+.tab-copy strong { font-size: 13px; line-height: 1.15; font-weight: 600; }
+.tab-copy small { color: var(--muted); font-size: 11px; line-height: 1.3; font-weight: 400; }
 .tab.active .tab-copy small { color: color-mix(in srgb, var(--accent) 55%, var(--muted)); }
 .tab:hover { background: var(--hover); color: var(--text); }
 .tab.active {
@@ -970,11 +970,11 @@ html.boot-show .loading-overlay { opacity: 1; }
 .settings-runstate .rs-row { display: flex; align-items: center; gap: 8px; }
 .settings-runstate .rs-row .dot { width: 8px; height: 8px; }
 .settings-menu { display: flex; flex-direction: column; gap: 2px; }
-.settings-menu-heading { padding: 2px 12px 9px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .08em; }
+.settings-menu-heading { padding: 2px 12px 9px; color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .06em; }
 .settings-menu-item {
   background: none; border: none; text-align: left;
-  color: var(--muted); padding: 8px 12px; border-radius: 7px;
-  cursor: pointer; font-size: 13px; width: 100%;
+  color: var(--muted); padding: 10px 12px; border-radius: 7px;
+  cursor: pointer; font-size: 14px; line-height: 1.3; width: 100%;
 }
 .settings-menu-item:hover { background: var(--bg-3); color: var(--text); }
 .settings-menu-item.active { background: var(--bg-3); color: var(--accent); font-weight: 600; }
@@ -2001,17 +2001,32 @@ html.boot-show .loading-overlay { opacity: 1; }
 @keyframes overview-rise { from { transform: scaleY(.08); opacity: .35; } to { transform: scaleY(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .overview-chart-track i { animation: none; } .overview-card { transition: none; } }
 .game-hub { width: 100%; max-width: 1180px; margin: 0 auto; }
-.game-hub-heading > span { color: var(--accent); font-size: 10px; letter-spacing: .17em; }
-.game-hub-heading h1 { margin: 7px 0 4px; font-size: 24px; }
-.game-hub-heading p { margin: 0 0 24px; color: var(--muted); font-size: 13px; }
-.game-hub-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.game-hub-grid button { display: grid; align-content: start; gap: 10px; min-height: 140px; padding: 20px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); color: var(--text); text-align: left; cursor: pointer; font: inherit; transition: border-color .18s ease, transform .18s ease; }
+.game-hub-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+.game-hub-heading > div > span { color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .14em; }
+.game-hub-heading h1 { margin: 7px 0 5px; font-size: 28px; }
+.game-hub-heading p { margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.55; }
+.game-hub-heading > small { flex: 0 0 auto; margin-top: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 99px; background: var(--bg-2); color: var(--muted); font-size: 11.5px; }
+.game-hub-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); grid-template-rows: repeat(2, minmax(176px, auto)); gap: 12px; }
+.game-hub-grid button { display: flex; flex-direction: column; align-items: stretch; gap: 15px; min-height: 176px; padding: 22px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg-2); color: var(--text); text-align: left; cursor: pointer; font: inherit; transition: border-color .18s ease, transform .18s ease, box-shadow .18s ease; }
 .game-hub-grid button:hover { border-color: var(--accent); transform: translateY(-2px); }
-.game-hub-grid strong { font-size: 16px; }
-.game-hub-grid small { color: var(--muted); font-size: 12px; }
-.game-hub-grid button > span { color: var(--accent); font-size: 12px; margin-top: 12px; }
-@media (max-width: 850px) { .game-hub-grid { grid-template-columns: 1fr; } }
-@media (prefers-reduced-motion: reduce) { .game-hub-grid button { transition: none; } }
+.game-hub-grid button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.game-hub-grid .game-card-primary { grid-row: span 2; min-height: 364px; background: radial-gradient(circle at 95% 5%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 58%), var(--bg-2); }
+.game-card-top { display: flex; align-items: center; gap: 10px; }
+.game-card-glyph { display: inline-grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 10px; background: color-mix(in srgb, var(--accent) 11%, transparent); color: var(--accent); font: 700 18px var(--mono); }
+.game-card-type { color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .03em; }
+.game-card-copy { display: grid; gap: 7px; }
+.game-card-copy strong { font-size: 19px; line-height: 1.2; }
+.game-card-copy small { max-width: 34ch; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.game-card-primary .game-card-copy { margin-top: auto; }
+.game-card-primary .game-card-copy strong { font-size: 25px; }
+.game-card-link { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-top: auto; padding-top: 13px; border-top: 1px solid var(--border); color: var(--accent); font-size: 12.5px; font-weight: 600; }
+.game-card-link > span { font-size: 17px; line-height: 1; transition: transform .18s ease; }
+.game-hub-grid button:hover .game-card-link > span { transform: translate(2px, -2px); }
+:root[data-hover='off'] .game-hub-grid button:hover .game-card-link > span,
+:root[data-motion='off'] .game-hub-grid button:hover .game-card-link > span { transform: none; }
+@media (max-width: 850px) { .game-hub-grid { grid-template-columns: 1fr; grid-template-rows: none; } .game-hub-grid .game-card-primary { grid-row: auto; min-height: 215px; } }
+@media (max-width: 600px) { .game-hub-heading { align-items: flex-start; } .game-hub-heading > small { display: none; } .game-hub-grid button { min-height: 160px; padding: 18px; } .game-hub-grid .game-card-primary { min-height: 190px; } }
+@media (prefers-reduced-motion: reduce) { .game-hub-grid button, .game-card-link > span { transition: none; } .game-hub-grid button:hover .game-card-link > span { transform: none; } }
 .overview-resources { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 26px; }
 .overview-resource { min-width: 0; display: grid; gap: 9px; font-size: 12px; }
 .overview-resource > div:first-child { display: flex; justify-content: space-between; gap: 8px; }
