@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { classifyJmDirectCommand } from '../src/features/jm-suomingor/direct-command.js';
-import { searchCardNodes, searchCardPage } from '../src/features/jm-suomingor/search.js';
+import { searchCardNodes, searchCardPage, searchFallbackNodes, groupForwardVisible } from '../src/features/jm-suomingor/search.js';
 import { clearSearchSessions, rememberSearchPage, resolveSearchFollowup, searchSenderId } from '../src/features/jm-suomingor/search-session.js';
 import { activate as activateJm } from '../src/features/jm-suomingor/index.js';
 
@@ -73,6 +73,27 @@ test('JM 最后一页保留五个结果位置和翻页提示，越界不发卡�
   const missing = await searchCardPage(fakeClient(), '测试', 4);
   assert.equal(missing.pages, 3);
   assert.deepEqual(missing.rows, []);
+});
+
+test('群卡片未进入群历史时，可生成只含编号的六条简版卡片', async () => {
+  const result = await searchCardNodes(fakeClient(), { query: '测试', page: 3 });
+  const nodes = searchFallbackNodes(result, 3, { selfId: '10001' });
+  assert.equal(nodes.length, 6);
+  assert.equal(nodes[0].data.content[0].data.text, '11. JM123460');
+  assert.equal(nodes[3].data.content[0].data.text, '14. 本页没有更多作品');
+  assert.ok(nodes.every((item) => item.data.name === '小鲸鱼'
+    && item.data.content.every((segment) => segment.type === 'text')));
+  assert.doesNotMatch(JSON.stringify(nodes), /18comic|作品简介|base64:/);
+  const calls = [];
+  const onebot = { async call(action, params) {
+    calls.push({ action, params });
+    return { messages: [{ message_id: 123 }, { message_id: -456 }] };
+  } };
+  assert.equal(await groupForwardVisible(onebot, '100001', '-456', { attempts: 1, delayMs: 0 }), true);
+  assert.equal(await groupForwardVisible(onebot, '100001', '999', { attempts: 1, delayMs: 0 }), false);
+  assert.deepEqual(calls[0], { action: 'get_group_msg_history',
+    params: { group_id: 100001, message_seq: 0, count: 50 } });
+  assert.equal(await groupForwardVisible({ call: async () => { throw new Error('不可用'); } }, '100001', '999', { attempts: 1, delayMs: 0 }), null);
 });
 
 test('JM 搜索后可用上一页、下一页及跨页序号选择作品，且按发送者隔离', () => {

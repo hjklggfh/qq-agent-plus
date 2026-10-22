@@ -7,7 +7,7 @@ import { registerBuiltinFeature } from './feature-registry.js';
 const ALLOWED_ONEBOT_CALLS = new Set([
   'upload_group_file', 'upload_private_file', 'get_group_file_system_info',
   'get_group_root_files', 'delete_group_file', 'get_group_member_info',
-  'get_group_info'
+  'get_group_info', 'get_group_msg_history'
 ]);
 
 let initialized = false;

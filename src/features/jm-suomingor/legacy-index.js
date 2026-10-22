@@ -34,7 +34,7 @@ import * as pdfBridge from './pdf.js';
 import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
-import { searchCardNodes } from './search.js';
+import { searchCardNodes, searchFallbackNodes, groupForwardVisible } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1421,7 +1421,8 @@ export function setup(injected) {
         return { content: 'JM 搜索失败，请稍后重试。', isError: true };
       }
       try {
-        await ctx.forward(result.nodes, `JM搜索 ${query}`);
+        const sent = await ctx.forward(result.nodes, `JM搜索 ${query}`);
+        let simplified = false;
         rememberSearchPage({
           chatKey,
           senderId: searchSenderId(ctx),
@@ -1430,7 +1431,15 @@ export function setup(injected) {
           pages: result.pages,
           rows: result.rows
         });
-        return { content: `已发送「${query}」第 ${page}/${result.pages} 页搜索卡片，请勿重复发送。` };
+        if (ctx.kind === 'group') {
+          const visible = await groupForwardVisible(ctx.onebot, ctx.chatId, sent?.message_id);
+          if (visible === false) {
+            warn(`JM 群搜索卡片未进入群历史，改发编号简版：${chatKey}`);
+            await ctx.forward(searchFallbackNodes(result, page, { selfId: ctx.selfId }), 'JM搜索结果简版');
+            simplified = true;
+          }
+        }
+        return { content: `已发送「${query}」第 ${page}/${result.pages} 页${simplified ? '编号简版' : '搜索'}卡片，请勿重复发送。` };
       } catch (error) {
         // 外部发送可能已生效，交给现有 outbox 核对，不能再补发一条错误提示。
         warn(`JM 搜索卡片发送待核对：${error?.message ?? error}`);

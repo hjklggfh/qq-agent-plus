@@ -65,6 +65,33 @@ const node = (content, bot) => ({ type: 'node', data: {
   content
 } });
 
+export function searchFallbackNodes({ rows, pages, total }, page, bot = {}) {
+  const nodes = Array.from({ length: PER_CARD }, (_, index) => {
+    const number = (page - 1) * PER_CARD + index + 1;
+    const albumId = firstString(rows[index]?.id, rows[index]?.album_id);
+    return node([text(/^\d{2,9}$/.test(albumId)
+      ? `${number}. JM${albumId}` : `${number}. 本页没有更多作品`)], bot);
+  });
+  nodes.push(node([text(`搜索结果简版：第 ${page}/${pages} 页，共 ${total} 部。发送序号可获取资源；发送「上一页」或「下一页」翻页。完整详情和封面可在私聊搜索查看。`)], bot));
+  return nodes;
+}
+
+export async function groupForwardVisible(onebot, chatId, messageId, { attempts = 3, delayMs = 1500 } = {}) {
+  if (!onebot?.call || messageId == null) return null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt && delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    let history;
+    try {
+      history = await onebot.call('get_group_msg_history', {
+        group_id: Number(chatId), message_seq: 0, count: 50
+      });
+    } catch { return null; }
+    if (!Array.isArray(history?.messages)) return null;
+    if (history.messages.some((message) => String(message?.message_id) === String(messageId))) return true;
+  }
+  return false;
+}
+
 function clean(value, format) {
   return format(firstString(value)).replace(/\s+/g, ' ').trim();
 }
