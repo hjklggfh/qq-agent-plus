@@ -3,6 +3,7 @@ import path from 'node:path';
 import { setup as setupLegacy, activate as activateLegacy, deactivate as deactivateLegacy } from './legacy-index.js';
 import { handleMessage as handleLegacyMessage, dispose as disposeLegacy } from './legacy-index.js';
 import { classifyJmDirectCommand } from './direct-command.js';
+import { clearSearchSessions, resolveSearchFollowup } from './search-session.js';
 
 const TOOL_PREFIX = 'jm_';
 
@@ -88,9 +89,39 @@ export function activate(api) {
         const runner = toolRunners.get(name);
         return runner ? runner(directCtx, args) : null;
       };
+      const replyFollowup = async (reply) => {
+        try { await toolCtx.send([String(reply)]); } catch { /* 发送状态交由宿主 outbox 核对，避免回退普通流程后重复执行 */ }
+      };
+      const followup = resolveSearchFollowup({
+        chatKey: toolCtx.chatKey,
+        senderId: message?.senderId,
+        text: message?.text
+      });
+      if (followup) {
+        if (followup.type === 'notice') {
+          await replyFollowup(followup.text);
+          return true;
+        }
+        if (followup.type === 'page') {
+          const result = await directTool('jm_search', { query: followup.query, page: followup.page });
+          if ((result?.isError || result?.notify) && result.content) await replyFollowup(result.content);
+          return true;
+        }
+        if (followup.type === 'resource') {
+          const result = await directTool('jm_download_album', { album_id: followup.albumId });
+          if (result?.isError && result.content) await replyFollowup(result.content);
+          else if (result?.content) {
+            const reply = /已经排上队/.test(result.content)
+              ? `已选择第 ${followup.index} 项（JM${followup.albumId}），开始处理；结果会发到本会话。`
+              : String(result.content);
+            await replyFollowup(reply);
+          }
+          return true;
+        }
+      }
       if (direct?.tool) {
         const result = await directTool(direct.tool, direct.args);
-        if (result?.isError && result.content) await toolCtx.send([String(result.content)]);
+        if ((result?.isError || result?.notify) && result.content) await toolCtx.send([String(result.content)]);
         return true;
       }
       return handleLegacyMessage({
@@ -103,6 +134,7 @@ export function activate(api) {
       }, message);
     },
     async deactivate() {
+      clearSearchSessions();
       deactivateLegacy();
       disposeLegacy();
     }

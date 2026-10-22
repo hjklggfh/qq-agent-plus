@@ -21,6 +21,14 @@ export function classifyJmDirectCommand(value) {
   if (GROUP_OFF.test(text)) return { tool: 'jm_group_toggle', args: { action: 'off' } };
   if (/^(?:JM|禁漫)\s*(?:群列表|名单)$/iu.test(text)) return { tool: 'jm_group_toggle', args: { action: 'list' } };
   if (/^(?:JM|禁漫)\s*(?:所有群开放|全开)$/iu.test(text)) return { tool: 'jm_group_toggle', args: { action: 'all' } };
+  const search = /^(?:JM|禁漫)\s*搜索\s+(.+)$/iu.exec(text);
+  if (search) {
+    const page = /\s+第\s*(\d+)\s*页$/u.exec(search[1]);
+    return { tool: 'jm_search', args: {
+      query: (page ? search[1].slice(0, page.index) : search[1]).trim(),
+      page: page ? Number(page[1]) : 1
+    } };
+  }
   const album = /(?:^|[^0-9a-zA-Z])JM[\s\-_:：#]*(\d{2,9})(?!\d)|\/(?:album|photo)\/(\d{2,9})(?!\d)/iu.exec(text);
   if (album) return { tool: 'jm_download_album', args: { album_id: album[1] || album[2] } };
   return null;

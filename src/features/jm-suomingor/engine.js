@@ -287,13 +287,16 @@ export function createClient(options = {}) {
 
   /** 请求禁漫接口拿 JSON，多域名轮询 + 解密。全挂时抛错（带前几个失败原因）。 */
   async function jmApi(apiPath) {
-    const candidates = domainCandidates(domains);
+    // 搜索没有 /album、/photo 那样的网页详情兜底，网页域名的 HTML 不能当接口数据解析。
+    const candidates = apiPath.startsWith('/search?')
+      ? domainCandidates(domains).filter((domain) => !DEFAULT_WEB_DOMAINS.includes(domain))
+      : domainCandidates(domains);
     const errors = [];
 
     for (const domain of candidates) {
       const base = `https://${domain}`;
 
-      if (DEFAULT_API_DOMAINS.includes(domain)) {
+      if (DEFAULT_API_DOMAINS.includes(domain) || apiPath.startsWith('/search?')) {
         const ts = tsSeconds();
         const res = await httpGet(`${base}${apiPath}`, {
           headers: {
@@ -373,6 +376,8 @@ export function createClient(options = {}) {
 
   const albumInfo = (albumId) => jmApi(`/album?id=${encodeURIComponent(albumId)}`).then((r) => normalizeAlbum(r, albumId));
   const photoInfo = (photoId) => jmApi(`/chapter?id=${encodeURIComponent(photoId)}`).then((r) => normalizePhoto(r, photoId));
+  const searchAlbums = (query, page = 1) => jmApi(`/search?main_tag=0&search_query=${encodeURIComponent(query)}`
+    + `&page=${encodeURIComponent(page)}&o=mr&t=a`);
 
   const buildImageUrl = (domain, photoId, fileName) =>
     `https://${domain}/media/photos/${photoId}/${encodeURIComponent(String(fileName).split('/').pop())}`;
@@ -401,5 +406,5 @@ export function createClient(options = {}) {
     throw new Error(errors.slice(0, 3).join('；'));
   }
 
-  return { httpGet, jmApi, albumInfo, photoInfo, fetchScrambleId, fetchImage, buildImageUrl };
+  return { httpGet, jmApi, albumInfo, photoInfo, searchAlbums, fetchScrambleId, fetchImage, buildImageUrl };
 }

@@ -78,6 +78,10 @@ function hostToolContext(ctx, runtime) {
         failed: Array.isArray(result?.failed) ? result.failed.length : 0
       };
     },
+    forward: async (nodes, label = '') => sender.forward(chatKey, { nodes, label }, {
+      runId: ctx?.session?.leaseId,
+      signal: ctx?.signal
+    }),
     onebot: scopedOnebot(runtime.onebot, chatKey)
   };
 }

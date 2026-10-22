@@ -34,6 +34,8 @@ import * as pdfBridge from './pdf.js';
 import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
+import { searchCardNodes } from './search.js';
+import { rememberSearchPage, searchSenderId } from './search-session.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TASKS_FILE = () => path.join(downloadRoot(), 'tasks.json');
@@ -1377,6 +1379,66 @@ export function setup(injected) {
   void loadHistory();
   workerCache = { at: 0, result: null };
 
+  api.registerTool({
+    id: 'search',
+    name: '搜索禁漫漫画',
+    category: 'media',
+    icon: '🔎',
+    description: '按关键词搜索 JM 漫画，并向当前 QQ 会话发送每页 5 部作品的合并转发卡片。用户说「JM搜索 关键词」或要求翻页时调用；卡片由工具发送，勿重复回复。',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: '搜索关键词，不含 JM搜索 前缀和页码' },
+        page: { type: 'integer', description: '卡片页码，从 1 开始，默认 1' }
+      },
+      required: ['query']
+    },
+    async execute(ctx, args) {
+      const chatKey = String(ctx?.chatKey || '');
+      const query = String(args?.query || '').replace(/\s+/g, ' ').trim();
+      const page = args?.page == null ? 1 : Number(args.page);
+      if (!cfg().enabled) return { content: 'JM 功能已关闭。', isError: true };
+      const denied = gateChat(chatKey);
+      if (denied) return { content: denied, isError: true };
+      if (!query || query.length > 60) return { content: '请提供 1～60 字的搜索词，例如「JM搜索 作品名」。', isError: true };
+      if (!Number.isSafeInteger(page) || page < 1 || page > 10000) {
+        return { content: '页码需为正整数，例如「JM搜索 作品名 第2页」。', isError: true };
+      }
+      if (typeof ctx?.forward !== 'function') return { content: '当前会话不支持发送 QQ 搜索卡片。', isError: true };
+      const perm = await checkPermission(ctx);
+      if (!perm.ok) return { content: perm.reason, isError: true };
+      let result;
+      try {
+        result = await searchCardNodes(client(), {
+          query, page,
+          bot: { selfId: ctx.selfId, selfNickname: ctx.selfNickname, botName: ctx.botName },
+          format: toSimplified
+        });
+        if (!result.pages) return { content: `没有找到与「${query}」相关的 JM 作品。`, notify: true };
+        if (page > result.pages) return { content: `搜索「${query}」共 ${result.pages} 页，请发送「JM搜索 ${query} 第${result.pages}页」。`, isError: true };
+      } catch (error) {
+        warn(`JM 搜索失败：${error?.message ?? error}`);
+        return { content: 'JM 搜索失败，请稍后重试。', isError: true };
+      }
+      try {
+        await ctx.forward(result.nodes, `JM搜索 ${query}`);
+        rememberSearchPage({
+          chatKey,
+          senderId: searchSenderId(ctx),
+          query,
+          page,
+          pages: result.pages,
+          rows: result.rows
+        });
+        return { content: `已发送「${query}」第 ${page}/${result.pages} 页搜索卡片，请勿重复发送。` };
+      } catch (error) {
+        // 外部发送可能已生效，交给现有 outbox 核对，不能再补发一条错误提示。
+        warn(`JM 搜索卡片发送待核对：${error?.message ?? error}`);
+        return { content: '搜索卡片发送状态未确认，请核对发送记录后再决定是否重试。' };
+      }
+    }
+  });
+
   // ── 工具 1：下载 ──────────────────────────────────────────────────────────
   api.registerTool({
     id: 'download_album',
@@ -2600,7 +2662,8 @@ export function promptSections() {
       + `6. JM 功能按群开关：有人说「开启JM」「关闭JM」「JM群列表」「JM所有群开放」时，调用 ${toolId('group_toggle')}（结果由工具自己发，不要复述）。\n`
       + `7. 对方问进度或「怎么没动静」时，调用 ${toolId('task_status')}；问「本地有哪几本」用 ${toolId('library')}；`
       + `问「支持 PDF 吗 / 磁盘满了吗 / 群文件还有空间吗」用 ${toolId('storage')}。\n`
-      + `8. JM 功能按群开关：有人说「开启JM」「关闭JM」「JM群列表」「JM所有群开放」时，调用 ${toolId('group_toggle')}（结果由工具自己发，不要复述）。\n`
+      + `8. 群友说「JM搜索 关键词」时，调用 ${toolId('search')}，传 query 和 page。搜索后可直接说「下一页」「上一页」翻页，`
+      + '或发卡片里的序号下载对应作品；这些固定指令由宿主处理，不要复述搜索卡片。\n'
       + '9. 你只需要用一两句话简短回应（本子名 + 页数 + 是否开始处理），**不要复述目录、不要罗列文件名**。\n'
       + '10. 失败时把工具返回的原因如实转达，并给出可照做的下一步，不要编造成功。\n'
       + '11. 这是成人向内容，只在群友主动索要时处理，不要主动推荐、不要描述内容。\n'
