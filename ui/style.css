@@ -3553,6 +3553,26 @@ dialog { margin: auto; max-height: 88vh; }
 :root[data-hover='off'] .game-hub-grid button:hover,
 :root[data-hover='off'] .overview-card:hover,
 :root[data-hover='off'] .overview-panel:hover { transform: none; box-shadow: none; }
+/* 主导航与设置/记忆二级导航沿用外观里的反馈色和悬停强度。 */
+:is(.tab, .settings-menu-item, .memory-subnav button) {
+  transition: background-color .18s ease, color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+:root[data-hover='soft'] :is(.tab, .settings-menu-item, .memory-subnav button):is(:hover, :focus-visible) {
+  background-color: color-mix(in srgb, var(--effect-color) 10%, var(--bg-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--effect-color) 22%, transparent);
+}
+:root[data-hover='glow'] :is(.tab, .settings-menu-item, .memory-subnav button):is(:hover, :focus-visible) {
+  background-color: color-mix(in srgb, var(--effect-color) 14%, var(--bg-2));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--effect-color) 55%, transparent), 0 0 16px color-mix(in srgb, var(--effect-color) 24%, transparent);
+}
+:root[data-hover='lift'] :is(.tab, .settings-menu-item, .memory-subnav button):is(:hover, :focus-visible) {
+  transform: translateX(3px);
+  background-color: color-mix(in srgb, var(--effect-color) 12%, var(--bg-2));
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--effect-color) 16%, transparent);
+}
+:root[data-click='ripple'] :is(.tab, .settings-menu-item, .memory-subnav button):active,
+:root[data-click='spark'] :is(.tab, .settings-menu-item, .memory-subnav button):active { transform: scale(.98); }
+:root[data-motion='off'] :is(.tab, .settings-menu-item, .memory-subnav button):is(:hover, :focus-visible, :active) { transform: none; }
 .appearance-trail, .appearance-trail-segment, .appearance-click-ripple, .appearance-click-spark { position: fixed; pointer-events: none; z-index: 9999; }
 .appearance-trail { width: 7px; height: 7px; border-radius: 50%; background: var(--trail-color); box-shadow: 0 0 11px var(--trail-color); transform: translate(-50%, -50%); animation: appearance-trail-fade .5s ease-out both; }
 .appearance-trail.trail-comet { width: 17px; height: 17px; background: radial-gradient(circle, var(--trail-color), transparent 72%); box-shadow: none; }
@@ -3579,4 +3599,5 @@ dialog { margin: auto; max-height: 88vh; }
   :root[data-hover='lift'] .overview-card:hover,
   :root[data-hover='lift'] .overview-panel:hover,
   :root[data-hover='lift'] .game-hub-grid button:hover { transform: none; }
+  :is(.tab, .settings-menu-item, .memory-subnav button):is(:hover, :focus-visible, :active) { transform: none !important; }
 }
