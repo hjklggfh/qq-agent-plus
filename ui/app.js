@@ -27,7 +27,7 @@ import {
 import { QARegistry } from './core/registry.js';
 import { pendingSessionDetail, refreshIntervalMs, startUpdateProgressTicker, state } from './core/state.js';
 import { loadChats } from './pages/chat.js';
-import { initAppearance, renderAppearancePage } from './pages/appearance.js';
+import { initAppearance } from './pages/appearance.js';
 import {
   loadAssetObservatory, loadExperimentalFeatureStatuses, loadFriendOpportunities, loadFriendProposals,
   loadIncomingFriendRequests, loadSlangFeaturePage, renderAssetObservatory, renderFriendFeaturePageImpl,
@@ -168,7 +168,6 @@ function switchTab(name) {
   $$('[data-memory-tab]').forEach((button) => button.classList.toggle('active', button.dataset.memoryTab === name));
   state.tab = viewName;
   if (name === 'overview') loadOverview();
-  if (name === 'appearance') renderAppearancePage();
   if (name === 'control') loadControlHub();
   if (name === 'sessions') loadSessions();
   if (name === 'chats') loadChats();

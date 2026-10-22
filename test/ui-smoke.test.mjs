@@ -127,8 +127,11 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
   await settle();
   try {
     const doc = window.document;
-    doc.querySelector('[data-tab="appearance"]').click();
-    assert.ok(doc.querySelector('#view-appearance').classList.contains('active'));
+    doc.querySelector('[data-tab="settings"]').click();
+    await settle(60);
+    doc.querySelector('#settings-sidebar [data-section="appearance"]').click();
+    assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
+    assert.equal(doc.querySelector('[data-global-admin-settings]'), null);
     assert.ok(doc.querySelector('[data-appearance-preset="ocean"]'));
     assert.deepEqual(errors, []);
     doc.querySelector('[data-appearance-preset="aurora"]').click();
@@ -140,6 +143,30 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     doc.querySelector('[data-appearance-key="accent"][data-appearance-value="emerald"]').click();
     assert.equal(doc.documentElement.dataset.accent, 'emerald');
     assert.equal(JSON.parse(window.localStorage.getItem('qqa-appearance-v1')).accent, 'emerald');
+    const customAccent = doc.querySelector('[data-appearance-color="accentColor"]');
+    customAccent.value = '#123abc';
+    customAccent.dispatchEvent(new window.Event('change', { bubbles: true }));
+    assert.equal(doc.documentElement.dataset.accent, 'custom');
+    assert.equal(doc.documentElement.style.getPropertyValue('--accent'), '#123abc');
+    doc.querySelector('[data-appearance-key="hover"][data-appearance-value="glow"]').click();
+    doc.querySelector('[data-appearance-key="click"][data-appearance-value="spark"]').click();
+    doc.querySelector('[data-appearance-key="trail"][data-appearance-value="dots"]').click();
+    assert.equal(doc.documentElement.dataset.hover, 'glow');
+    assert.equal(doc.documentElement.dataset.click, 'spark');
+    assert.equal(doc.documentElement.dataset.trail, 'dots');
+    window.initAppearance();
+    const move = new window.Event('pointermove', { bubbles: true });
+    Object.defineProperties(move, { clientX: { value: 210 }, clientY: { value: 130 }, pointerType: { value: 'mouse' } });
+    doc.dispatchEvent(move);
+    assert.ok(doc.querySelector('.appearance-trail'));
+    const press = new window.Event('pointerdown', { bubbles: true });
+    Object.defineProperties(press, { clientX: { value: 210 }, clientY: { value: 130 } });
+    doc.querySelector('[data-appearance-reset]').dispatchEvent(press);
+    assert.equal(doc.querySelectorAll('.appearance-click-spark').length, 6);
+    const trailColor = doc.querySelector('[data-appearance-color="trailColor"]');
+    trailColor.value = '#ff8844';
+    trailColor.dispatchEvent(new window.Event('change', { bubbles: true }));
+    assert.equal(doc.documentElement.style.getPropertyValue('--trail-color'), '#ff8844');
     doc.querySelector('[data-appearance-key="layout"][data-appearance-value="wide"]').click();
     assert.equal(doc.documentElement.dataset.layout, 'wide');
     doc.querySelector('[data-appearance-theme="light"]').click();
@@ -148,6 +175,7 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     assert.equal(doc.documentElement.dataset.backdrop, 'mist');
     assert.equal(doc.documentElement.dataset.accent, 'blue');
     assert.equal(doc.documentElement.dataset.theme, 'dark');
+    assert.equal(doc.documentElement.dataset.trail, 'off');
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });

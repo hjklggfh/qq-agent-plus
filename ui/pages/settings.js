@@ -6,12 +6,12 @@
 
 
 import {
-  closeModelModal, currentThinkingRaw, getThemePref, loadSettings, modelModalShell, refreshStatus,
+  closeModelModal, currentThinkingRaw, loadSettings, modelModalShell, refreshStatus,
   renderExperimentalSettingsSection, renderSettings, renderThinkingSeg, thinkingStops
 } from '../app.js';
 import { api } from '../core/api.js';
 import {
-  MODEL_SERVICES_UI, THEME_ICON, THEME_LABEL, THEME_VALUES, TIME_DAYS, TIME_RULE_LABELS
+  MODEL_SERVICES_UI, THEME_VALUES, TIME_DAYS, TIME_RULE_LABELS
 } from '../core/constants.js';
 import { askForConfirmation, extraBodyText, splitRowsHtml } from '../core/dom-util.js';
 import { $, $$, esc } from '../core/dom.js';
@@ -21,6 +21,7 @@ import {
 } from '../core/format.js';
 import { refreshIntervalMs, state } from '../core/state.js';
 import { loadChats, renderChatSection } from './chat.js';
+import { renderAppearancePage } from './appearance.js';
 import {
   renderDailyMomentsSection, renderGroupGameSection, renderQzoneInteractionSection, renderRemindersSection
 } from './moments.js';
@@ -84,13 +85,14 @@ function renderSettingsSidebar() {
     ['persona', '人设'],
     ['allow', '聊天白名单'],
     ['chat', '聊天设置'],
+    ['appearance', '外观'],
     ['desktop', '系统'],
     ['onebot', 'OneBot']
   ];
   const sectionsByArea = {
     features: ['search', 'image-search', 'pixiv', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'],
     games: ['haigui-tang', 'groupGame'],
-    settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'desktop', 'onebot']
+    settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
   };
   const area = state.settingsArea || 'settings';
   const menu = allMenu.filter(([id]) => (sectionsByArea[area] || sectionsByArea.settings).includes(id));
@@ -118,8 +120,13 @@ function renderSettingsImpl() {
   const c = state.config;
   const box = $('#settings-form');
   renderSettingsSidebar();
+  box.classList.toggle('appearance-settings', state.settingsSection === 'appearance');
   box.innerHTML = `
     ${renderSettingsSection(c)}`;
+  if (state.settingsSection === 'appearance') {
+    renderAppearancePage();
+    return;
+  }
   bindSettingsEvents(c);
   bindCrossSectionControls();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
@@ -186,6 +193,7 @@ function renderJmSection(c) {
 
 function renderSettingsSection(c) {
   const sec = state.settingsSection || 'api';
+  if (sec === 'appearance') return '<div id="appearance-page" class="appearance-pane"></div>';
   const sections = {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
@@ -861,16 +869,7 @@ function renderDesktopSection(c) {
       <button type="button" class="btn btn-small" id="change-console-token-btn">更新控制台 Token</button>
       <span class="hint" id="console-token-result">更新后旧 Token 和其他已登录会话立即失效。</span>
     </div>
-    <h3>界面</h3>
-    <div class="field"><label>主题</label>
-      <div class="theme-picker" id="theme-picker">
-        ${THEME_VALUES.map((t) => `
-          <div class="theme-option${getThemePref() === t ? ' on' : ''}" data-theme-opt="${t}" role="button" tabindex="0">
-            <span class="t-ico">${THEME_ICON[t]}</span>
-            <span>${THEME_LABEL[t]}</span>
-          </div>`).join('')}
-      </div>
-    </div>
+    <h3>界面运行</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-showvision" ${c.ui?.showVision !== false ? 'checked' : ''} />
       <label for="cfg-showvision">模型目录显示“支持图片输入/不支持图片输入”徽标</label></div>
     <div class="field"><label>界面刷新间隔（毫秒）</label><input type="number" id="cfg-refreshms" min="1000" step="1000" value="${esc(c.ui?.refreshMs ?? 15000)}" /></div>`;

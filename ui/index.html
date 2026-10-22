@@ -37,18 +37,24 @@
         var appearance = {};
         try { appearance = JSON.parse(localStorage.getItem('qqa-appearance-v1') || '{}') || {}; } catch (ignored) { /* 损坏的外观记录不影响主题 */ }
         var allowed = {
-          accent: ['blue', 'cyan', 'violet', 'emerald', 'amber'],
+          accent: ['blue', 'cyan', 'violet', 'emerald', 'amber', 'custom'],
           backdrop: ['plain', 'mist', 'grid', 'glow'],
           surface: ['solid', 'glass', 'outline'],
           layout: ['focus', 'standard', 'wide'],
           density: ['compact', 'balanced', 'spacious'],
           typography: ['system', 'reading', 'technical'],
           motion: ['off', 'subtle', 'lively'],
+          hover: ['off', 'soft', 'glow', 'lift'],
+          click: ['off', 'ripple', 'spark'],
+          trail: ['off', 'dots', 'comet'],
           radius: ['soft', 'square', 'round']
         };
         Object.keys(allowed).forEach(function (key) {
           if (allowed[key].indexOf(appearance[key]) !== -1) document.documentElement.dataset[key] = appearance[key];
         });
+        if (/^#[0-9a-fA-F]{6}$/.test(appearance.accentColor) && appearance.accent === 'custom') document.documentElement.style.setProperty('--accent', appearance.accentColor);
+        if (/^#[0-9a-fA-F]{6}$/.test(appearance.effectColor)) document.documentElement.style.setProperty('--effect-color', appearance.effectColor);
+        if (/^#[0-9a-fA-F]{6}$/.test(appearance.trailColor)) document.documentElement.style.setProperty('--trail-color', appearance.trailColor);
       } catch (e) {
         document.documentElement.setAttribute('data-theme', 'dark');
       }
@@ -84,7 +90,6 @@
         <button class="tab" data-icon="⬡" data-tab="games"><span class="tab-copy"><strong>游戏</strong><small>跑团与群游戏</small></span></button>
         <!-- 插件管理页暂不在导航中展示；页面、配置和插件数据保留。 -->
         <button class="tab" data-icon="⚙" data-tab="settings" data-page-node-id="4cXbRBtGmcpcL272eKvHPV"><span class="tab-copy"><strong>设置</strong><small>模型、系统与基础配置</small></span></button>
-        <button class="tab" data-icon="◐" data-tab="appearance"><span class="tab-copy"><strong>外观</strong><small>主题、色彩与页面风格</small></span></button>
       </nav>
 
       <div class="side-foot">
@@ -218,10 +223,6 @@
     <!-- 用量视图 -->
     <section id="view-usage" class="view" data-page-node-id="At5AHGr3EpuOFlDyc7dES4">
       <div id="usage-page" class="usage-pane" data-page-node-id="1AXcokyh5yiXqQgwn6X2gu"></div>
-    </section>
-
-    <section id="view-appearance" class="view" aria-label="外观设置">
-      <div id="appearance-page" class="appearance-pane"></div>
     </section>
 
     <!-- 游戏入口：跑团保留完整工作台；其他游戏沿用独立配置表单。 -->

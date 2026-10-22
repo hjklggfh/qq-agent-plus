@@ -5,7 +5,7 @@
 'use strict';
 
 
-import { applyTheme, currentThinkingRaw, loadSettings, refreshStatus, renderSettings } from '../app.js';
+import { currentThinkingRaw, loadSettings, refreshStatus, renderSettings } from '../app.js';
 import { api } from '../core/api.js';
 import { ASR_SERVICES, MODEL_SERVICES_UI, QZONE_RUN_LABELS } from '../core/constants.js';
 import { askForConfirmation, bindPeekToggle, requestExperimentOwnerUin, syncClampedInputs } from '../core/dom-util.js';
@@ -1096,22 +1096,6 @@ function bindSettingsListsAndGroups(c) {
 
   // ── 屏蔽名单 ──
   $('#blocklist-btn')?.addEventListener('click', () => openBlocklistModal());
-
-  // ── 主题选择器（设置页「界面」区）──
-  const themePicker = $('#theme-picker');
-  if (themePicker) {
-    themePicker.querySelectorAll('[data-theme-opt]').forEach((el) => {
-      const pick = () => {
-        applyTheme(el.dataset.themeOpt);
-        themePicker.querySelectorAll('[data-theme-opt]').forEach((x) => x.classList.toggle('on', x === el));
-      };
-      el.addEventListener('click', pick);
-      // 键盘可达：Enter / Space 等价点击
-      el.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); }
-      });
-    });
-  }
 
   // ── 成本核算：价格卡片随模型/开关变化 ──
   const useOfficialBox = $('#cfg-useofficialprice');
