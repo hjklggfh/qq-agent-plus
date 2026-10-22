@@ -1238,6 +1238,10 @@ export function createApp({
     }
     // 处理成功后把这条消息标记为已读，防止普通编排器再次消费。
     if (!isSelf && jmFeature?.handleMessage) {
+      const directJm = jmFeature.isDirectMessage?.({ chatKey, senderId, text: commandText }) === true;
+      // 搜索与封面请求会耗时；确定是 JM 指令时先消费入站消息，防止等待期间
+      // 普通编排器领走同一条消息并再次发送搜索卡片。
+      if (directJm) store.markRead(chatKey, [stored.id]);
       try {
         const handled = await jmFeature.handleMessage({
           chatKey,
@@ -1257,12 +1261,16 @@ export function createApp({
           id: stored.id
         });
         if (handled) {
-          store.markRead(chatKey, [stored.id]);
+          if (!directJm) store.markRead(chatKey, [stored.id]);
           emit('chat-update', chatKey);
           return;
         }
       } catch (error) {
-        log(`[jm] 直接指令处理失败，交回普通流程：${error?.message ?? error}`);
+        log(`[jm] 直接指令处理失败${directJm ? '（已消费，避免重复执行）' : '，交回普通流程'}：${error?.message ?? error}`);
+      }
+      if (directJm) {
+        emit('chat-update', chatKey);
+        return;
       }
     }
     // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。

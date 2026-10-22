@@ -118,6 +118,7 @@ test('JM 消息入口将序号交给下载工具，并消费翻页指令', async
   };
   try {
     rememberSearchPage({ chatKey: context.chatKey, senderId: context.chatId, query: '测试', page: 1, pages: 2, rows: rows.slice(0, 5) });
+    assert.equal(feature.isDirectMessage({ chatKey: context.chatKey, senderId: context.chatId, text: '下一页' }), true);
     assert.equal(await feature.handleMessage(context, { text: '1', senderId: '200001' }), true);
     assert.match(sent[0], /漫画下载功能被关掉/);
     assert.equal(await feature.handleMessage(context, { text: '下一页', senderId: '200001' }), true);

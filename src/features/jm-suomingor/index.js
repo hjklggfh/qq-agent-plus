@@ -82,6 +82,10 @@ export function activate(api) {
   setupLegacy(bridge);
   activateLegacy();
   return {
+    isDirectMessage({ chatKey, senderId, text } = {}) {
+      return Boolean(classifyJmDirectCommand(text)
+        || resolveSearchFollowup({ chatKey, senderId, text }));
+    },
     async handleMessage(toolCtx, message) {
       const directCtx = { ...toolCtx, triggerEntries: [{ ...message, self: false }] };
       const direct = classifyJmDirectCommand(message?.text);

@@ -14,6 +14,7 @@ let initialized = false;
 let deactivation = null;
 let runtimeState = null;
 let featureHandleMessage = null;
+let featureIsDirectMessage = null;
 
 function responseFromFetch(response, url) {
   return response.arrayBuffer().then((bytes) => ({
@@ -98,7 +99,7 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
     runtimeState.getConfig = getConfig || (() => ({}));
     runtimeState.onebot = onebot;
     runtimeState.sender = sender;
-    return { handleMessage: featureHandleMessage, deactivate: deactivation, isChatAllowed: jmChatAllowed, configuredGroups: configuredJmGroups };
+    return { handleMessage: featureHandleMessage, isDirectMessage: featureIsDirectMessage, deactivate: deactivation, isChatAllowed: jmChatAllowed, configuredGroups: configuredJmGroups };
   }
   initialized = true;
 
@@ -143,12 +144,14 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
 
   const activated = activateJm(api);
   featureHandleMessage = (ctx, message) => activated?.handleMessage?.(hostToolContext(ctx, runtime), message);
+  featureIsDirectMessage = (message) => activated?.isDirectMessage?.(message) === true;
   deactivation = async () => {
     await activated?.deactivate?.();
     initialized = false;
     runtimeState = null;
     deactivation = null;
     featureHandleMessage = null;
+    featureIsDirectMessage = null;
     registerBuiltinFeature({ toolDefs: [], promptSections: [] });
   };
   registerBuiltinFeature({
@@ -158,6 +161,7 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
   });
   return {
     handleMessage: featureHandleMessage,
+    isDirectMessage: featureIsDirectMessage,
     deactivate: deactivation,
     isChatAllowed: jmChatAllowed,
     configuredGroups: configuredJmGroups
