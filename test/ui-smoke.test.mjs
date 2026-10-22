@@ -31,6 +31,7 @@ function settle(ms = 250) {
 
 function loadPage() {
   const window = new WindowClass({ url: 'http://127.0.0.1:3210/' });
+  window.structuredClone = structuredClone;
   // 骨架进 DOM；script 标签不交给 happy-dom 自己加载，由测试按清单手动按序执行
   window.document.write(RAW_HTML.replace(/<script[^>]*>\s*<\/script>/g, ''));
   const fetchLog = [];
@@ -84,7 +85,7 @@ test('真实 DOM 冒烟：加载全部脚本、主导航切换入口不抛', { s
   } finally { window.happyDOM?.abort?.(); }
 });
 
-test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, async () => {
+test('功能和游戏配置独立显示并可返回入口页', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();
   try {
@@ -96,17 +97,33 @@ test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, asyn
     doc.querySelector('[data-feature-section="image-search"]').click();
     await settle(60);
     assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
-    assert.ok(doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="image-search"'));
-    assert.ok(!doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="api"'));
+    assert.ok(doc.querySelector('#view-settings').classList.contains('standalone-detail'));
+    assert.equal(doc.querySelector('#settings-sidebar').hidden, true);
+    assert.equal(doc.querySelector('#settings-detail-nav').hidden, false);
+    assert.equal(doc.querySelector('#settings-detail-title').textContent, '以图搜图');
+    assert.equal(doc.querySelector('[data-global-admin-settings]'), null);
+    doc.querySelector('#settings-back-btn').click();
+    assert.ok(doc.querySelector('#view-features').classList.contains('active'));
+    for (const card of doc.querySelectorAll('[data-feature-section]')) {
+      card.click();
+      await settle(20);
+      assert.equal(doc.querySelector('#settings-sidebar').hidden, true, card.dataset.featureSection);
+      assert.equal(doc.querySelector('#settings-detail-title').textContent, card.querySelector('strong').textContent);
+      doc.querySelector('#settings-back-btn').click();
+      assert.ok(doc.querySelector('#view-features').classList.contains('active'));
+    }
 
     doc.querySelector('[data-tab="games"]').click();
     assert.ok(doc.querySelector('#view-games').classList.contains('active'));
     doc.querySelector('[data-game-section="groupGame"]').click();
     await settle(60);
     assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
-    assert.ok(doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="groupGame"'));
+    assert.equal(doc.querySelector('#settings-sidebar').hidden, true);
+    assert.equal(doc.querySelector('#settings-detail-title').textContent, '群游戏');
+    assert.equal(doc.querySelector('#settings-back-btn').textContent, '← 返回游戏');
     assert.ok(doc.querySelector('[data-tab="games"]').classList.contains('active'));
-    doc.querySelector('[data-tab="games"]').click();
+    doc.querySelector('#settings-back-btn').click();
+    assert.ok(doc.querySelector('#view-games').classList.contains('active'));
     doc.querySelector('[data-game-target="trpg"]').click();
     await settle(60);
     assert.ok(doc.querySelector('#view-trpg').classList.contains('active'));

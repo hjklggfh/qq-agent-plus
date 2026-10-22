@@ -153,6 +153,17 @@ function switchTab(name) {
     state.settingsArea = featureSections.includes(state.settingsSection) ? 'features'
       : gameSections.includes(state.settingsSection) ? 'games' : 'settings';
   }
+  const standaloneSettings = name === 'settings' && state.settingsArea !== 'settings';
+  $('#view-settings')?.classList.toggle('standalone-detail', standaloneSettings);
+  const settingsSidebar = $('#settings-sidebar');
+  if (settingsSidebar) settingsSidebar.hidden = standaloneSettings;
+  const detailNav = $('#settings-detail-nav');
+  if (detailNav) detailNav.hidden = !standaloneSettings;
+  if (standaloneSettings) {
+    const areaLabel = state.settingsArea === 'games' ? '游戏' : '功能';
+    $('#settings-back-btn').textContent = `← 返回${areaLabel}`;
+    $('#settings-detail-area').textContent = areaLabel;
+  }
   const viewName = name;
   const navName = viewName === 'settings' ? state.settingsArea
     : memoryTabs.includes(name) ? 'memory' : name === 'trpg' ? 'games' : name;
@@ -1094,6 +1105,7 @@ $$('[data-feature-section]').forEach((button) => button.addEventListener('click'
   state.settingsSection = button.dataset.featureSection;
   switchTab('settings');
 }));
+$('#settings-back-btn')?.addEventListener('click', () => switchTab(state.settingsArea === 'games' ? 'games' : 'features'));
 
 // ── 启动 ──
 async function init() {
