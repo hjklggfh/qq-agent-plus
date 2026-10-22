@@ -92,12 +92,13 @@ test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, asyn
     doc.querySelector('[data-tab="features"]').click();
     await settle(60);
     assert.ok(doc.querySelector('[data-tab="features"]').classList.contains('active'));
-    assert.ok(doc.querySelector('#view-features').classList.contains('active'));
-    doc.querySelector('[data-feature-section="image-search"]').click();
-    await settle(60);
     assert.ok(doc.querySelector('#view-settings').classList.contains('active'));
     assert.ok(doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="image-search"'));
     assert.ok(!doc.querySelector('#settings-sidebar').innerHTML.includes('data-section="api"'));
+    doc.querySelector('#settings-sidebar [data-section="pixiv"]').click();
+    await settle(60);
+    assert.ok(doc.querySelector('#settings-sidebar [data-section="pixiv"]').classList.contains('active'));
+    assert.ok(doc.querySelector('#settings-form').innerHTML.includes('PID'));
 
     doc.querySelector('[data-tab="games"]').click();
     assert.ok(doc.querySelector('#view-games').classList.contains('active'));

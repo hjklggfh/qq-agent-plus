@@ -2001,11 +2001,6 @@ html.boot-show .loading-overlay { opacity: 1; }
 @keyframes overview-rise { from { transform: scaleY(.08); opacity: .35; } to { transform: scaleY(1); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .overview-chart-track i { animation: none; } .overview-card { transition: none; } }
 .game-hub { width: 100%; max-width: 1180px; margin: 0 auto; }
-.feature-hub { width: 100%; max-width: 1180px; margin: 0 auto; }
-.feature-hub-intro { padding: 20px 22px; margin-bottom: 22px; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); border-radius: 11px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); }
-.feature-hub-intro strong { font-size: 15px; }
-.feature-hub-intro p { margin: 7px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-.feature-hub h2 { margin: 20px 0 11px; font-size: 14px; }
 .game-hub-heading > span { color: var(--accent); font-size: 10px; letter-spacing: .17em; }
 .game-hub-heading h1 { margin: 7px 0 4px; font-size: 24px; }
 .game-hub-heading p { margin: 0 0 24px; color: var(--muted); font-size: 13px; }

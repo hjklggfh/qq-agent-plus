@@ -149,6 +149,10 @@ function switchTab(name) {
   const featureSections = ['search', 'image-search', 'pixiv', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'];
   const gameSections = ['haigui-tang', 'groupGame'];
   const memoryTabs = ['memory', 'people-memory', 'identity'];
+  if (name === 'features') {
+    if (!featureSections.includes(state.settingsSection)) state.settingsSection = 'image-search';
+    name = 'settings';
+  }
   if (name === 'settings') {
     state.settingsArea = featureSections.includes(state.settingsSection) ? 'features'
       : gameSections.includes(state.settingsSection) ? 'games' : 'settings';
@@ -1088,10 +1092,6 @@ $$('[data-memory-tab]').forEach((tab) => tab.addEventListener('click', () => swi
 $$('[data-game-target]').forEach((button) => button.addEventListener('click', () => switchTab(button.dataset.gameTarget)));
 $$('[data-game-section]').forEach((button) => button.addEventListener('click', () => {
   state.settingsSection = button.dataset.gameSection;
-  switchTab('settings');
-}));
-$$('[data-feature-section]').forEach((button) => button.addEventListener('click', () => {
-  state.settingsSection = button.dataset.featureSection;
   switchTab('settings');
 }));
 
