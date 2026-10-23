@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 import { classifyJmDirectCommand } from '../src/features/jm-suomingor/direct-command.js';
-import { searchCardNodes, searchCardPage, searchDetailNodes, searchFallbackNodes, groupForwardVisible } from '../src/features/jm-suomingor/search.js';
+import { searchCardNodes, searchCardPage, searchDetailNodes, searchFallbackNodes, groupForwardVisible, normalizeSearchCover, deliverSearchCard } from '../src/features/jm-suomingor/search.js';
 import { clearSearchSessions, rememberSearchPage, resolveSearchFollowup, searchSenderId } from '../src/features/jm-suomingor/search-session.js';
 import { activate as activateJm } from '../src/features/jm-suomingor/index.js';
 
@@ -15,6 +16,8 @@ const rows = Array.from({ length: 13 }, (_, i) => ({
   description: `简介${i + 1}`
 }));
 const testStateDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '.jm-search-unused');
+const coverFixture = await sharp({ create: { width: 40, height: 60, channels: 4,
+  background: { r: 60, g: 120, b: 180, alpha: 0.5 } } }).png().toBuffer();
 
 function fakeClient(size = 7) {
   const calls = [];
@@ -30,7 +33,7 @@ function fakeClient(size = 7) {
     },
     async httpGet(url) {
       calls.push(['cover', url]);
-      return { ok: true, buffer: Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(1500)]) };
+      return { ok: true, buffer: coverFixture };
     }
   };
 }
@@ -42,6 +45,64 @@ test('JM 搜索指令包含关键词及可选页码', () => {
   assert.deepEqual(classifyJmDirectCommand('禁漫搜索 测试 作品 第2页'), {
     tool: 'jm_search', args: { query: '测试 作品', page: 2 }
   });
+});
+
+test('封面完整解码并转换成有尺寸上限的 RGB JPEG，拒绝伪造文件头', async () => {
+  const webp = await sharp({ create: { width: 1200, height: 1800, channels: 3,
+    background: '#4080c0' } }).webp().toBuffer();
+  const result = await normalizeSearchCover(webp);
+  const metadata = await sharp(result).metadata();
+  assert.equal(metadata.format, 'jpeg');
+  assert.equal(metadata.space, 'srgb');
+  assert.equal(metadata.isProgressive, false);
+  assert.equal(metadata.width, 512);
+  assert.equal(metadata.height, 768);
+  assert.ok(result.length <= 256 * 1024);
+  assert.ok((await normalizeSearchCover(coverFixture)).length > 0, '小于 1KB 的有效封面也可使用');
+  await assert.rejects(normalizeSearchCover(Buffer.concat([Buffer.from([0xff, 0xd8]), Buffer.alloc(1500)])));
+  await assert.rejects(normalizeSearchCover(Buffer.alloc(4 * 1024 * 1024 + 1)));
+});
+
+test('损坏或下载失败的封面逐个降级，不向协议端提交裸外站 URL', async () => {
+  const client = fakeClient();
+  let calls = 0;
+  client.httpGet = async () => {
+    calls += 1;
+    return { ok: true, buffer: Buffer.from('<html>access denied</html>') };
+  };
+  const result = await searchCardNodes(client, { query: '测试', page: 1, includeExternalLink: false });
+  assert.equal(calls, 10, '每张图仅尝试两个来源');
+  assert.equal(result.nodes.length, 6);
+  assert.ok(result.nodes.every((item) => item.data.content.every((segment) => segment.type === 'text')));
+  assert.match(result.nodes[0].data.content[1].data.text, /封面暂不可用/);
+  assert.doesNotMatch(JSON.stringify(result.nodes), /https?:\/\//);
+});
+
+test('群卡片以群历史确认，序号 0 的缓存不算成功，最终简版也必须核对', async () => {
+  const result = await searchCardNodes(fakeClient(), { query: '测试', page: 1 });
+  const sent = [];
+  let visible = false;
+  const ctx = {
+    kind: 'group', chatId: '100001', selfId: '10001',
+    forward: async (nodes, label) => {
+      sent.push({ nodes, label });
+      return { message_id: sent.length };
+    },
+    onebot: { call: async () => ({ messages: [{ message_id: sent.length, message_seq: visible ? 123 : 0 }] }) }
+  };
+  const options = { query: '测试', page: 1, verifyOptions: { attempts: 1, delayMs: 0 } };
+  const missing = await deliverSearchCard(ctx, result, options);
+  assert.equal(sent.length, 3);
+  assert.equal(missing.kind, '编号简版');
+  assert.equal(missing.visible, false, '最终卡片不可见时不能报告成功');
+  sent.length = 0;
+  visible = true;
+  assert.equal((await deliverSearchCard(ctx, result, options)).visible, true);
+  assert.equal(sent.length, 1);
+  sent.length = 0;
+  ctx.onebot.call = async () => { throw new Error('查询超时'); };
+  assert.equal((await deliverSearchCard(ctx, result, options)).visible, null);
+  assert.equal(sent.length, 1, '未知状态不触发连续补发');
 });
 
 test('JM 卡片按每页五部换算站点页码，补齐六条消息', async () => {

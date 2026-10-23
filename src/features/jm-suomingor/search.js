@@ -1,7 +1,8 @@
 import { IMAGE_DOMAINS, UA_APP, firstString, asArray } from './engine.js';
+import sharp from 'sharp';
 
 const PER_CARD = 5;
-const MAX_COVER_BYTES = 1024 * 1024;
+const MAX_COVER_BYTES = 4 * 1024 * 1024;
 
 function rowsOf(response) {
   if (Array.isArray(response)) return response;
@@ -33,12 +34,18 @@ export async function searchCardPage(client, query, page) {
   return { rows: selected, total, pages };
 }
 
-function imageBuffer(buffer) {
-  if (!buffer || buffer.length < 1024 || buffer.length > MAX_COVER_BYTES) return false;
-  return (buffer[0] === 0xff && buffer[1] === 0xd8)
-    || (buffer[0] === 0x89 && buffer[1] === 0x50)
-    || (buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46)
-    || (buffer[0] === 0x47 && buffer[1] === 0x49);
+export async function normalizeSearchCover(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_COVER_BYTES) {
+    throw new Error('封面为空或超过大小限制');
+  }
+  // 完整解码后统一输出普通 RGB JPEG；不能仅凭文件头把损坏文件交给 QQ。
+  // 去除元数据、透明通道和动画，限制像素与传输体积，不改变封面内容。
+  const image = await sharp(buffer, { limitInputPixels: 24_000_000, failOn: 'warning' })
+    .rotate().resize({ width: 512, height: 768, fit: 'inside', withoutEnlargement: true })
+    .flatten({ background: '#ffffff' }).toColourspace('srgb')
+    .jpeg({ quality: 82, progressive: false }).toBuffer();
+  if (image.length > 256 * 1024) throw new Error('封面转换后超过大小限制');
+  return image;
 }
 
 async function coverSegment(client, albumId) {
@@ -50,12 +57,14 @@ async function coverSegment(client, albumId) {
         timeoutOverride: 6000,
         retries: 0
       });
-      if (result.ok && imageBuffer(result.buffer)) {
-        return { type: 'image', data: { file: `base64://${result.buffer.toString('base64')}` } };
+      if (result.ok) {
+        const image = await normalizeSearchCover(result.buffer);
+        return { type: 'image', data: { file: `base64://${image.toString('base64')}` } };
       }
     } catch { /* 尝试下一个图片域名 */ }
   }
-  return { type: 'image', data: { file: `https://${IMAGE_DOMAINS[0]}/media/albums/${albumId}_3x4.jpg` } };
+  // 协议端没有站点所需的请求头；回退裸 URL 可能使一张坏封面拖垮整张卡片。
+  return text('封面暂不可用');
 }
 
 const text = (value) => ({ type: 'text', data: { text: value } });
@@ -97,9 +106,27 @@ export async function groupForwardVisible(onebot, chatId, messageId, { attempts 
       });
     } catch { return null; }
     if (!Array.isArray(history?.messages)) return null;
-    if (history.messages.some((message) => String(message?.message_id) === String(messageId))) return true;
+    if (history.messages.some((message) => String(message?.message_id) === String(messageId)
+      && (message.message_seq == null || Number(message.message_seq) > 0))) return true;
   }
   return false;
+}
+
+export async function deliverSearchCard(ctx, result, { query, page, verifyOptions } = {}) {
+  const variants = [
+    { kind: '搜索', label: `JM搜索 ${query}`, nodes: result.nodes },
+    { kind: '详情版', label: 'JM搜索详情版', nodes: searchDetailNodes(result.nodes) },
+    { kind: '编号简版', label: 'JM搜索结果简版', nodes: searchFallbackNodes(result, page, { selfId: ctx.selfId }) }
+  ];
+  for (const variant of variants) {
+    const sent = await ctx.forward(variant.nodes, variant.label);
+    if (ctx.kind !== 'group') return { kind: variant.kind, visible: null, messageId: sent?.message_id };
+    const visible = await groupForwardVisible(ctx.onebot, ctx.chatId, sent?.message_id, verifyOptions);
+    // 查询失败或无消息 ID 时送达未知，不能当作失败连续补发。
+    if (visible !== false || variant.kind === '编号简版') {
+      return { kind: variant.kind, visible, messageId: sent?.message_id };
+    }
+  }
 }
 
 function clean(value, format) {

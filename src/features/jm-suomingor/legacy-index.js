@@ -34,7 +34,7 @@ import * as pdfBridge from './pdf.js';
 import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
-import { searchCardNodes, searchDetailNodes, searchFallbackNodes, groupForwardVisible } from './search.js';
+import { searchCardNodes, deliverSearchCard } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1423,8 +1423,7 @@ export function setup(injected) {
         return { content: 'JM 搜索失败，请稍后重试。', isError: true };
       }
       try {
-        const sent = await ctx.forward(result.nodes, `JM搜索 ${query}`);
-        let cardKind = '搜索';
+        const delivery = await deliverSearchCard(ctx, result, { query, page });
         rememberSearchPage({
           chatKey,
           senderId: searchSenderId(ctx),
@@ -1434,19 +1433,13 @@ export function setup(injected) {
           rows: result.rows
         });
         if (ctx.kind === 'group') {
-          const visible = await groupForwardVisible(ctx.onebot, ctx.chatId, sent?.message_id);
-          if (visible === false) {
-            warn(`JM 群搜索封面卡片未进入群历史，尝试文字详情版：${chatKey}`);
-            const detail = await ctx.forward(searchDetailNodes(result.nodes), 'JM搜索详情版');
-            cardKind = '详情版';
-            if (await groupForwardVisible(ctx.onebot, ctx.chatId, detail?.message_id) === false) {
-              warn(`JM 群搜索详情版未进入群历史，改发编号简版：${chatKey}`);
-              await ctx.forward(searchFallbackNodes(result, page, { selfId: ctx.selfId }), 'JM搜索结果简版');
-              cardKind = '编号简版';
-            }
+          if (delivery.visible !== true) {
+            warn(`JM 群搜索卡片送达待核对：${chatKey} kind=${delivery.kind} messageId=${delivery.messageId ?? 'none'} history=${delivery.visible}`);
+            return { content: '搜索卡片送达尚未确认，请核对群历史；不要自动重发或宣称已送达。' };
           }
+          if (delivery.kind !== '搜索') warn(`JM 群搜索已降级送达：${chatKey} kind=${delivery.kind}`);
         }
-        return { content: `已发送「${query}」第 ${page}/${result.pages} 页${cardKind}卡片，请勿重复发送。` };
+        return { content: `已发送「${query}」第 ${page}/${result.pages} 页${delivery.kind}卡片，请勿重复发送。` };
       } catch (error) {
         // 外部发送可能已生效，交给现有 outbox 核对，不能再补发一条错误提示。
         warn(`JM 搜索卡片发送待核对：${error?.message ?? error}`);
