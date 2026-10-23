@@ -44,6 +44,22 @@ test('authenticated feature inventory coordinates live tasks and cleans all time
     assert.equal(new Set(first.features.map(item => item.id)).size, first.features.length);
     assert.equal(first.tasks.find(item => item.id === 'reminders').state, 'waiting');
     assert.equal(first.tasks.find(item => item.id === 'daily-report').state, 'disabled');
+    const recovery = first.tasks.find(item => item.id === 'message-recovery');
+    assert.equal(recovery.lastSuccessAt > 0, true, 'real startup recovery completed');
+    assert.equal(recovery.nextRunAt > recovery.lastSuccessAt, true);
+    assert.equal(recovery.successKind, 'check');
+    assert.equal(first.tasks.find(item => item.id === 'daily-report').lastSuccessAt, null, 'not a successful delivery merely because startup passed');
+    const base = Date.now() - 10000;
+    app.dailyMoments.state.records = [
+      { status: 'failed', endedAt: base + 10, error: 'private-token' },
+      { status: 'published', endedAt: base }
+    ];
+    const moments = (await request('/api/features')).tasks.find(item => item.id === 'daily-moments');
+    assert.equal(moments.lastSuccessAt, base);
+    assert.equal(moments.lastErrorAt, base + 10);
+    assert.equal(moments.successKind, 'delivery');
+    assert.doesNotMatch(JSON.stringify(moments), /private-token/);
+    app.dailyMoments.state.records = [];
     assert.doesNotMatch(JSON.stringify(first), /private-test-key|feature-test-auth|"apiKey"|"records"/);
     const initialChanges = first.tasks.map(item => item.changedAt);
     assert.deepEqual((await request('/api/features')).tasks.map(item => item.changedAt), initialChanges, 'polling is read-only');

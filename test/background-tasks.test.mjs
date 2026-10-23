@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { BackgroundTaskRegistry } from '../src/core/background-tasks.js';
+import { observeTask, scheduleTaskObservation, taskObservation } from '../src/core/task-observation.js';
 
 test('lifecycle is idempotent, config-scoped and serialized across start/reconfigure/stop', async () => {
   const cfg = { task: { enabled: false, time: '23:00' } }; const calls = [];
@@ -60,4 +61,45 @@ test('registration rejects duplicates and late additions', async () => {
   registry.register(entry);
   assert.throws(() => registry.register(entry), /duplicate/);
   await registry.start(); assert.throws(() => registry.register({ ...entry, id: 'other' }), /after startup/);
+});
+
+test('observations preserve results, distinguish failure recovery and never retain exception data', async () => {
+  const owner = {}; let clock = 100;
+  scheduleTaskObservation(owner, 'poll', 200);
+  assert.equal(observeTask(owner, 'poll', () => 42, () => clock), 42);
+  assert.equal(taskObservation(owner, 'poll').lastSuccessAt, 100);
+  clock = 110;
+  const error = Object.assign(new Error('https://private/?token=secret'), { code: 'ECONNREFUSED' });
+  await assert.rejects(observeTask(owner, 'poll', () => Promise.reject(error), () => clock), error);
+  assert.equal(taskObservation(owner, 'poll').failureCode, 'network');
+  assert.equal(taskObservation(owner, 'poll').lastSuccessAt, 100);
+  assert.doesNotMatch(JSON.stringify(taskObservation(owner, 'poll')), /private|secret|token/);
+  const registry = new BackgroundTaskRegistry({ config: () => ({}) });
+  registry.register({ id: 'poll', name: 'Poll', start: () => {}, stop: () => {}, status: () => taskObservation(owner, 'poll') });
+  await registry.start();
+  assert.equal(registry.snapshot()[0].state, 'error');
+  assert.match(registry.snapshot()[0].failureReason, /网络连接失败/);
+  clock = 120;
+  assert.equal(await observeTask(owner, 'poll', async () => 'ok', () => clock), 'ok');
+  assert.equal(registry.snapshot()[0].state, 'waiting');
+  assert.equal(registry.snapshot()[0].lastSuccessAt, 120);
+  assert.equal(registry.snapshot()[0].lastErrorAt, 110, 'recovery keeps the last failure visible');
+  assert.equal(taskObservation({}, 'poll').lastRunAt, undefined, 'process owners are isolated');
+  await registry.stop();
+  assert.equal(registry.snapshot()[0].nextRunAt, null, 'a stopped task has no planned check');
+});
+
+test('cancellation is not a failure, scalar validation and failure allowlist reject raw status errors', async () => {
+  const owner = {};
+  assert.throws(() => observeTask(owner, 'poll', () => { throw new DOMException('cancel', 'AbortError'); }));
+  assert.equal(taskObservation(owner, 'poll').lastErrorAt, undefined);
+  const registry = new BackgroundTaskRegistry({ config: () => ({}) });
+  registry.register({ id: 'poll', name: 'Poll', start: () => {}, stop: () => {},
+    status: () => ({ failureCode: '__proto__', failureReason: 'secret', error: 'secret', nextRunAt: Infinity, lastSuccessAt: -1 }) });
+  await registry.start();
+  const summary = registry.snapshot()[0];
+  assert.equal(summary.nextRunAt, null); assert.equal(summary.lastSuccessAt, null);
+  assert.equal(summary.failureReason, '');
+  assert.doesNotMatch(JSON.stringify(summary), /secret|__proto__/);
+  await registry.stop();
 });

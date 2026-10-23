@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { observeTask, scheduleTaskObservation } from './core/task-observation.js';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -552,12 +553,17 @@ export class AutoUpdateManager {
 
   start() {
     this.stop();
+    const firstIntervalAt = Date.now() + 30000;
     this.notificationTimer = setInterval(() => {
+      scheduleTaskObservation(this, 'update-notifications', Date.now() + 30000);
       this.resumeNotifications();
     }, 30_000);
     this.notificationTimer.unref?.();
+    scheduleTaskObservation(this, 'update-notifications', Date.now() + 2000);
     this.notificationKickoff = setTimeout(() => {
       this.notificationKickoff = null;
+      // The next interval remains anchored to start(), not this kickoff.
+      scheduleTaskObservation(this, 'update-notifications', firstIntervalAt);
       this.resumeNotifications();
     }, 2_000);
     this.notificationKickoff.unref?.();
@@ -572,7 +578,7 @@ export class AutoUpdateManager {
 
   resumeNotifications() {
     if (this.notificationTask) return this.notificationTask;
-    this.notificationTask = this.#notifyPending()
+    this.notificationTask = observeTask(this, 'update-notifications', () => this.#notifyPending())
       .catch((error) => this.log(`[auto-update] 管理员通知失败：${error?.message ?? error}`))
       .finally(() => { this.notificationTask = null; });
     return this.notificationTask;

@@ -9,6 +9,7 @@
 // 同一会话（群/私聊）同时最多一个运行；运行期间新消息只写 JSON（未读），不叠加触发。
 // 不同会话之间并行，受 maxConcurrentRuns 全局限流。
 import crypto from 'node:crypto';
+import { observeTask, scheduleTaskObservation } from './task-observation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -549,15 +550,20 @@ export class Orchestrator {
 
   startRecoveryLoop() {
     clearInterval(this.retryTimer);
-    this.store.recoverExpired();
-    this.store.expireConversationThreads?.();
+    observeTask(this, 'message-recovery', () => {
+      this.store.recoverExpired();
+      this.store.expireConversationThreads?.();
+    });
+    scheduleTaskObservation(this, 'message-recovery', Date.now() + 5000);
     this.retryTimer = setInterval(() => {
+      scheduleTaskObservation(this, 'message-recovery', Date.now() + 5000);
       // 兜底回收不能把进程带走：SQLITE_BUSY、磁盘满、库损坏都可能在恢复期间抛出，
       // 而 server.js 的 uncaughtException 会直接 process.exit(1)。下一个 tick 再试即可。
       try {
-        this.store.recoverExpired();
-        this.store.expireConversationThreads?.();
-        if (this.paused || this.aborted) return;
+        observeTask(this, 'message-recovery', () => {
+          this.store.recoverExpired();
+          this.store.expireConversationThreads?.();
+          if (this.paused || this.aborted) return;
         // ⚠️ 「今天别再花钱」（onExceed=block）时**不能**继续给有未读的会话排唤醒：
         // wake 会在预算闸门处直接 return，未读原地不动 → 下一个 tick 又排一次 ——
         // 每 tick 新建并中止一个会话、当日 runs 计一次，永不停止（2026-10-04 全面复审 P2
@@ -565,13 +571,14 @@ export class Orchestrator {
         // ⚠️ degrade 同样会空转（只是没有模型调用与 runs 计数）：wake 走到 degrade 闸门 →
         // 建好的等待会话被立刻丢弃 → 未读原地不动 → 下个 tick 再来。所以这里**逐会话**判
         // 「这个唤醒会不会被预算闸门丢掉」，会丢的就不排（2026-10-04 复审 P2）。
-        for (const key of this.store.listChats()) {
-          if (!canRun(key) || this.runningChats.has(key) || this.pendingWake.has(key)
-            || !this.#chatRuntimeDecision(key).allowed
-            || this.store.unreadCount(key) <= 0) continue;
-          if (this.#budgetWouldDrop(key)) continue;
-          this.scheduleWake(key);
-        }
+          for (const key of this.store.listChats()) {
+            if (!canRun(key) || this.runningChats.has(key) || this.pendingWake.has(key)
+              || !this.#chatRuntimeDecision(key).allowed
+              || this.store.unreadCount(key) <= 0) continue;
+            if (this.#budgetWouldDrop(key)) continue;
+            this.scheduleWake(key);
+          }
+        });
       } catch (error) {
         log.error('[recovery] 兜底回收这一轮出错（不影响下一轮）:', error?.message ?? error);
       }
@@ -2360,10 +2367,12 @@ export class Orchestrator {
   // 到点后按主动机会唤醒，并把模型当时留下的想法一起注入。
   startScheduledWakeTicker() {
     if (this.scheduledWakeTicker) return;
+    scheduleTaskObservation(this, 'scheduled-wakes', Date.now() + 30000);
     this.scheduledWakeTicker = setInterval(() => {
+      scheduleTaskObservation(this, 'scheduled-wakes', Date.now() + 30000);
       // 不空吞：这条链路会碰 sqlite（SQLITE_BUSY/库锁）——静默抛每 30 秒一次，运维从日志里
       // 看不出"机器人不说话了"和"本来就没到点"的区别（2026-10-03 全量审查）。
-      try { this.fireDueScheduledWakes(); }
+      try { observeTask(this, 'scheduled-wakes', () => this.fireDueScheduledWakes()); }
       catch (error) { log.error('[wake] 自安排唤醒调度出错（不影响下一轮）:', error?.message ?? error); }
     }, 30000);
     if (this.scheduledWakeTicker.unref) this.scheduledWakeTicker.unref();
@@ -2452,7 +2461,8 @@ export class Orchestrator {
   startReminderLoop() {
     if (this.reminderTimer) return;
     const tick = () => {
-      try { this.fireDueReminders(); } catch (error) { log.error('[reminder] 派发出错（不影响下一轮）:', error?.message ?? error); }
+      scheduleTaskObservation(this, 'reminders', Date.now() + 30000);
+      try { observeTask(this, 'reminders', () => this.fireDueReminders()); } catch (error) { log.error('[reminder] 派发出错（不影响下一轮）:', error?.message ?? error); }
     };
     tick();
     this.reminderTimer = setInterval(tick, 30000);
@@ -2543,7 +2553,7 @@ export class Orchestrator {
 
   startProactiveLoop() {
     this.stopProactiveLoop();
-    const tick = async () => {
+    const tick = () => observeTask(this, 'proactive', async () => {
       const cfg = getConfig();
       const nowTick = Date.now();
       const window = proactiveWindowState(cfg.proactive?.activeHours, nowTick);
@@ -2554,6 +2564,7 @@ export class Orchestrator {
           Math.max(120000, Number(cfg.proactive?.checkIntervalMaxMs) || 5400000)
         )
         : Math.max(60000, window.nextActiveAt - nowTick + 1000);
+      scheduleTaskObservation(this, 'proactive', nowTick + next);
       this.proactiveTimer = setTimeout(() => { tick().catch(() => {}); }, next);
       if (this.aborted || this.paused || cfg.proactive?.enabled !== true) return;
       if (!window.active) return;
@@ -2583,6 +2594,7 @@ export class Orchestrator {
         // 群里正热闹、或都在忙：这不算消耗，45 分钟后再看，别白瞎一个间隔
         log.info('[proactive] 跳过：没有安静下来的群，45 分钟后再看');
         clearTimeout(this.proactiveTimer);
+        scheduleTaskObservation(this, 'proactive', Date.now() + 45 * 60 * 1000);
         this.proactiveTimer = setTimeout(() => { tick().catch(() => {}); }, 45 * 60 * 1000);
         return;
       }
@@ -2591,7 +2603,8 @@ export class Orchestrator {
       const chatKey = candidates[Math.floor(this.random() * candidates.length)];
       log.info('[proactive] 主动开话题 → ' + chatKey);
       this.wake(chatKey, { proactive: true }).catch((error) => log.error('[orchestrator] proactive 出错:', error));
-    };
+    });
+    scheduleTaskObservation(this, 'proactive', Date.now() + 15000);
     this.proactiveTimer = setTimeout(() => { tick().catch(() => {}); }, 15000);
   }
 

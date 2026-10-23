@@ -150,7 +150,10 @@ test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不�
       calls.push(options.method || 'GET');
       return { ok: true, json: async () => ({
         features: PUBLIC_FEATURES.map(feature => ({ ...feature, enabled: feature.id === 'daily-report' })),
-        tasks: [{ id: 'daily-report', featureId: 'daily-report', name: '汇报后台', state: 'waiting', needsReview: true, schedule: '每日23:00' }],
+        tasks: [{ id: 'daily-report', featureId: 'daily-report', name: '汇报后台', state: 'waiting', needsReview: true, schedule: '每日23:00',
+          successKind: 'delivery', lastSuccessAt: 1792750000000, nextRunAt: 1792760000000,
+          lastErrorAt: 1792740000000, failureReason: '<img src=x onerror=alert(1)>' },
+        { id: 'reminders', name: '提醒检查', state: 'error', enabled: false, successKind: 'check' }],
         external: ['外部定时器独立管理'], observedAt: Date.now()
       }) };
     };
@@ -165,6 +168,11 @@ test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不�
     doc.querySelector('#feature-center-refresh').click(); await settle(30);
     assert.equal(search.value, '汇报');
     assert.match(doc.querySelector('#background-task-list').textContent, /待核对/);
+    const taskText = doc.querySelector('#background-task-list').textContent;
+    assert.match(taskText, /最近发送成功/); assert.match(taskText, /最近检查完成/);
+    assert.match(taskText, /下次检查/); assert.match(taskText, /尚无记录/); assert.match(taskText, /未安排/);
+    assert.match(taskText, /最近失败/);
+    assert.equal(doc.querySelectorAll('#background-task-list img').length, 0, 'failure text is escaped');
     doc.querySelector('#feature-center-list [data-feature-open="daily-report"]').click(); await settle(60);
     assert.equal(Boolean(doc.querySelector('#daily-report-time')), true);
     assert.equal(calls.every(method => method === 'GET'), true);

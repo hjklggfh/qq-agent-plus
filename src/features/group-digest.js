@@ -21,6 +21,8 @@ export class GroupDigestManager {
     this.timer = null;
     this.running = false;
     this.lastRun = null;
+    this.lastSuccessAt = 0;
+    this.lastErrorAt = 0;
     this.nextRunAt = 0;
     this.controller = null;
     this.currentTask = null;
@@ -106,8 +108,11 @@ export class GroupDigestManager {
       if (signal.aborted) break;
       try {
         const r = await this.#digestOne(chatKey, cfg, signal);
+        if (r.ok) this.lastSuccessAt = this.now();
+        else if (r.failed) this.lastErrorAt = this.now();
         results.push({ chatKey, ...r });
       } catch (error) {
+        if (!signal.aborted) this.lastErrorAt = this.now();
         const msg = String(error?.message ?? error).slice(0, 200);
         results.push({ chatKey, ok: false, error: msg });
         this.log(`[group-digest] ${chatKey} 失败：${msg}`);
@@ -168,7 +173,7 @@ export class GroupDigestManager {
     });
     signal.throwIfAborted();
     const text = String(r.message?.content || '').trim().slice(0, cfg.maxChars);
-    if (!text) return { ok: false, error: '模型没有产出内容' };
+    if (!text) return { ok: false, failed: true, error: '模型没有产出内容' };
     await this.sender.sendTextBatch(chatKey, [text], { signal });
     return { ok: true, chars: text.length, messages: rows.length, text };
   }

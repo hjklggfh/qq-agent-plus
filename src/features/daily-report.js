@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { observeTask, scheduleTaskObservation } from '../core/task-observation.js';
 import { shanghaiDayStart, todayKey, minuteOfDayInZone } from '../core/util.js';
 
 export const DEFAULT_DAILY_REPORT_CONTENT = Object.freeze({
@@ -115,9 +116,13 @@ export class DailyReportManager {
   }
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => { this.tick().catch(() => {}); }, 30000);
+    const tick = () => {
+      scheduleTaskObservation(this, 'daily-report', Date.now() + 30000);
+      this.tick().catch(() => {});
+    };
+    this.timer = setInterval(tick, 30000);
     this.timer.unref?.();
-    this.tick().catch(() => {});
+    tick();
   }
   enforce() { if (!this.settings().enabled) this.controller?.abort(); }
   async stop() {
@@ -126,7 +131,7 @@ export class DailyReportManager {
   }
   tick(now = Date.now()) {
     if (this.pending) return this.pending;
-    this.pending = this.run(now).then(() => { this.error = ''; }, error => {
+    this.pending = observeTask(this, 'daily-report', () => this.run(now)).then(() => { this.error = ''; }, error => {
       this.error = '报告生成或状态读写失败，本次未确认发送；请检查本地状态与磁盘。';
       throw error;
     }).finally(() => { this.pending = null; });

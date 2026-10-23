@@ -2,6 +2,7 @@
 // 游戏规则在 ./games/<id>.js 插件里（只产出 effects：要发的话 / 要结束），发送与存盘都由这里统一做。
 // 设计要点（docs/research/GAME_HOSTING_DESIGN.md）：私密信息（词/身份）只走私聊，公开摘要不含隐藏信息。
 import fs from 'node:fs';
+import { observeTask, scheduleTaskObservation } from '../core/task-observation.js';
 import path from 'node:path';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { sanitizeUserText, ZONE_OFFSET_MS } from '../core/util.js';
@@ -111,7 +112,11 @@ export class GroupGameManager {
   /** 启动推进循环（注意：与开局方法 start() 区分命名，JS 类里重名会互相覆盖）。 */
   startLoop() {
     if (this.timer) return;
-    this.timer = setInterval(() => { this.tick().catch((e) => this.log('[group-game] tick 出错:', e?.message ?? e)); }, 20000);
+    scheduleTaskObservation(this, 'group-games', Date.now() + 20000);
+    this.timer = setInterval(() => {
+      scheduleTaskObservation(this, 'group-games', Date.now() + 20000);
+      observeTask(this, 'group-games', () => this.tick()).catch((e) => this.log('[group-game] tick 出错:', e?.message ?? e));
+    }, 20000);
     if (this.timer.unref) this.timer.unref();
     if (this.games.size) this.log(`[group-game] 已从磁盘恢复 ${this.games.size} 局进行中的游戏`);
   }

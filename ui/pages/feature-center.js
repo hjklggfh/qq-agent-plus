@@ -17,7 +17,7 @@ function renderFeatureCenter() {
     <button id="feature-center-refresh" type="button" class="btn">刷新状态</button>
     <p id="feature-center-note" class="hint" role="status"></p>
     <div id="feature-center-list" class="feature-center-grid"></div>
-    <h3>后台任务</h3><p class="hint">统一管理进程内任务的启动、配置同步与停止。发送结果待核对时请进入对应功能处理，不会在这里自动重试。</p>
+    <h3>后台任务</h3><p class="hint">检查完成表示调度检查正常结束，不代表已发送消息；发送成功以功能记录为准。进程内检查时间在重启后重新积累。发送结果待核对时不会在这里自动重试。</p>
     <div id="background-task-list" class="feature-center-grid"></div>
     <p id="feature-external-tasks" class="hint"></p></div>`;
 }
@@ -54,10 +54,12 @@ function updateFeatureCenter() {
   $('#background-task-list').innerHTML = tasks.map(task => `<article class="feature-center-card">
     <div class="feature-center-heading"><strong>${esc(task.name)}</strong><span>${esc(BACKGROUND_STATE_LABELS[task.state] || '状态未知')}</span></div>
     <p class="hint">${esc(task.schedule)}</p>
-    ${task.nextRunAt ? `<p class="hint">下次调度：${esc(fmtTime(task.nextRunAt))}</p>` : ''}
-    ${task.lastRunAt ? `<p class="hint">最近运行：${esc(fmtTime(task.lastRunAt))}</p>` : ''}
+    <p class="hint">${task.nextKind === 'schedule' ? '下次调度' : '下次检查'}：${task.nextRunAt ? esc(fmtTime(task.nextRunAt)) : task.enabled === false || ['disabled', 'stopped'].includes(task.state) ? '未安排' : '暂未提供时间'}</p>
+    <p class="hint">${task.successKind === 'delivery' ? '最近发送成功' : '最近检查完成'}：${task.lastSuccessAt ? esc(fmtTime(task.lastSuccessAt)) : '尚无记录'}</p>
+    ${task.lastRunAt ? `<p class="hint">最近执行：${esc(fmtTime(task.lastRunAt))}</p>` : ''}
+    ${task.failureReason ? `<p class="hint error">最近失败${task.lastErrorAt ? `（${esc(fmtTime(task.lastErrorAt))}）` : ''}：${esc(task.failureReason)}</p>` : ''}
     ${task.needsReview ? '<p class="hint">有发送结果待核对，请到功能页查看。</p>' : ''}
-    ${task.error ? `<p class="hint error">${esc(task.error)}</p>` : ''}
+    ${task.error && !task.failureReason ? `<p class="hint error">${esc(task.error)}</p>` : ''}
     ${task.featureId ? `<button class="btn btn-small" type="button" data-feature-open="${esc(task.featureId)}">打开设置</button>` : '<small class="muted">系统任务，随应用启动和停止</small>'}</article>`).join('') || '<p class="hint">后台状态尚未加载。</p>';
   $('#feature-external-tasks').textContent = (data?.external || []).join('；');
 }

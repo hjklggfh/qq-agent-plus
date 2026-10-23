@@ -1,6 +1,7 @@
 // Optional, private-chat-only proactive scheduler. It only chooses *when* and *whom*;
 // the orchestrator owns model calls, send queue, budget and delivery accounting.
 import fs from 'node:fs';
+import { observeTask, scheduleTaskObservation } from './task-observation.js';
 import path from 'node:path';
 import { DATA_DIR, getConfig } from './config.js';
 import { canRun } from './access.js';
@@ -133,9 +134,11 @@ export class PrivateProactive {
   schedule(delay) {
     if (!this.running) return;
     const epoch = this.epoch;
+    scheduleTaskObservation(this, 'private-proactive', this.now() + delay);
     this.timer = setTimeout(() => {
       if (!this.running || this.epoch !== epoch) return;
-      this.tick(epoch).catch((error) => this.log.error(`[private-proactive] 判定失败：${error?.message ?? error}`))
+      scheduleTaskObservation(this, 'private-proactive', 0);
+      observeTask(this, 'private-proactive', () => this.tick(epoch), this.now).catch((error) => this.log.error(`[private-proactive] 判定失败：${error?.message ?? error}`))
         .finally(() => {
           if (!this.running || this.epoch !== epoch) return;
           const r = range(this.config().privateProactive?.wakeRange, 15, 30, 1, 1440);
