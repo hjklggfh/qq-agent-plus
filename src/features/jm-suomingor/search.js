@@ -129,7 +129,9 @@ export async function deliverSearchCard(ctx, result, { query, page, verifyOption
   }
 }
 
-function clean(value, format) {
+function clean(value, formatter) {
+  // ops scan 不识别函数形参，回调需显式绑定为局部变量。
+  const format = formatter;
   return format(firstString(value)).replace(/\s+/g, ' ').trim();
 }
 
