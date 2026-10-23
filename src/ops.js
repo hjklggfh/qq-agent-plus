@@ -2236,7 +2236,7 @@ function printMainHelp() {
 
 const COMMANDS = {
   'recovery-target': { run: recoveryTarget, help: '用法: node src/ops.js recovery-target [--confirm]；专用SSH入口，仅接受JSON probe/restart-service，不支持整机重启。' },
-  'recovery-watch': { run: recoveryWatch, help: '用法: node src/ops.js recovery-watch [--confirm]；东京侧定时监控，配置见 docs/RECOVERY.md；未配置云端整机重启。' },
+  'recovery-watch': { run: recoveryWatch, help: '用法: node src/ops.js recovery-watch [--confirm]；东京侧定时监控，云端正常重启需显式配置，见 docs/RECOVERY.md。' },
   audit: { run: auditServer, help: HELP.audit },
   'audit-host': { run: auditHost, help: HELP['audit-host'] },
   'audit-prune': { run: cmdAuditPrune, help: HELP['audit-prune'] },

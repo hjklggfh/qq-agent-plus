@@ -3,20 +3,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
+import { loadEcsCredentials, ecsInstanceState, ecsFullState, ecsReboot } from './recovery-ecs.js';
+import { cloudRecoveryDecision, ecsAllowsRecovery } from './recovery-cloud-policy.js';
 
 export const RECOVERY_POLICY = Object.freeze({ failureMs: 5 * 60000, bootGraceSeconds: 600,
   cooldownMs: 3600000, dailyRestarts: 2, maxSampleGapMs: 180000 });
 
 export function recoveryDecision(previous, sample, now = Date.now(), policy = RECOVERY_POLICY) {
   const state = structuredClone(previous || {});
-  const events = (state.restarts || []).filter(time => time <= now && now - time < 86400000);
+  const events = (state.restarts || []).filter(time => Number.isFinite(time) && now - time < 86400000);
   state.restarts = events;
   if (state.lastAt && (now < state.lastAt || now - state.lastAt > policy.maxSampleGapMs)) { delete state.failureAt; delete state.attempted; }
   state.lastAt = now;
   if (!sample?.reachable) { delete state.failureAt; return { state, action: 'none', reason: sample?.externalHealthy ? 'ssh-unavailable-service-healthy' : 'host-unreachable-cloud-reboot-not-configured' }; }
   if (state.bootId !== sample.bootId) { state.bootId = sample.bootId; delete state.failureAt; delete state.attempted; }
   if (sample.uptimeSeconds < policy.bootGraceSeconds) { delete state.failureAt; delete state.attempted; return { state, action: 'none', reason: 'boot-grace' }; }
-  if (sample.serviceState === 'inactive' && sample.serviceResult === 'success') { delete state.failureAt; return { state, action: 'none', reason: 'service-intentionally-stopped' }; }
+  if (sample.recoverySuppressed || (sample.serviceState === 'inactive' && sample.serviceResult === 'success')) { delete state.failureAt; return { state, action: 'none', reason: 'service-intentionally-stopped-or-suppressed' }; }
   if (sample.consoleHealthy || sample.externalHealthy) { delete state.failureAt; delete state.attempted; return { state, action: 'none', reason: sample.onebotConnected === false ? 'qq-disconnected-only' : 'healthy' }; }
   state.failureAt ??= now;
   if (now - state.failureAt < policy.failureMs) return { state, action: 'none', reason: 'confirming-failure' };
@@ -62,7 +65,16 @@ export async function recoverySnapshot(env = process.env) {
     const response = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(4000), redirect: 'error' });
     if (response.ok) health = await response.json();
   } catch { /* A bounded failed health probe is itself a diagnostic result. */ }
+  let recoverySuppressed = true;
+  if (env.QQ_AGENT_DATA_DIR) {
+    try {
+      const cfg = JSON.parse(await read(path.join(env.QQ_AGENT_DATA_DIR, 'config.json')));
+      recoverySuppressed = cfg.runtime?.paused === true || cfg.runtime?.mode === 'observe'
+        || fs.existsSync(path.join(env.QQ_AGENT_DATA_DIR, '.deploy.lock'));
+    } catch { /* Missing operator state inhibits recovery. */ }
+  }
   return { at: new Date().toISOString(), reachable: true, bootId: bootId.trim(), uptimeSeconds: Number(uptime.split(' ')[0]) || 0,
+    recoverySuppressed,
     consoleHealthy: health?.ok === true, onebotConnected: health?.onebotConnected === true,
     pid, serviceState: serviceInfo.ActiveState || 'unknown', serviceResult: serviceInfo.Result || 'unknown', rssKiB: processStatus.VmRSS || 0, processReadBytes: processIo.read_bytes || 0, processWriteBytes: processIo.write_bytes || 0,
     memTotalKiB: mem.MemTotal, memAvailableKiB: mem.MemAvailable, swapUsedKiB: (mem.SwapTotal || 0) - (mem.SwapFree || 0),
@@ -118,7 +130,7 @@ export async function recoveryTarget(args = [], env = process.env) {
   process.stdout.write(JSON.stringify({ accepted: true })); return 0;
 }
 
-export async function recoveryWatch(args = [], env = process.env) {
+async function recoveryWatchUnlocked(args = [], env = process.env) {
   const confirm = args.includes('--confirm');
   for (const name of ['QQ_RECOVERY_HOST', 'QQ_RECOVERY_KEY', 'QQ_RECOVERY_KNOWN_HOSTS', 'QQ_RECOVERY_DIR']) if (!env[name]) throw new Error(`${name} required`);
   if (!/^[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+$/.test(env.QQ_RECOVERY_HOST)) throw new Error('Invalid recovery SSH host');
@@ -134,7 +146,12 @@ export async function recoveryWatch(args = [], env = process.env) {
   const [snapshot, externalHealthy] = await Promise.all([remote('probe').catch(() => ({ reachable: false })), external()]);
   const sample = { ...snapshot, externalHealthy };
   const decision = recoveryDecision(previous, sample);
-  let result = { action: decision.action, reason: decision.reason, serverRebootEnabled: false };
+  const cloudEnabled = env.QQ_RECOVERY_ECS_ENABLED === '1';
+  const cloudDecision = cloudRecoveryDecision(previous, sample, decision.state);
+  Object.assign(decision.state, cloudDecision.state, { lastAt: decision.state.lastAt, restarts: decision.state.restarts,
+    attempted: decision.state.attempted, failureAt: decision.state.failureAt, bootId: decision.state.bootId });
+  let result = { action: decision.action, reason: decision.reason, serverRebootEnabled: cloudEnabled };
+  if (cloudEnabled && decision.action === 'none' && !sample.consoleHealthy && !sample.externalHealthy) result.reason = cloudDecision.reason;
   if (confirm) {
     record(directory, { at: new Date().toISOString(), ...sample, ...result });
     writeState(directory, decision.state);
@@ -143,9 +160,66 @@ export async function recoveryWatch(args = [], env = process.env) {
       try { result = { ...result, recovery: await remote('restart-service') }; }
       catch { result = { ...result, recovery: 'unknown-no-retry' }; }
     }
+    if (cloudEnabled && cloudDecision.candidate && decision.action !== 'restart-service') {
+      try {
+        if (!env.QQ_RECOVERY_ECS_FILE || !env.QQ_RECOVERY_INSTANCE_ID || !env.QQ_RECOVERY_REGION) throw new Error('ECS configuration missing');
+        const credentials = loadEcsCredentials(env.QQ_RECOVERY_ECS_FILE, { instanceId: env.QQ_RECOVERY_INSTANCE_ID, regionId: env.QQ_RECOVERY_REGION });
+        const [status, full] = await Promise.all([ecsInstanceState(credentials), ecsFullState(credentials)]);
+        if (!ecsAllowsRecovery(status, full)) {
+          result.cloudRecovery = 'cloud-status-inhibits-reboot';
+          decision.state.cloudGraceUntil = Date.now() + 600000;
+          writeState(directory, decision.state);
+        }
+        else {
+          // Close the race with a late SSH/HTTP recovery before issuing the cloud write.
+          const [last, publicHealthy] = await Promise.all([remote('probe').catch(() => ({ reachable: false })), external()]);
+          const recheck = cloudRecoveryDecision(decision.state, { ...last, externalHealthy: publicHealthy }, decision.state);
+          if (!recheck.candidate) result.cloudRecovery = 'last-recheck-inhibits-reboot';
+          else {
+            Object.assign(decision.state, recheck.state);
+            decision.state.serverAttempted = true; decision.state.serverReboots.push(Date.now());
+            decision.state.serverRecovery = { outcome: 'unknown', at: new Date().toISOString() };
+            writeState(directory, decision.state);
+            try {
+              const response = await ecsReboot(credentials, { dryRun: false, confirm: true });
+              decision.state.serverRecovery = { ...decision.state.serverRecovery, ...response, outcome: 'accepted-not-yet-recovered' };
+              result.cloudRecovery = 'normal-reboot-accepted';
+            } catch {
+              result.cloudRecovery = 'reboot-outcome-unknown-no-retry';
+            }
+            result.action = 'reboot-server'; result.reason = cloudDecision.reason;
+            writeState(directory, decision.state);
+          }
+        }
+      } catch { result.cloudRecovery = 'cloud-check-failed-no-reboot'; }
+    }
   }
+  if (confirm && result.cloudRecovery) record(directory, { at: new Date().toISOString(), ...result });
   process.stdout.write(JSON.stringify({ ...result, confirmed: confirm, reachable: sample.reachable, consoleHealthy: sample.consoleHealthy }) + '\n');
   return 0;
+}
+
+export async function recoveryWatch(args = [], env = process.env) {
+  if (!args.includes('--confirm')) return recoveryWatchUnlocked(args, env);
+  if (!env.QQ_RECOVERY_DIR) throw new Error('QQ_RECOVERY_DIR required');
+  const directory = path.resolve(env.QQ_RECOVERY_DIR); fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const lock = path.join(directory, 'worker.lock'); const nonce = randomUUID();
+  try {
+    const file = fs.openSync(lock, 'wx', 0o600);
+    fs.writeFileSync(file, JSON.stringify({ pid: process.pid, nonce })); fs.closeSync(file);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const age = Date.now() - fs.statSync(lock).mtimeMs;
+    let alive = true;
+    try { const owner = JSON.parse(fs.readFileSync(lock, 'utf8')); process.kill(owner.pid, 0); }
+    catch (failure) { if (failure.code === 'ESRCH') alive = false; }
+    if (alive || age < 120000) { process.stdout.write('Recovery worker busy; no action\n'); return 0; }
+    fs.unlinkSync(lock); return recoveryWatch(args, env);
+  }
+  try { return await recoveryWatchUnlocked(args, env); }
+  finally {
+    try { if (JSON.parse(fs.readFileSync(lock, 'utf8')).nonce === nonce) fs.unlinkSync(lock); } catch { /* Fail closed on lock ownership changes. */ }
+  }
 }
 
 // Minimal worker deployment on a remote monitoring host needs no application dependencies.

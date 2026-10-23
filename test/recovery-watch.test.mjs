@@ -24,7 +24,7 @@ test('持续五分钟故障才重启，动作前保存保留位，同一故障�
 });
 test('开机十分钟、显式停止、监测中断、时钟回退均不立即恢复', () => {
   assert.equal(advance({ ...failed, uptimeSeconds: 100 }, 10).reason, 'boot-grace');
-  assert.equal(advance({ ...failed, serviceState: 'inactive', serviceResult: 'success' }, 10).reason, 'service-intentionally-stopped');
+  assert.equal(advance({ ...failed, serviceState: 'inactive', serviceResult: 'success' }, 10).reason, 'service-intentionally-stopped-or-suppressed');
   const previous = advance(failed, 4).state;
   assert.equal(recoveryDecision(previous, failed, base + 20 * 60000).action, 'none');
   assert.equal(recoveryDecision(previous, failed, base - 60000).action, 'none');
