@@ -9,6 +9,7 @@
 | [LINUX.md](LINUX.md) | Linux 全栈部署与运维手册：隔离边界、依赖、安装、控制台、数据与备份、OneBot 连接故障排查 |
 | [BAOTA.md](BAOTA.md) | 宝塔 / aaPanel 面板部署：面板与 systemd 的分工、非 root 服务用户、端口与反向代理、常见报错 |
 | [OPS.md](OPS.md) | `src/ops.js` 运维入口（体检 / 扫描 / 备份 / 部署 / 看门狗 / 健康巡检 / 隧道）的环境变量与示例 |
+| [RECOVERY.md](RECOVERY.md) | 独立外部健康巡检、恢复预约、受限服务恢复与可选云主机正常重启的配置和边界 |
 | [CONFIG-EXAMPLES.md](CONFIG-EXAMPLES.md) | 常用配置片段：思考模式、兜底模型、视觉、主动发言、表情包、节奏 |
 | [AUTO_UPDATE.md](AUTO_UPDATE.md) | Release 驱动的自动更新：判定规则、两条下载通道（git / API+源码包）、失败策略与状态字段 |
 
