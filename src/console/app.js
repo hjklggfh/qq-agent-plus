@@ -598,7 +598,8 @@ export function createApp({
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const xSearch = new XSearchManager({
-    getConfig, canRun, onebot, complete: chatCompletion,
+    dataDir: DATA_DIR, getConfig, canRun, onebot, complete: chatCompletion,
+    file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options)
   });
   const ehentai = new EhentaiManager({
@@ -1217,7 +1218,7 @@ export function createApp({
           if (result.error && canRun(chatKey) && !orchestrator.paused) {
             await sender.sendTextBatch(chatKey, [result.error], { runId: `x-search-hint-${stored.id}`, preserveCode: false });
           }
-          if (result.sendUnknown) log('[x-search] 卡片送达待核对，未自动重发');
+          if (result.sendUnknown) log('[x-search] 发送结果待核对，未自动重发');
         }).catch(() => log('[x-search] 指令处理失败'));
       }
       return;

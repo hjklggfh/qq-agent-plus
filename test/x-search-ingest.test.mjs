@@ -22,7 +22,7 @@ test('X 异步查询先消费、重复事件不重发、不调用聊天模型、
   app.orchestrator.onIncoming = () => { wakes++; };
   app.xSearch.options.request = async (url) => {
     requests++;
-    if (url.includes('/tweets?')) return { data: [{ id: '987654', text: '真实响应测试帖' }], meta: {} };
+    if (url.includes('/tweets?')) return { data: [{ id: '987654', text: '真实响应测试帖', attachments: { media_keys: ['photo'] } }], includes: { media: [{ media_key: 'photo', type: 'photo', url: 'https://pbs.twimg.com/media/test.jpg' }] }, meta: {} };
     return new Promise((resolve) => { release = resolve; });
   };
   app.sender.forward = async (chatKey, payload) => { sent.push({ chatKey, payload }); return { message_id: '111' }; };
@@ -41,6 +41,19 @@ test('X 异步查询先消费、重复事件不重发、不调用聊天模型、
   await app.onebot.onEvent({ ...event, message_id: 2002,
     message: [{ type: 'file', data: { name: 'X @Other', url: 'https://example.test/file.pdf' } }] });
   assert.equal(requests, 2, '附件文件名未触发额外 API 请求');
+  let uploads = 0; let releaseFile;
+  app.xSearch.options.originalDownload = async (_item, _settings, destination) => {
+    fs.writeFileSync(destination, 'test'); return { bytes: 4, extension: 'jpg' };
+  };
+  app.sender.file = async () => { uploads++; await new Promise(resolve => { releaseFile = resolve; }); return {}; };
+  app.xSearch.cooldowns.clear();
+  const originalEvent = { ...event, message_id: 2003, message: 'X 1原图' };
+  await app.onebot.onEvent(originalEvent);
+  assert.equal(app.store.unreadCount('private:123456'), 0);
+  for (let i = 0; i < 20 && !releaseFile; i++) await new Promise(resolve => setTimeout(resolve, 5));
+  await app.onebot.onEvent(originalEvent);
+  assert.equal(uploads, 1); assert.equal(wakes, 0); assert.equal(requests, 2);
+  releaseFile(); await app.xSearch.task;
 });
 
 test('X 路由要求认证，安全配置隐藏Token，设置与预览均可用', async (t) => {

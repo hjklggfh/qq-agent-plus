@@ -3,6 +3,9 @@ import { xSearchConfig } from './config.js';
 import { fetchXPage, xThumbnail } from './client.js';
 import { fetchXBrowserPage, xBrowserThumbnail } from './relay-client.js';
 import { XPostTranslator } from './translation.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { downloadXOriginal } from './originals.js';
 
 const cleanXText = (value, limit = 1800) => String(value || '').replace(/\[CQ:[^\]]*\]/gi, '').replace(/[\x00-\x08\x0b-\x1f]/g, '').slice(0, limit);
 const textSegment = (text) => ({ type: 'text', data: { text } });
@@ -28,7 +31,7 @@ export async function xCardNodes(page, options = {}) {
     }
     nodes.push(node(content));
   }
-  nodes.push(node([textSegment(`X · @${page.user.username}\n${cleanXText(page.user.description, 240)}\n本页 ${page.posts.length} 条，按发布时间倒序。${page.posts.length ? '' : '该筛选条件下没有可显示的帖子。'}\n${page.next ? '发送「X下一页」查看更早的帖子。' : page.partial ? '本次未读取到下一页，可稍后重新查询或查看原账号。' : '没有下一页。'}\n获取时间：${page.fetchedAt}${page.partial ? '\n本页可能不完整。' : ''}`)]));
+  nodes.push(node([textSegment(`X · @${page.user.username}\n${cleanXText(page.user.description, 240)}\n本页 ${page.posts.length} 条，按发布时间倒序。${page.posts.length ? '' : '该筛选条件下没有可显示的帖子。'}\n${page.next ? '发送「X下一页」查看更早的帖子。' : page.partial ? '本次未读取到下一页，可稍后重新查询或查看原账号。' : '没有下一页。'}\n发送「X 编号原图」获取该帖照片文件，例如「X ${(options.offset || 0) + 1}原图」。\n获取时间：${page.fetchedAt}${page.partial ? '\n本页可能不完整。' : ''}`)]));
   return nodes;
 }
 
@@ -75,16 +78,23 @@ export class XSearchManager {
     for (const [id, session] of this.sessions) if (Date.now() - session.at > 10 * 60 * 1000) this.sessions.delete(id);
     const session = this.sessions.get(key);
     if (command.next && !session?.next) return Promise.resolve({ error: '没有可用的 X 下一页，请先发送「X @用户名」。' });
+    const selected = command.original ? session?.posts?.get(command.original) : null;
+    if (command.original && !selected) return Promise.resolve({ error: '该 X 编号未查询或已过期，请先搜索并翻到对应页面。' });
+    if (command.original && !selected.media.some((m) => m.type === 'photo')) return Promise.resolve({ error: '该帖没有可获取的照片原图；视频和动图暂不下载。' });
     if ((this.cooldowns.get(key) || 0) > Date.now()) return Promise.resolve({ error: 'X 查询冷却中，请稍后再试。' });
-    const username = command.next ? session.username : command.username;
+    const username = command.next || command.original ? session.username : command.username;
     if (!/^[a-z0-9_]{1,15}$/i.test(username || '')) return Promise.resolve({ error: '请输入有效的 X 用户名，例如「X @XDevelopers」。' });
     this.cooldowns.set(key, Date.now() + settings.cooldownSeconds * 1000);
     if (this.cooldowns.size > 200) this.cooldowns.delete(this.cooldowns.keys().next().value);
     const controller = new AbortController();
     const active = { controller, chatKey };
     this.active = active;
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(settings.timeoutSeconds * 1000)]);
-    this.task = this.run({ username, next: command.next ? session.next : '', offset: command.next ? session.offset : 0, key, chatKey, messageId, settings, signal })
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(command.original ? 300000 : settings.timeoutSeconds * 1000)]);
+    if (!command.next && !command.original) this.sessions.delete(key);
+    const work = command.original
+      ? this.runOriginal({ selected, username, chatKey, messageId, settings, signal })
+      : this.run({ username, next: command.next ? session.next : '', previous: command.next ? session : null, offset: command.next ? session.offset : 0, key, chatKey, messageId, settings, signal });
+    this.task = work
       .finally(() => { if (this.active === active) this.active = null; });
     return this.task;
   }
@@ -125,7 +135,10 @@ export class XSearchManager {
           if (await this.visible(chatKey, fallback?.message_id, signal) !== true) return { sendUnknown: true };
         }
       }
-      this.sessions.set(key, { username, next: page.next, offset: (job.offset || 0) + page.posts.length, at: Date.now() });
+      const posts = new Map(job.previous?.posts || []);
+      for (const [index, post] of page.posts.entries()) posts.set((job.offset || 0) + index + 1, { id: post.id, media: post.media.slice(0, 4) });
+      while (posts.size > 100) posts.delete(posts.keys().next().value);
+      this.sessions.set(key, { username, posts, next: page.next, offset: (job.offset || 0) + page.posts.length, at: Date.now() });
       if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value);
       return { ok: true };
     } catch (error) {
@@ -133,6 +146,44 @@ export class XSearchManager {
       if (sending) return { sendUnknown: true };
       if (signal.aborted) return { error: 'X 查询已取消或超时。' };
       return { error: cleanXText(error.message, 160) };
+    }
+  }
+  async runOriginal({ selected, username, chatKey, messageId, settings, signal }) {
+    let jobDir; let sending = false; let sent = 0;
+    const root = path.resolve(this.options.dataDir || '.', 'tmp', 'x-search-originals');
+    try {
+      if (!chatKey || !this.options.file || !this.options.dataDir) throw new Error('当前宿主未配置原图文件发送');
+      fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+      // 清理本模块一小时前遗留的临时任务；未知上传保留一小时供协议端完成读取。
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^job-/.test(entry.name)) continue;
+        const old = path.resolve(root, entry.name);
+        if (path.dirname(old) === root && Date.now() - fs.statSync(old).mtimeMs > 3600000) fs.rmSync(old, { recursive: true, force: true });
+      }
+      jobDir = fs.mkdtempSync(path.join(root, 'job-')); fs.chmodSync(jobDir, 0o700);
+      const download = this.options.originalDownload || downloadXOriginal;
+      for (const [index, media] of selected.media.entries()) {
+        if (media.type !== 'photo') continue;
+        signal.throwIfAborted();
+        const file = path.join(jobDir, `photo-${index}`);
+        const got = await download({ postId: selected.id, index, media }, settings, file,
+          AbortSignal.any([signal, AbortSignal.timeout(60000)]));
+        signal.throwIfAborted();
+        if (!this.settings().enabled || !this.options.canRun(chatKey)) throw new Error('X 原图任务已取消');
+        sending = true;
+        await this.options.file(chatKey, { file, name: `X-${username}-${selected.id}-${index + 1}.${got.extension}`, bytes: got.bytes },
+          { runId: `x-original-${messageId}`, signal, timeoutMs: 120000 });
+        sending = false; sent++;
+        fs.rmSync(file, { force: true });
+      }
+      return { ok: true, files: sent };
+    } catch (error) {
+      if (sending) return { sendUnknown: true };
+      return { error: `${sent ? `前 ${sent} 张已上传，后续已停止：` : ''}${signal.aborted ? 'X 原图任务已取消或超时。' : cleanXText(error.message, 160)}` };
+    } finally {
+      if (!sending && jobDir && path.dirname(path.resolve(jobDir)) === root) {
+        try { fs.rmSync(jobDir, { recursive: true, force: true }); } catch { /* 下一次任务清理。 */ }
+      }
     }
   }
   async visible(chatKey, messageId, signal) {
