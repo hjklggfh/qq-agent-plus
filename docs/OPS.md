@@ -5,6 +5,8 @@
 原 `ops/` 目录（shell / python 脚本与 systemd 示例单元）的内容已全部移植至该文件，目录已
 删除。
 
+东京侧外部监测与服务恢复见 [`RECOVERY.md`](RECOVERY.md)，入口 `recovery-watch` / `recovery-target`。未配置阿里云凭据时不启用整机重启，只做诊断与受限的机器人服务恢复。
+
 约定：
 
 - 所有路径与凭据仅从**环境变量**读取，脚本中不包含任何真实地址、令牌或账号；

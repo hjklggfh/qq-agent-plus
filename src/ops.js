@@ -23,6 +23,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { openDatabase } from './core/sqlite.js';
 import { runHealthCheck } from './core/health-check.js';
+import { recoveryTarget, recoveryWatch } from './core/recovery-watch.js';
 import { readOwnerUin, sendOwnerText } from './core/notify-owner.js';
 import { pruneAudit } from './core/audit-log.js';
 import { resolveModelPrice, modelLabel, setRemotePrices, setChannelPrices } from './pricing/model-prices.js';
@@ -2223,6 +2224,8 @@ function printMainHelp() {
   say('  console         SSH 隧道 + 打开控制台（Windows/macOS/Linux）');
   say('  install-timers  生成并安装 systemd user 定时器（需 --confirm）');
   say('  health-check    健康巡检（控制台/协议端/入站水位/磁盘/更新状态）；退出码 0=健康');
+  say('  recovery-watch 东京外部巡检与受限服务恢复（--confirm，见 docs/RECOVERY.md）');
+  say('  recovery-target 专用SSH探测入口（--confirm 才记录或恢复）');
   say('  help            显示本帮助');
   say();
   say('环境变量与常用示例见 docs/OPS.md。');
@@ -2232,6 +2235,8 @@ function printMainHelp() {
 // ───────────────────────────────── 入口 ─────────────────────────────────
 
 const COMMANDS = {
+  'recovery-target': { run: recoveryTarget, help: '用法: node src/ops.js recovery-target [--confirm]；专用SSH入口，仅接受JSON probe/restart-service，不支持整机重启。' },
+  'recovery-watch': { run: recoveryWatch, help: '用法: node src/ops.js recovery-watch [--confirm]；东京侧定时监控，配置见 docs/RECOVERY.md；未配置云端整机重启。' },
   audit: { run: auditServer, help: HELP.audit },
   'audit-host': { run: auditHost, help: HELP['audit-host'] },
   'audit-prune': { run: cmdAuditPrune, help: HELP['audit-prune'] },
