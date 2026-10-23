@@ -170,6 +170,16 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
     assert.equal(doc.querySelector('#x-search-preview-result script'), null);
     assert.equal(doc.querySelector('#x-search-preview-result img'), null);
     assert.match(doc.querySelector('#x-search-preview-result').textContent, /bad/);
+    doc.querySelector('#x-search-backend').value = 'tokyo-browser';
+    doc.querySelector('#x-search-backend').dispatchEvent(new window.Event('change'));
+    assert.equal(doc.querySelector('#x-search-official-fields').style.display, 'none');
+    assert.equal(doc.querySelector('#x-search-relay-fields').style.display, '');
+    assert.equal(doc.querySelector('#x-search-replies').disabled, true);
+    doc.querySelector('#x-search-relay-token').value = 'relay-test-token';
+    doc.querySelector('#save-cfg-btn').click(); await settle(50);
+    assert.equal(calls.at(-1).body.backend, 'tokyo-browser');
+    assert.equal(calls.at(-1).body.relayToken, 'relay-test-token');
+    assert.equal(doc.querySelector('#x-search-relay-token').value, '');
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });

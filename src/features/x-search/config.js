@@ -1,7 +1,8 @@
 export const DEFAULT_X_SEARCH_CONFIG = Object.freeze({
+  backend: 'official', relayUrl: 'http://127.0.0.1:3223', relayToken: '',
   enabled: false, apiBaseUrl: 'https://api.x.com', bearerToken: '',
   includeReplies: false, includeReposts: false, includeImages: true,
-  timeoutSeconds: 20, cooldownSeconds: 15
+  timeoutSeconds: 45, cooldownSeconds: 15
 });
 
 export function validateXSearchPatch(patch) {
@@ -9,7 +10,12 @@ export function validateXSearchPatch(patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (!(key in DEFAULT_X_SEARCH_CONFIG)) throw new Error(`未知 X 设置：${key}`);
     if (typeof DEFAULT_X_SEARCH_CONFIG[key] === 'boolean' && typeof value !== 'boolean') throw new Error('X 开关须为布尔值');
-    if (key === 'bearerToken' && (typeof value !== 'string' || value.length > 4096 || /\s/.test(value))) throw new Error('X Token 格式无效');
+    if (['bearerToken', 'relayToken'].includes(key) && (typeof value !== 'string' || value.length > 4096 || /\s/.test(value))) throw new Error('X Token 格式无效');
+    if (key === 'backend' && !['official', 'tokyo-browser'].includes(value)) throw new Error('X 数据来源无效');
+    if (key === 'relayUrl') {
+      const url = new URL(value);
+      if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('东京中转须为 SSH 隧道的 http://127.0.0.1:端口 根地址');
+    }
     if (key === 'apiBaseUrl') {
       if (typeof value !== 'string' || value.length > 2048) throw new Error('X 接口地址无效');
       const url = new URL(value);

@@ -1,6 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { xSearchConfig } from './config.js';
 import { fetchXPage, xThumbnail } from './client.js';
+import { fetchXBrowserPage } from './relay-client.js';
 
 const cleanXText = (value, limit = 1800) => String(value || '').replace(/\[CQ:[^\]]*\]/gi, '').replace(/[\x00-\x08\x0b-\x1f]/g, '').slice(0, limit);
 const textSegment = (text) => ({ type: 'text', data: { text } });
@@ -41,8 +42,8 @@ export class XSearchManager {
   }
   settings() { return xSearchConfig(this.options.getConfig().xSearch); }
   snapshot() {
-    const { bearerToken, ...settings } = this.settings();
-    return { settings: { ...settings, hasBearerToken: Boolean(bearerToken) }, running: Boolean(this.active) };
+    const { bearerToken, relayToken, ...settings } = this.settings();
+    return { settings: { ...settings, hasBearerToken: Boolean(bearerToken), hasRelayToken: Boolean(relayToken) }, running: Boolean(this.active) };
   }
   enforce() {
     const fingerprint = JSON.stringify(this.settings());
@@ -63,7 +64,7 @@ export class XSearchManager {
     this.enforce();
     const settings = this.settings();
     if (!settings.enabled) return Promise.resolve({ error: 'X 账号检索尚未启用。' });
-    if (!settings.bearerToken) return Promise.resolve({ error: '请先在控制台「功能 → X 账号检索」配置 Bearer Token。' });
+    if (!(settings.backend === 'tokyo-browser' ? settings.relayToken : settings.bearerToken)) return Promise.resolve({ error: `请先在控制台「功能 → X 账号检索」配置${settings.backend === 'tokyo-browser' ? '东京中转令牌' : ' Bearer Token'}。` });
     if (chatKey && !this.options.canRun(chatKey)) return Promise.resolve({});
     if (this.active) return Promise.resolve({ error: 'X 正在查询，请稍后再试。' });
     const key = chatKey ? `${chatKey}:${senderId}` : 'preview';
@@ -90,7 +91,9 @@ export class XSearchManager {
       const cacheKey = `${username.toLowerCase()}:${next}`;
       let page = this.cache.get(cacheKey);
       if (!page || Date.now() - Date.parse(page.fetchedAt) > 60000) {
-        page = await fetchXPage(username, settings, { next, signal, request: this.options.request });
+        page = settings.backend === 'tokyo-browser'
+          ? await (this.options.browserRequest || fetchXBrowserPage)(username, settings, { signal })
+          : await fetchXPage(username, settings, { next, signal, request: this.options.request });
         this.cache.set(cacheKey, page);
         if (this.cache.size > 30) this.cache.delete(this.cache.keys().next().value);
       }
