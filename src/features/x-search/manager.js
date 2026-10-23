@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { xSearchConfig } from './config.js';
 import { fetchXPage, xThumbnail } from './client.js';
-import { fetchXBrowserPage } from './relay-client.js';
+import { fetchXBrowserPage, xBrowserThumbnail } from './relay-client.js';
 
 const cleanXText = (value, limit = 1800) => String(value || '').replace(/\[CQ:[^\]]*\]/gi, '').replace(/[\x00-\x08\x0b-\x1f]/g, '').slice(0, limit);
 const textSegment = (text) => ({ type: 'text', data: { text } });
@@ -100,7 +100,8 @@ export class XSearchManager {
       signal.throwIfAborted();
       if (!chatKey) return { page }; // 控制台预览不发送 QQ，也不下载缩略图。
       const nodes = await xCardNodes(page, { selfId: this.options.onebot.selfId,
-        includeImages: settings.includeImages, signal, thumbnail: this.options.thumbnail });
+        includeImages: settings.includeImages, signal, thumbnail: this.options.thumbnail
+          || (settings.backend === 'tokyo-browser' ? (url, imageSignal) => xBrowserThumbnail(url, settings, imageSignal) : undefined) });
       const ensureAllowed = () => {
         signal.throwIfAborted();
         if (!this.settings().enabled || !this.options.canRun(chatKey)) throw new Error('X 查询已取消');

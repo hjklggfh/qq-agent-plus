@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { browserResponseRows, normalizeBrowserPosts, readBrowserAccount } from '../src/features/x-search/browser-reader.js';
 import { createXBrowserRelay } from '../src/features/x-search/browser-relay.js';
-import { fetchXBrowserPage, validateXRelayUrl } from '../src/features/x-search/relay-client.js';
+import { fetchXBrowserPage, validateXRelayUrl, xBrowserThumbnail } from '../src/features/x-search/relay-client.js';
+import sharp from 'sharp';
 import { XSearchManager } from '../src/features/x-search/manager.js';
 import { DEFAULT_X_SEARCH_CONFIG } from '../src/features/x-search/config.js';
 
@@ -38,7 +39,12 @@ test('仅提取目标公开时间线原文，忽略引用、转帖、回复及�
 
 test('东京服务鉴权、固定账号路径、单任务互斥、缓存及端到端读取', async (t) => {
   let reads = 0; let release;
-  const relay = createXBrowserRelay({ token, profileDir: '/dedicated/profile', read: async (username, options) => {
+  let downloads = 0;
+  const png = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#fff' } }).png().toBuffer();
+  const relay = createXBrowserRelay({ token, profileDir: '/dedicated/profile', download: async (url) => {
+    assert.equal(new URL(url).hostname, 'pbs.twimg.com'); downloads++;
+    return { buffer: png, contentType: 'image/png' };
+  }, read: async (username, options) => {
     assert.equal(username, 'Example'); assert.equal(options.profileDir, '/dedicated/profile');
     reads++; await new Promise((resolve) => { release = resolve; }); return structuredClone(page);
   } });
@@ -57,6 +63,15 @@ test('东京服务鉴权、固定账号路径、单任务互斥、缓存及端�
   assert.equal(reads, 1);
   await assert.rejects(fetchXBrowserPage('Example', { relayUrl: base, relayToken: 'wrong' }), /不匹配/);
   assert.equal((await (await fetch(`${base}/healthz`, { headers })).json()).source, 'tokyo-browser');
+  assert.equal((await fetch(`${base}/image?url=${encodeURIComponent(post.media[0].url)}`)).status, 401);
+  for (const url of ['https://pbs.twimg.com/media/unknown.jpg', 'https://evil.test/media/demo.jpg']) {
+    assert.equal((await fetch(`${base}/image?url=${encodeURIComponent(url)}`, { headers })).status, 403);
+  }
+  const image = await xBrowserThumbnail(post.media[0].url, { relayUrl: base, relayToken: token }, AbortSignal.timeout(5000));
+  assert.equal(image.type, 'image');
+  assert.equal(downloads, 1);
+  assert.match(image.data.file, /^base64:\/\//);
+  assert.equal((await sharp(Buffer.from(image.data.file.slice(9), 'base64')).metadata()).format, 'jpeg');
 });
 
 test('东京模式无需官方Key，预览不发QQ，两个凭据均不回显', async () => {

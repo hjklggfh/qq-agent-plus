@@ -1,5 +1,26 @@
 import http from 'node:http';
 import { normalizeBrowserPosts } from './browser-reader.js';
+import { xThumbnail } from './client.js';
+
+export async function xBrowserThumbnail(raw, settings, signal) {
+  const base = validateXRelayUrl(settings.relayUrl);
+  const download = (url, maxBytes) => new Promise((resolve, reject) => {
+    const target = new URL('/image', base); target.searchParams.set('url', url);
+    const request = http.get(target, { signal, headers: { Authorization: `Bearer ${settings.relayToken}` } }, (res) => {
+      res.on('error', () => reject(new Error('东京图片连接中断')));
+      if (res.statusCode !== 200) { res.resume(); reject(new Error('东京缩略图暂不可用')); return; }
+      let size = 0; const chunks = [];
+      res.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maxBytes) { reject(new Error('东京缩略图过大')); res.destroy(); return; }
+        chunks.push(chunk);
+      });
+      res.on('end', () => resolve({ buffer: Buffer.concat(chunks) }));
+    });
+    request.on('error', () => reject(new Error('东京图片连接失败')));
+  });
+  return xThumbnail(raw, signal, download);
+}
 
 export function validateXRelayUrl(raw) {
   const url = new URL(raw);

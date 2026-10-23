@@ -3,11 +3,13 @@ import fs from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { readBrowserAccount } from './browser-reader.js';
+import { readXRelayImage } from './relay-image.js';
 
 export function createXBrowserRelay(options) {
   const { token, profileDir } = options;
   if (typeof token !== 'string' || !/^[a-zA-Z0-9_-]{32,128}$/.test(token)) throw new Error('X 中转令牌格式无效');
   const read = options.read || readBrowserAccount;
+  const download = options.download || readXRelayImage;
   let active = null; let task = null;
   const cache = new Map();
   const respond = (res, code, value) => {
@@ -20,6 +22,28 @@ export function createXBrowserRelay(options) {
     const expected = Buffer.from(`Bearer ${token}`);
     if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) { respond(res, 401, { error: 'X 中转未授权' }); req.resume(); return; }
     if (req.method === 'GET' && req.url === '/healthz') { respond(res, 200, { ok: true, busy: Boolean(active), source: 'tokyo-browser' }); return; }
+    if (req.method === 'GET' && req.url?.startsWith('/image?')) {
+      let image;
+      try { image = new URL(new URL(req.url, 'http://127.0.0.1').searchParams.get('url')); } catch { respond(res, 400, { error: '图片地址无效' }); return; }
+      const permitted = image.protocol === 'https:' && image.hostname === 'pbs.twimg.com' && !image.username && !image.password
+        && [...cache.values()].some((page) => Date.now() - Date.parse(page.fetchedAt) < 120000 && page.posts.some((post) => post.media.some((m) => {
+          try { return new URL(m.url).pathname === image.pathname; } catch { return false; }
+        })));
+      if (!permitted) { respond(res, 403, { error: '图片不属于近期账号查询结果' }); return; }
+      if (active) { respond(res, 429, { error: '东京服务忙' }); return; }
+      const controller = new AbortController(); active = controller;
+      const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+      res.on('close', disconnected);
+      task = (async () => {
+        try {
+          const result = await download(image.href, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]) });
+          if (result.buffer.length > 2 * 1024 * 1024) throw new Error('图片超过限制');
+          if (!res.destroyed) { res.writeHead(200, { 'content-type': result.contentType, 'cache-control': 'no-store' }); res.end(result.buffer); }
+        } catch { respond(res, 502, { error: 'X 缩略图暂不可用' }); }
+        finally { res.off('close', disconnected); if (active === controller) active = null; }
+      })();
+      await task; return;
+    }
     const match = req.url?.match(/^\/account\/([a-zA-Z0-9_]{1,15})$/);
     if (req.method !== 'GET' || !match) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
     const username = match[1]; const key = username.toLowerCase();

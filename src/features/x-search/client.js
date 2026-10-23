@@ -77,12 +77,13 @@ export async function fetchXPage(username, settings, options = {}) {
   return normalizeXPage({ id: user.id, username: user.username, name: String(user.name || user.username), description: String(user.description || '') }, raw);
 }
 
-export async function xThumbnail(raw, signal) {
+export async function xThumbnail(raw, signal, downloader = safeFetchPublicBinary) {
+  const download = downloader;
   const url = new URL(raw);
   // 媒体不发送 API Token；只从 X 官方图片域名获取小图，不下载视频。
   if (url.protocol !== 'https:' || !/(^|\.)pbs\.twimg\.com$/i.test(url.hostname)) throw new Error('非 X 图片地址');
   if (url.pathname.startsWith('/media/')) { url.searchParams.set('name', 'small'); url.searchParams.set('format', 'jpg'); }
-  const { buffer } = await safeFetchPublicBinary(url.href, 2 * 1024 * 1024, signal);
+  const { buffer } = await download(url.href, 2 * 1024 * 1024, signal);
   const jpeg = await sharp(buffer, { limitInputPixels: 12_000_000, failOn: 'warning' })
     .rotate().resize({ width: 640, height: 640, fit: 'inside', withoutEnlargement: true })
     .flatten({ background: '#fff' }).toColourspace('srgb').jpeg({ quality: 75 }).toBuffer();
