@@ -23,6 +23,7 @@ import { syncThinkingUi } from './settings.js';
 import { saveImageSearchSettings } from './image-search.js';
 import { savePixivSettings } from './pixiv.js';
 import { saveXSearchSettings } from './x-search.js';
+import { saveDailyReportSettings } from './daily-report.js';
 import { saveEhentaiSettings } from './ehentai.js';
 import { saveHaiguiTangSettings } from './haigui-tang.js';
 async function saveConfig({ quiet = false } = {}) {
@@ -43,6 +44,7 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'image-search') return saveImageSearchSettings();
   if (sec === 'pixiv') return savePixivSettings();
   if (sec === 'x-search') return saveXSearchSettings();
+  if (sec === 'daily-report') return saveDailyReportSettings();
   if (sec === 'ehentai') return saveEhentaiSettings();
   if (sec === 'haigui-tang') return saveHaiguiTangSettings();
 

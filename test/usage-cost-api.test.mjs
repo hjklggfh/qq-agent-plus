@@ -75,7 +75,12 @@ async function bootApp(extraApi = {}) {
         const res = await fetch(`http://127.0.0.1:${bound}${route}`);
         return { status: res.status, body: await res.json().catch(() => ({})) };
       };
-      return { app, get };
+      const post = async (route, body) => {
+        const res = await fetch(`http://127.0.0.1:${bound}${route}`, { method: 'POST',
+          headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        return { status: res.status, body: await res.json().catch(() => ({})) };
+      };
+      return { app, get, post };
     } catch (error) {
       lastError = error;
       // 无论哪种失败都先停掉可能已半启动的实例（listen 成功但后续步骤抛错时，
@@ -89,7 +94,7 @@ async function bootApp(extraApi = {}) {
 
 test('每日管理报告沿用真实用量计价，读取状态需鉴权且启用需要管理员', async (t) => {
   writeSession('s-daily-report', { model: 'model-daily', calls: [{ prompt: 1234, completion: 567 }] });
-  const { app, get } = await bootApp();
+  const { app, get, post } = await bootApp();
   t.after(async () => {
     await app.stop();
     fs.rmSync(path.join(root, 'sessions', 's-daily-report.json'), { force: true });
@@ -109,8 +114,19 @@ test('每日管理报告沿用真实用量计价，读取状态需鉴权且启�
   assert.equal(row.totalTokens, 1801);
   const empty = app.dailyReport.options.usage({ start: now + 86400000, end: now + 86500000 });
   assert.equal(empty.totals.totalTokens, 0, 'explicit report window never reuses today cache');
+  const content = { tokens: true, cost: false, status: false, uptime: false, cpu: false, memory: false, disk: false, io: false };
+  updateConfig({ dailyReport: { content } });
+  assert.throws(() => updateConfig({ dailyReport: { content: { tokens: false } } }), /至少/);
+  const preview = await post('/api/daily-report/preview', { content });
+  assert.equal(preview.status, 200);
+  assert.match(preview.body.text, /Token：/);
+  assert.doesNotMatch(preview.body.text, /按量费用|CPU：/);
+  assert.equal((await post('/api/daily-report/preview', { content: { tokens: false } })).status, 400);
+  assert.equal(fs.existsSync(path.join(root, 'daily-report.json')), false);
+  assert.equal((await get('/api/daily-report')).body.settings.content.cost, false);
   updateConfig({ server: { token: 'test-daily-report-token' } });
   assert.equal((await get('/api/daily-report')).status, 401);
+  assert.equal((await post('/api/daily-report/preview', { content })).status, 401);
 });
 
 test('账户级包月：多个模型也只有一个固定支出，不会按模型数翻倍', async (t) => {

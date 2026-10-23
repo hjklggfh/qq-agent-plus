@@ -309,7 +309,10 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
   if (Object.hasOwn(rawPatch, 'xSearch')) validateXSearchPatch(rawPatch.xSearch);
-  if (Object.hasOwn(rawPatch, 'dailyReport')) validateDailyReportPatch(rawPatch.dailyReport);
+  if (Object.hasOwn(rawPatch, 'dailyReport')) {
+    validateDailyReportPatch(rawPatch.dailyReport);
+    validateDailyReportPatch({ content: { ...current.dailyReport?.content, ...rawPatch.dailyReport.content } });
+  }
   if ((rawPatch.dailyReport?.enabled ?? current.dailyReport?.enabled) && !requestedAdmin.ownerUin) {
     throw new Error('启用每日报告需要配置全局管理员 QQ');
   }

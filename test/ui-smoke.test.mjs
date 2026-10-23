@@ -189,11 +189,12 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
   } finally { window.happyDOM?.abort?.(); }
 });
 
-test('每晚汇报只保存自身设置，统计刷新保留编辑，禁用保留状态', { skip: SKIP }, async () => {
+test('功能中的每晚汇报可选择内容，预览不发送，切页保留草稿且保存只改自身', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();
   try {
-    const calls = [];
+    const calls = []; const previews = [];
+    let saved = { enabled: true, time: '23:00' };
     const previousFetch = window.fetch;
     window.fetch = async (url, options = {}) => {
       if (url === '/api/daily-report') return { ok: true, json: async () => ({
@@ -201,24 +202,49 @@ test('每晚汇报只保存自身设置，统计刷新保留编辑，禁用保�
       }) };
       if (url === '/api/config' && options.method === 'POST') {
         calls.push(JSON.parse(options.body));
+        saved = calls.at(-1).dailyReport;
         return { ok: true, json: async () => ({ ok: true }) };
+      }
+      if (url === '/api/config') {
+        const response = await previousFetch(url, options);
+        return { ok: true, json: async () => ({ ...await response.json(), dailyReport: saved }) };
+      }
+      if (url === '/api/daily-report/preview') {
+        previews.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ text: 'Token：150\n<script>preview text</script>' }) };
       }
       return previousFetch(url, options);
     };
-    window.switchTab('usage'); await settle(60);
+    window.switchTab('features'); await settle(60);
     const doc = window.document;
+    doc.querySelector('[data-section="daily-report"]').click(); await settle(30);
     assert.equal(doc.querySelector('#daily-report-time').value, '23:00');
     assert.match(doc.querySelector('#daily-report-hint').textContent, /待核对/);
     doc.querySelector('#daily-report-time').value = '23:55';
-    await window.loadUsageView({ force: true });
-    await window.loadUsageView();
+    doc.querySelector('#daily-report-time').dispatchEvent(new window.Event('change'));
+    doc.querySelector('#daily-report-content-cost').checked = false;
+    doc.querySelector('#daily-report-content-cost').dispatchEvent(new window.Event('change'));
+    doc.querySelector('#daily-report-preview').click(); await settle(30);
+    assert.equal(previews[0].content.cost, false);
+    assert.equal(Boolean(doc.querySelector('#daily-report-preview-result script')), false);
+    assert.match(doc.querySelector('#daily-report-preview-result').textContent, /preview text/);
+    assert.equal(calls.length, 0, 'preview never saves configuration');
+    doc.querySelector('[data-section="image-search"]').click();
+    doc.querySelector('[data-section="daily-report"]').click(); await settle(30);
     assert.equal(doc.querySelector('#daily-report-time').value, '23:55');
-    doc.querySelector('#daily-report-save').click(); await settle(30);
-    assert.deepEqual(calls[0], { dailyReport: { enabled: true, time: '23:55' } });
+    assert.equal(doc.querySelector('#daily-report-content-cost').checked, false);
+    doc.querySelector('#save-cfg-btn').click(); await settle(80);
+    assert.deepEqual(Object.keys(calls[0]), ['dailyReport']);
+    assert.equal(calls[0].dailyReport.time, '23:55');
+    assert.equal(calls[0].dailyReport.content.cost, false);
+    assert.equal(calls[0].dailyReport.content.tokens, true);
     doc.querySelector('#daily-report-enabled').checked = false;
-    doc.querySelector('#daily-report-save').click(); await settle(30);
-    assert.deepEqual(calls[1], { dailyReport: { enabled: false, time: '23:55' } });
-    assert.match(doc.querySelector('#daily-report-hint').textContent, /保留发送记录/);
+    doc.querySelector('#save-cfg-btn').click(); await settle(80);
+    assert.equal(calls[1].dailyReport.enabled, false);
+    window.switchTab('usage'); await settle(30);
+    // Settings stay mounted while hidden. Scope to the usage view, and compare a
+    // primitive: formatting a failed assertion's happy-dom node can exhaust memory.
+    assert.equal(Boolean(doc.querySelector('#view-usage #daily-report-time')), false, 'usage view has no duplicate editor');
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });

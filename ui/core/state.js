@@ -22,6 +22,7 @@ const state = {
   currentChatKey: null,
   chatMessages: [],
   config: null,
+  dailyReportDraft: null,
   personaTemplates: {},
   status: null,
   paused: false,

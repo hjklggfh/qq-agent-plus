@@ -3,19 +3,30 @@ import path from 'node:path';
 import os from 'node:os';
 import { shanghaiDayStart, todayKey, minuteOfDayInZone } from '../core/util.js';
 
-export const DEFAULT_DAILY_REPORT_CONFIG = Object.freeze({ enabled: false, time: '23:00' });
+export const DEFAULT_DAILY_REPORT_CONTENT = Object.freeze({
+  tokens: true, cost: true, status: true, uptime: true, cpu: true, memory: true, disk: true, io: true
+});
+export const DEFAULT_DAILY_REPORT_CONFIG = Object.freeze({ enabled: false, time: '23:00', content: DEFAULT_DAILY_REPORT_CONTENT });
 
 export function validateDailyReportPatch(patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('每日报告设置须为对象');
   for (const [key, value] of Object.entries(patch)) {
-    if (!(key in DEFAULT_DAILY_REPORT_CONFIG)) throw new Error(`未知每日报告设置：${key}`);
+    if (!Object.hasOwn(DEFAULT_DAILY_REPORT_CONFIG, key)) throw new Error(`未知每日报告设置：${key}`);
     if (key === 'enabled' && typeof value !== 'boolean') throw new Error('每日报告开关须为布尔值');
     if (key === 'time' && (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value))) throw new Error('汇报时间须为 HH:MM');
+    if (key === 'content') {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('发送内容须为对象');
+      for (const [name, checked] of Object.entries(value)) {
+        if (!Object.hasOwn(DEFAULT_DAILY_REPORT_CONTENT, name) || typeof checked !== 'boolean') throw new Error('发送内容选项无效');
+      }
+      if (!Object.values({ ...DEFAULT_DAILY_REPORT_CONTENT, ...value }).some(Boolean)) throw new Error('请至少选择一项发送内容');
+    }
   }
 }
 
 export function dailyReportConfig(raw = {}) {
-  try { validateDailyReportPatch(raw); return { ...DEFAULT_DAILY_REPORT_CONFIG, ...raw }; }
+  try { validateDailyReportPatch(raw); return { ...DEFAULT_DAILY_REPORT_CONFIG, ...raw,
+    content: { ...DEFAULT_DAILY_REPORT_CONTENT, ...raw.content } }; }
   catch { return { ...DEFAULT_DAILY_REPORT_CONFIG }; }
 }
 
@@ -45,27 +56,31 @@ export async function reportHostSnapshot(dataDir) {
 const gib = bytes => `${(bytes / 1073741824).toFixed(2)} GiB`;
 const money = value => `¥${(Number(value) || 0).toFixed(4)}`;
 
-export function formatDailyReport({ now, stats, host, connected, runtime }) {
+export function formatDailyReport({ now, stats, host, connected, runtime, content = DEFAULT_DAILY_REPORT_CONTENT }) {
+  const selected = { ...DEFAULT_DAILY_REPORT_CONTENT, ...content };
   const t = stats.totals;
   const clock = new Date(now + 8 * 3600000).toISOString().slice(11, 16);
   const lines = [`每日用量与服务器报告 · ${todayKey(now)}`,
-    `统计：北京时间 00:00—${clock}（截至生成时，非完整全天）`,
+    `统计：北京时间 00:00—${clock}（截至生成时，非完整全天）`];
+  if (selected.tokens) lines.push(
     `Token：${t.totalTokens || 0}（输入 ${t.promptTokens || 0} / 输出 ${t.completionTokens || 0}）`,
-    `缓存命中：${t.cachedTokens || 0}（已包含在输入中）；调用 ${t.runs || 0} 次`,
-    `按量费用：${money(t.cost)}（配置价格 ${money(t.actualCost)} / 估算 ${money(t.estimateCost)}）`];
-  if (t.unpricedCalls) lines.push(`未定价：${t.unpricedCalls} 次、${t.unpricedTokens || 0} Token，未计入费用，不代表免费`);
-  if (t.flatCalls) lines.push(`包月/固定计费：${t.flatCalls} 次，固定支出单列，不按天重复计费`);
-  for (const item of stats.billing?.flatItems || []) lines.push(`固定支出：${money(item.amount)}/${item.period === 'day' ? '日' : '月'}（非本日按量费用）`);
-  if (t.localCalls) lines.push(`本地/不按量计费：${t.localCalls} 次`);
-  lines.push('费用沿用控制台当前价格配置；不含服务器租金及第三方非模型服务费用。',
-    '', '服务器当前状态（Agent 所在主机，杭州部署后即为杭州）',
-    `Agent：运行中 / ${runtime?.mode || '未知'}；QQ：${connected ? '已连接' : '未连接'}`,
-    `主机运行 ${(host.uptime / 3600).toFixed(1)} 小时；Agent ${(host.processUptime / 3600).toFixed(1)} 小时`,
-    `CPU：${host.cpuCount} 核；负载 1/5/15 分钟 ${host.load.map(n => n.toFixed(2)).join(' / ')}（非 CPU 使用率）`,
-    `内存：可用 ${gib(host.memoryAvailable)} / 总计 ${gib(host.memoryTotal)}；Agent RSS ${gib(host.rss)}`,
-    `Swap 已用：${host.swapUsed == null ? '不可用' : gib(host.swapUsed)}`,
-    `数据目录所在磁盘：${host.disk ? `可用 ${gib(host.disk.available)} / 总计 ${gib(host.disk.total)}` : '采集不可用'}`,
-    `I/O 压力 full avg60：${host.io == null ? '不可用' : `${host.io.toFixed(2)}%`}`);
+    `缓存命中：${t.cachedTokens || 0}（已包含在输入中）；调用 ${t.runs || 0} 次`);
+  if (selected.cost) {
+    lines.push(`按量费用：${money(t.cost)}（配置价格 ${money(t.actualCost)} / 估算 ${money(t.estimateCost)}）`);
+    if (t.unpricedCalls) lines.push(`未定价：${t.unpricedCalls} 次、${t.unpricedTokens || 0} Token，未计入费用，不代表免费`);
+    if (t.flatCalls) lines.push(`包月/固定计费：${t.flatCalls} 次，固定支出单列，不按天重复计费`);
+    for (const item of stats.billing?.flatItems || []) lines.push(`固定支出：${money(item.amount)}/${item.period === 'day' ? '日' : '月'}（非本日按量费用）`);
+    if (t.localCalls) lines.push(`本地/不按量计费：${t.localCalls} 次`);
+    lines.push('费用沿用总览今日成本口径；不含服务器租金及第三方非模型服务费用。');
+  }
+  if (['status', 'uptime', 'cpu', 'memory', 'disk', 'io'].some(key => selected[key])) lines.push('', '服务器当前状态');
+  if (selected.status) lines.push(`Agent：${runtime?.paused ? '已暂停' : '运行中'} / ${runtime?.mode || '未知'}；QQ：${connected ? '已连接' : '未连接'}`);
+  if (selected.uptime) lines.push(`主机运行 ${(host.uptime / 3600).toFixed(1)} 小时；Agent ${(host.processUptime / 3600).toFixed(1)} 小时`);
+  if (selected.cpu) lines.push(`CPU：${host.cpuCount} 核；负载 1/5/15 分钟 ${host.load.map(n => n.toFixed(2)).join(' / ')}（非 CPU 使用率）`);
+  if (selected.memory) lines.push(`内存：可用 ${gib(host.memoryAvailable)} / 总计 ${gib(host.memoryTotal)}；Agent RSS ${gib(host.rss)}`,
+    `Swap 已用：${host.swapUsed == null ? '不可用' : gib(host.swapUsed)}`);
+  if (selected.disk) lines.push(`数据目录所在磁盘：${host.disk ? `可用 ${gib(host.disk.available)} / 总计 ${gib(host.disk.total)}` : '采集不可用'}`);
+  if (selected.io) lines.push(`I/O 压力 full avg60：${host.io == null ? '不可用' : `${host.io.toFixed(2)}%`}`);
   return lines.join('\n');
 }
 
@@ -79,6 +94,17 @@ export class DailyReportManager {
     this.error = '';
   }
   settings() { return dailyReportConfig(this.options.config().dailyReport); }
+  async preview(patch = {}, now = Date.now()) {
+    validateDailyReportPatch(patch);
+    const settings = this.settings();
+    const content = { ...settings.content, ...patch.content };
+    validateDailyReportPatch({ content });
+    const [stats, host] = await Promise.all([
+      this.options.usage({ start: shanghaiDayStart(now), end: now }), this.options.host()
+    ]);
+    return { text: formatDailyReport({ now, stats, host, connected: this.options.available(),
+      runtime: this.options.config().runtime, content }), generatedAt: now };
+  }
   status() {
     try {
       this.last = JSON.parse(fs.readFileSync(path.join(this.options.dataDir, 'daily-report.json'), 'utf8'));
@@ -134,7 +160,8 @@ export class DailyReportManager {
     const current = this.options.config();
     if (!this.settings().enabled || this.settings().time !== settings.time || current.runtime?.mode !== 'active'
       || current.runtime?.paused || current.admin?.ownerUin !== owner || !this.options.available()) return;
-    const text = formatDailyReport({ now, stats, host, connected: this.options.available(), runtime: current.runtime });
+    const text = formatDailyReport({ now, stats, host, connected: this.options.available(), runtime: current.runtime,
+      content: this.settings().content });
     const save = async record => {
       const temp = `${file}.${process.pid}.tmp`;
       const handle = await fs.promises.open(temp, 'w', 0o600);

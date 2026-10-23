@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { DailyReportManager, dailyReportConfig, formatDailyReport, validateDailyReportPatch } from '../src/features/daily-report.js';
+import { DEFAULT_DAILY_REPORT_CONTENT, DailyReportManager, dailyReportConfig, formatDailyReport, validateDailyReportPatch } from '../src/features/daily-report.js';
 
 const evening = Date.parse('2026-10-23T23:00:00+08:00');
 const host = { cpuCount: 2, load: [0.1, 0.2, 0.3], uptime: 3600, processUptime: 600,
@@ -118,6 +118,29 @@ test('configuration is opt-in and malformed values fail closed', () => {
     assert.throws(() => validateDailyReportPatch(value));
   }
   validateDailyReportPatch({ enabled: true, time: '23:00' });
+  const old = dailyReportConfig({ enabled: true, time: '23:00' });
+  assert.equal(old.enabled, true);
+  assert.deepEqual(old.content, DEFAULT_DAILY_REPORT_CONTENT);
+  assert.throws(() => validateDailyReportPatch({ content: { cost: 'yes' } }));
+  assert.throws(() => validateDailyReportPatch({ content: { unknown: true } }));
+  assert.throws(() => validateDailyReportPatch({ content: Object.fromEntries(Object.keys(DEFAULT_DAILY_REPORT_CONTENT).map(k => [k, false])) }), /至少/);
+});
+
+test('content selection governs both scheduled text and read-only preview without reserving or sending', async t => {
+  const content = Object.fromEntries(Object.keys(DEFAULT_DAILY_REPORT_CONTENT).map(k => [k, k === 'tokens']));
+  const f = fixture(t);
+  f.cfg.dailyReport.content = content;
+  const preview = await f.manager.preview({ content }, evening);
+  assert.match(preview.text, /Token：150/);
+  assert.doesNotMatch(preview.text, /按量费用|服务器当前状态|CPU：|内存：|固定支出/);
+  assert.equal(f.sent.length, 0);
+  assert.equal(fs.existsSync(path.join(f.dataDir, 'daily-report.json')), false);
+  await f.manager.tick(evening);
+  assert.equal(f.sent[0][1], preview.text);
+  const costOnly = await f.manager.preview({ content: { tokens: false, cost: true } }, evening);
+  assert.match(costOnly.text, /按量费用/);
+  assert.doesNotMatch(costOnly.text, /Token：150|CPU：/);
+  assert.deepEqual(f.cfg.dailyReport.content, content, 'preview never changes saved selection');
 });
 
 test('a new Shanghai day permits one new report; clock rollback cannot replay', async t => {

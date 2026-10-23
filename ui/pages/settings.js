@@ -34,6 +34,7 @@ import { loadUsageView } from './usage.js';
 import { renderImageSearchSection, bindImageSearchSection } from './image-search.js';
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
 import { renderXSearchSection, bindXSearchSection } from './x-search.js';
+import { renderDailyReportSection, bindDailyReportSection } from './daily-report.js';
 import { renderEhentaiSection, bindEhentaiSection } from './ehentai.js';
 import { renderHaiguiTangSection, bindHaiguiTangSection } from './haigui-tang.js';
 /** 把设置解析成实际要应用的主题名。 */
@@ -71,6 +72,7 @@ function renderSettingsSidebar() {
     ['image-search', '以图搜图'],
     ['pixiv', 'PID 搜索'],
     ['x-search', 'X 账号检索'],
+    ['daily-report', '每晚汇报'],
     ['ehentai', 'E站检索'],
     ['haigui-tang', '海龟汤'],
     ['media', 'B站媒体'],
@@ -92,7 +94,7 @@ function renderSettingsSidebar() {
     ['onebot', 'OneBot']
   ];
   const sectionsByArea = {
-    features: ['search', 'image-search', 'pixiv', 'x-search', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'],
+    features: ['search', 'image-search', 'pixiv', 'x-search', 'daily-report', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'],
     games: ['haigui-tang', 'groupGame'],
     settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
   };
@@ -134,6 +136,7 @@ function renderSettingsImpl() {
   if (state.settingsSection === 'image-search') bindImageSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'x-search') bindXSearchSection();
+  if (state.settingsSection === 'daily-report') bindDailyReportSection();
   if (state.settingsSection === 'ehentai') bindEhentaiSection();
   if (state.settingsSection === 'haigui-tang') bindHaiguiTangSection();
 }
@@ -203,6 +206,7 @@ function renderSettingsSection(c) {
     'image-search': () => renderImageSearchSection(c),
     'pixiv': () => renderPixivSection(c),
     'x-search': () => renderXSearchSection(c),
+    'daily-report': () => renderDailyReportSection(c),
     'ehentai': () => renderEhentaiSection(c),
     'haigui-tang': () => renderHaiguiTangSection(c),
     media: () => renderBilibiliSection(c),

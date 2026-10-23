@@ -3415,6 +3415,10 @@ export function createApp({
     });
   });
   router.add('GET', '/api/daily-report', async (_req, res) => json(res, 200, dailyReport.status()));
+  router.add('POST', '/api/daily-report/preview', async (req, res) => {
+    try { json(res, 200, await dailyReport.preview(await readBody(req, 8192))); }
+    catch (error) { json(res, 400, { error: error.message }); }
+  });
   router.add('GET', '/api/usage/stats', async (req, res, params, url) => {
     try {
       const raw = String(url.searchParams.get('range') || url.searchParams.get('days') || '7');

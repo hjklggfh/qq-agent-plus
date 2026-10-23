@@ -147,7 +147,7 @@ function renderBanner() {
 }
 
 function switchTab(name) {
-  const featureSections = ['search', 'image-search', 'pixiv', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'];
+  const featureSections = ['search', 'image-search', 'pixiv', 'daily-report', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'];
   const gameSections = ['haigui-tang', 'groupGame'];
   const memoryTabs = ['memory', 'people-memory', 'identity'];
   if (name === 'features') {
