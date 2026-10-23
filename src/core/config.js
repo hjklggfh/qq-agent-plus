@@ -10,6 +10,7 @@ import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
 import { validateXSearchPatch } from '../features/x-search/config.js';
+import { validateDailyReportPatch } from '../features/daily-report.js';
 import { validateEhentaiPatch } from '../features/ehentai/config.js';
 import { validateHaiguiTangPatch } from '../features/haigui-tang/config.js';
 import {
@@ -308,6 +309,10 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
   if (Object.hasOwn(rawPatch, 'xSearch')) validateXSearchPatch(rawPatch.xSearch);
+  if (Object.hasOwn(rawPatch, 'dailyReport')) validateDailyReportPatch(rawPatch.dailyReport);
+  if ((rawPatch.dailyReport?.enabled ?? current.dailyReport?.enabled) && !requestedAdmin.ownerUin) {
+    throw new Error('启用每日报告需要配置全局管理员 QQ');
+  }
   if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
   if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
   if (Object.hasOwn(rawPatch, 'jm')) {

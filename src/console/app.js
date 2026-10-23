@@ -26,6 +26,7 @@ import { SendQueue } from '../onebot/sender.js';
 import { SessionRegistry, personaLabelOfPrompt } from '../core/sessions.js';
 import { Orchestrator } from '../core/orchestrator.js';
 import { DailyMomentsManager } from '../features/daily-moments.js';
+import { DailyReportManager, reportHostSnapshot } from '../features/daily-report.js';
 import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
@@ -754,6 +755,27 @@ export function createApp({
     emit('chat-update', `private:${userId}`);
     return data;
   }
+  const dailyReport = new DailyReportManager({
+    dataDir: DATA_DIR, config: getConfig,
+    available: () => onebot.connected === true,
+    usage: (window) => buildUsageStats({ window }),
+    host: () => reportHostSnapshot(DATA_DIR),
+    send: async (owner, text, signal, runId) => {
+      signal.throwIfAborted();
+      const id = store.beginSend(`private:${owner}`, runId, { type: 'text', text });
+      let data;
+      try { data = await onebot.sendText('private', owner, text, { signal }); }
+      catch (error) {
+        store.finishSend(id, { error: String(error?.message || error), outcome: 'unknown' });
+        throw error;
+      }
+      store.finishSend(id, { messageId: data?.message_id });
+      try {
+        store.appendSelf(`private:${owner}`, { mid: data?.message_id, ts: Date.now(), text });
+        emit('chat-update', `private:${owner}`);
+      } catch { /* Outbox remains the delivery record. */ }
+    }
+  });
   autoUpdate = new AutoUpdateManager({
     appDir: autoUpdateOptions.appDir || ROOT,
     dataDir: DATA_DIR,
@@ -3392,6 +3414,7 @@ export function createApp({
       processUptimeSeconds: Math.round(process.uptime())
     });
   });
+  router.add('GET', '/api/daily-report', async (_req, res) => json(res, 200, dailyReport.status()));
   router.add('GET', '/api/usage/stats', async (req, res, params, url) => {
     try {
       const raw = String(url.searchParams.get('range') || url.searchParams.get('days') || '7');
@@ -3828,6 +3851,7 @@ export function createApp({
     imageSearch.enforce();
     pixiv.enforce();
     xSearch.enforce();
+    dailyReport.enforce();
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
         if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
@@ -4529,6 +4553,7 @@ export function createApp({
     if (getConfig().privateProactive?.enabled) orchestrator.startPrivateProactiveLoop();
     orchestrator.startScheduledWakeTicker();
     autoUpdate.start();
+    dailyReport.start();
     log(`控制台已就绪：http://${serverCfg.host}:${port} (${getConfig().runtime.mode})`);
     log(`OneBot: ws=${getConfig().onebot?.wsUrl} http=${getConfig().onebot?.httpUrl}`);
     log(`模型: ${getConfig().api.model || '（未设置，请在设置里选择）'} @ ${getConfig().api.baseUrl}`);
@@ -4554,6 +4579,7 @@ export function createApp({
     qzoneInteractions.stop();
     await qzoneInteractions.abort();
     autoUpdate.stop();
+    await dailyReport.stop();
     identityPilot?.stop();
     identityPilot = null;
     await slangPilot?.stop();
@@ -4621,6 +4647,7 @@ export function createApp({
     qzoneInteractions,
     assetObserver,
     autoUpdate,
+    dailyReport,
     get incidentPilot() { return incidentPilot; },
     incidentPilotStatus,
     captureIncident(error, context = {}) {
@@ -4890,11 +4917,11 @@ function sessionsDirSignature() {
   }
 }
 
-function collectUsageRows({ range }) {
-  const win = resolveRange(range);
+function collectUsageRows({ range, window }) {
+  const win = window ? { ...window, mode: 'today', label: '当日截至汇报时刻' } : resolveRange(range);
   // 命中缓存就直接返回（注意 rows 会被调用方改写字段，所以必须给副本）
   const sig = sessionsDirSignature() + '@' + String(range);
-  const hit = usageRowsCache.get(sig);
+  const hit = window ? null : usageRowsCache.get(sig);
   if (hit && (Date.now() - hit.at) < USAGE_CACHE_TTL_MS) {
     return {
       rows: hit.rows.slice(),
@@ -4945,7 +4972,7 @@ function collectUsageRows({ range }) {
     }
   }
   // 写缓存：存的是"清洗完的 rows"，取用时给副本避免调用方污染
-  usageRowsCache.set(sig, {
+  if (!window) usageRowsCache.set(sig, {
     rows: rows.slice(),
     win,
     searchCount,
@@ -5075,8 +5102,8 @@ function groupBy(rows, field, limit = 0) {
 }
 
 /** 主统计：按天 / 按会话 / 按模型三个维度。 */
-function buildUsageStats({ range = '7' } = {}) {
-  const { rows, win, searchCount, toolCounts } = collectUsageRows({ range });
+function buildUsageStats({ range = '7', window } = {}) {
+  const { rows, win, searchCount, toolCounts } = collectUsageRows({ range, window });
   const totals = costOfRows(rows);
   // 按天分桶需要 dayKey 字段
   for (const r of rows) r.dayKey = dayKeyOf(r.at);

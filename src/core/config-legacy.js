@@ -17,6 +17,7 @@ import { DEFAULT_TRPG_CONFIG } from '../features/trpg/config.js';
 import { DEFAULT_IMAGE_SEARCH_CONFIG } from '../features/image-search/config.js';
 import { DEFAULT_PIXIV_CONFIG, migratePixivConfig } from '../features/pixiv/config.js';
 import { DEFAULT_X_SEARCH_CONFIG } from '../features/x-search/config.js';
+import { DEFAULT_DAILY_REPORT_CONFIG } from '../features/daily-report.js';
 import { DEFAULT_EHENTAI_CONFIG } from '../features/ehentai/config.js';
 import { DEFAULT_HAIGUI_TANG_CONFIG } from '../features/haigui-tang/config.js';
 // 插件 id 的规则只有一处定义（plugins/_host/manifest.js 是零依赖的叶子模块，不会引回 core/）。
@@ -36,6 +37,7 @@ export const MAX_PLUGINS_ENABLED = 50;
 export const MAX_PLUGIN_ROOTS = 5;
 
 export const DEFAULT_CONFIG = {
+  dailyReport: { ...DEFAULT_DAILY_REPORT_CONFIG },
   xSearch: structuredClone(DEFAULT_X_SEARCH_CONFIG),
   pixiv: structuredClone(DEFAULT_PIXIV_CONFIG),
   ehentai: structuredClone(DEFAULT_EHENTAI_CONFIG),

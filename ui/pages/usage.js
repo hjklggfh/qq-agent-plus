@@ -1013,7 +1013,35 @@ function updateUsagePage(stats, st, prices) {
     </tr>`, { collapsible: true, expandBtn: '#models-expand' });
 }
 
+async function loadDailyReportSettings() {
+  const panel = $('#daily-report-settings');
+  if (!panel || panel.dataset.loading || panel.dataset.ready) return;
+  panel.dataset.loading = '1';
+  const hint = $('#daily-report-hint');
+  try {
+    const status = await api('/api/daily-report');
+    $('#daily-report-enabled').checked = status.settings.enabled;
+    $('#daily-report-time').value = status.settings.time;
+    if (hint) hint.textContent = status.error || (status.last
+      ? `最近记录：${status.last.day} · ${status.last.outcome === 'sent' ? '已发送' : '发送结果待核对，当天不自动重发'}`
+      : '尚无发送记录。需先在设置中配置全局管理员 QQ。');
+    $('#daily-report-save').addEventListener('click', async () => {
+      const button = $('#daily-report-save');
+      button.disabled = true;
+      try {
+        const dailyReport = { enabled: $('#daily-report-enabled').checked, time: $('#daily-report-time').value };
+        await api('/api/config', { method: 'POST', body: JSON.stringify({ dailyReport }) });
+        if (hint) hint.textContent = `已保存：${dailyReport.enabled ? `每天北京时间 ${dailyReport.time} 私聊管理员` : '已停用，保留发送记录'}。`;
+      } catch (error) { if (hint) hint.textContent = `保存失败：${error.message}`; }
+      finally { button.disabled = false; }
+    });
+    panel.dataset.ready = '1';
+  } catch (error) { if (hint) hint.textContent = `汇报设置加载失败：${error.message}`; }
+  finally { delete panel.dataset.loading; }
+}
+
 async function loadUsageView({ force = false } = {}) {
+  loadDailyReportSettings();
   const box = $('#usage-page');
   if (!box) return;
 

@@ -189,6 +189,40 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('每晚汇报只保存自身设置，统计刷新保留编辑，禁用保留状态', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const calls = [];
+    const previousFetch = window.fetch;
+    window.fetch = async (url, options = {}) => {
+      if (url === '/api/daily-report') return { ok: true, json: async () => ({
+        settings: { enabled: true, time: '23:00' }, last: { day: '2026-10-23', outcome: 'unknown' }
+      }) };
+      if (url === '/api/config' && options.method === 'POST') {
+        calls.push(JSON.parse(options.body));
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return previousFetch(url, options);
+    };
+    window.switchTab('usage'); await settle(60);
+    const doc = window.document;
+    assert.equal(doc.querySelector('#daily-report-time').value, '23:00');
+    assert.match(doc.querySelector('#daily-report-hint').textContent, /待核对/);
+    doc.querySelector('#daily-report-time').value = '23:55';
+    await window.loadUsageView({ force: true });
+    await window.loadUsageView();
+    assert.equal(doc.querySelector('#daily-report-time').value, '23:55');
+    doc.querySelector('#daily-report-save').click(); await settle(30);
+    assert.deepEqual(calls[0], { dailyReport: { enabled: true, time: '23:55' } });
+    doc.querySelector('#daily-report-enabled').checked = false;
+    doc.querySelector('#daily-report-save').click(); await settle(30);
+    assert.deepEqual(calls[1], { dailyReport: { enabled: false, time: '23:55' } });
+    assert.match(doc.querySelector('#daily-report-hint').textContent, /保留发送记录/);
+    assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();

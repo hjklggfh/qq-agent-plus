@@ -87,6 +87,32 @@ async function bootApp(extraApi = {}) {
   throw lastError;
 }
 
+test('每日管理报告沿用真实用量计价，读取状态需鉴权且启用需要管理员', async (t) => {
+  writeSession('s-daily-report', { model: 'model-daily', calls: [{ prompt: 1234, completion: 567 }] });
+  const { app, get } = await bootApp();
+  t.after(async () => {
+    await app.stop();
+    fs.rmSync(path.join(root, 'sessions', 's-daily-report.json'), { force: true });
+  });
+  assert.throws(() => updateConfig({ admin: { ownerUin: '' }, dailyReport: { enabled: true } }), /管理员/);
+  assert.throws(() => updateConfig({ dailyReport: { time: '24:00' } }), /HH:MM/);
+  updateConfig({ admin: { ownerUin: '123456' }, dailyReport: { enabled: true }, runtime: { mode: 'active' } });
+  const snapshot = await get('/api/daily-report');
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.body.settings.time, '23:00');
+  const now = Date.now();
+  const start = now - 120000;
+  const reportStats = app.dailyReport.options.usage({ start, end: now });
+  const row = reportStats.models.find(m => m.model === 'model-daily');
+  assert.equal(row.promptTokens, 1234);
+  assert.equal(row.completionTokens, 567);
+  assert.equal(row.totalTokens, 1801);
+  const empty = app.dailyReport.options.usage({ start: now + 86400000, end: now + 86500000 });
+  assert.equal(empty.totals.totalTokens, 0, 'explicit report window never reuses today cache');
+  updateConfig({ server: { token: 'test-daily-report-token' } });
+  assert.equal((await get('/api/daily-report')).status, 401);
+});
+
 test('账户级包月：多个模型也只有一个固定支出，不会按模型数翻倍', async (t) => {
   writeSession('s-flat-a', { model: 'model-a', calls: [{ prompt: 1_000_000, completion: 1_000_000 }] });
   writeSession('s-flat-b', { model: 'model-b', calls: [{ prompt: 500_000, completion: 200_000 }] });

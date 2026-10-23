@@ -14,6 +14,8 @@
 
 ## 功能说明
 
+- [DAILY-REPORT.md](DAILY-REPORT.md)：每晚私聊管理员的当日 Token、费用和服务器状态报告。
+
 | 文档 | 说明 |
 | --- | --- |
 | [CONVERSATION_MODES.md](CONVERSATION_MODES.md) | 对话引擎三模式（legacy / threaded / lifecycle）的差异与选择 |

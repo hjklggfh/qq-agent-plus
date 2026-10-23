@@ -222,7 +222,17 @@
 
     <!-- 用量视图 -->
     <section id="view-usage" class="view" data-page-node-id="At5AHGr3EpuOFlDyc7dES4">
-      <div id="usage-page" class="usage-pane" data-page-node-id="1AXcokyh5yiXqQgwn6X2gu"></div>
+      <div class="usage-pane">
+      <div id="daily-report-settings" class="usage-guide">
+        <h3>每晚汇报</h3>
+        <p class="muted">私聊全局管理员，汇报当天零点至发送时的 Token、费用与服务器状态。北京时间；不额外调用模型。</p>
+        <label><input id="daily-report-enabled" type="checkbox"> 启用每晚汇报</label>
+        <label>汇报时间 <input id="daily-report-time" type="time" value="23:00" required></label>
+        <button id="daily-report-save" class="btn btn-small" type="button">保存汇报设置</button>
+        <p id="daily-report-hint" class="hint" role="status"></p>
+      </div>
+      <div id="usage-page" data-page-node-id="1AXcokyh5yiXqQgwn6X2gu"></div>
+      </div>
     </section>
 
     <!-- 游戏入口：跑团保留完整工作台；其他游戏沿用独立配置表单。 -->
