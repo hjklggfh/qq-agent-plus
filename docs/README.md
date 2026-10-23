@@ -28,6 +28,7 @@
 | [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
 | [IMAGE-SEARCH.md](IMAGE-SEARCH.md) | 以图搜图：SerpApi、Google Lens、Yandex、trace.moe，国内或东京中转、指令和平台限制 |
 | [PIXIV.md](PIXIV.md) | 内置 PID 搜索：旧插件迁移、会话分级、作品核实、多页分批与继续取图 |
+| [X-SEARCH.md](X-SEARCH.md) | X 账号检索试用版：指定用户名、近期帖子合并卡片、分页及 API 配置 |
 | [EHENTAI.md](EHENTAI.md) | E-Hentai 检索：标签、关键词、昨日榜单、翻页、PDF 与杭州直连路径 |
 | [HAIGUI-TANG.md](HAIGUI-TANG.md) | 内置海龟汤：题库、QQ 指令、会话设置、模型判断与进度持久化 |
 | [PIXIV_TOKYO.md](PIXIV_TOKYO.md) | PID 专用东京隧道、图片压缩回传、密钥限制与回退 |

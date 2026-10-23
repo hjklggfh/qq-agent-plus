@@ -34,6 +34,9 @@ import { ImageSearchManager } from '../features/image-search/manager.js';
 import { imageSearchCommand } from '../features/image-search/command.js';
 import { installImageSearchRoutes } from '../features/image-search/routes.js';
 import { PixivManager } from '../features/pixiv/manager.js';
+import { XSearchManager } from '../features/x-search/manager.js';
+import { xSearchCommand } from '../features/x-search/command.js';
+import { installXSearchRoutes } from '../features/x-search/routes.js';
 import { EhentaiManager } from '../features/ehentai/manager.js';
 import { ehentaiCommand } from '../features/ehentai/command.js';
 import { installEhentaiRoutes } from '../features/ehentai/routes.js';
@@ -594,6 +597,10 @@ export function createApp({
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
+  const xSearch = new XSearchManager({
+    getConfig, canRun, onebot,
+    forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options)
+  });
   const ehentai = new EhentaiManager({
     dataDir: DATA_DIR, getConfig, canRun, log: moduleLog('ehentai'),
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
@@ -1116,6 +1123,7 @@ export function createApp({
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const pidCommand = !isSelf && pixivCommand(commandText);
+    const xCommand = !isSelf && xSearchCommand(commandText);
     const ehCommand = !isSelf && ehentaiCommand(commandText, ehentai.hasList(chatKey));
     const haiguiCommand = !isSelf && haiguiTangCommand(commandText, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
     const adminAccessCommand = !isSelf && kind === 'private' && senderId === id
@@ -1137,7 +1145,7 @@ export function createApp({
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : hasFileSegment && !isSelf ? 'file-attachment' : 'message'
     };
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: passiveFileOnly || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1202,6 +1210,18 @@ export function createApp({
       return;
     }
     // 明确搜图指令在入库时即消费，防止同群其他模型任务或重启重新领取。
+    if (xCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void xSearch.start(xCommand, chatKey, stored.id, senderId).then(async (result) => {
+          if (result.error && canRun(chatKey) && !orchestrator.paused) {
+            await sender.sendTextBatch(chatKey, [result.error], { runId: `x-search-hint-${stored.id}`, preserveCode: false });
+          }
+          if (result.sendUnknown) log('[x-search] 卡片送达待核对，未自动重发');
+        }).catch(() => log('[x-search] 指令处理失败'));
+      }
+      return;
+    }
     if (pidCommand) {
       store.markRead(chatKey, [stored.id]);
       if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
@@ -3806,6 +3826,7 @@ export function createApp({
     let closedThreads = 0;
     imageSearch.enforce();
     pixiv.enforce();
+    xSearch.enforce();
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
         if (store.closeConversationThread(chatKey, 'mode-changed')) closedThreads += 1;
@@ -4541,6 +4562,7 @@ export function createApp({
     await jmFeature?.deactivate?.();
     await imageSearch.stop();
     await pixiv.stop();
+    await xSearch.stop();
     ehentai.stop();
     onebot.close();
     await orchestrator.abortAll();
@@ -4576,6 +4598,7 @@ export function createApp({
     auditWrite
   }, imageSearch);
   installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
+  installXSearchRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, xSearch);
   installEhentaiRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, ehentai);
   installHaiguiTangRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, haiguiTang);
 
@@ -4584,6 +4607,7 @@ export function createApp({
     trpg,
     imageSearch,
     pixiv,
+    xSearch,
     haiguiTang,
     onebot,
     store,

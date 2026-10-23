@@ -9,6 +9,7 @@ import * as legacy from './config-legacy.js';
 import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
+import { validateXSearchPatch } from '../features/x-search/config.js';
 import { validateEhentaiPatch } from '../features/ehentai/config.js';
 import { validateHaiguiTangPatch } from '../features/haigui-tang/config.js';
 import {
@@ -306,6 +307,7 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'trpg')) validateTrpgPatch(rawPatch.trpg);
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
+  if (Object.hasOwn(rawPatch, 'xSearch')) validateXSearchPatch(rawPatch.xSearch);
   if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
   if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
   if (Object.hasOwn(rawPatch, 'jm')) {

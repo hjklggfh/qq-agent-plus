@@ -138,6 +138,42 @@ test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, asyn
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子HTML', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const doc = window.document; const calls = [];
+    doc.querySelector('[data-tab="features"]').click();
+    await settle(60);
+    doc.querySelector('[data-section="x-search"]').click();
+    assert.equal(doc.querySelector('#x-search-enabled').checked, false);
+    assert.equal(doc.querySelector('#x-search-token').value, '');
+    const previousFetch = window.fetch;
+    window.fetch = async (url, options = {}) => {
+      if (!String(url).includes('/api/x-search')) return previousFetch(url, options);
+      calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
+      return { ok: true, status: 200, json: async () => url.includes('/preview')
+        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ text: '<script>bad()</script>', url: 'https://x.com/Example/status/1' }] } }
+        : { settings: { enabled: true, hasBearerToken: true } } };
+    };
+    doc.querySelector('#x-search-token').value = 'test-x-token';
+    doc.querySelector('#save-cfg-btn').click(); await settle(50);
+    assert.equal(calls[0].url, '/api/x-search/settings');
+    assert.equal(calls[0].body.bearerToken, 'test-x-token');
+    assert.equal(doc.querySelector('#x-search-token').value, '');
+    assert.match(doc.querySelector('#x-search-token-label').textContent, /已保存/);
+    doc.querySelector('#save-cfg-btn').click(); await settle(50);
+    assert.equal(Object.hasOwn(calls[1].body, 'bearerToken'), false, '留空不会清除Token');
+    doc.querySelector('#x-search-preview-user').value = 'Example';
+    doc.querySelector('#x-search-preview').click(); await settle(50);
+    assert.equal(calls[2].url, '/api/x-search/preview');
+    assert.equal(doc.querySelector('#x-search-preview-result script'), null);
+    assert.equal(doc.querySelector('#x-search-preview-result img'), null);
+    assert.match(doc.querySelector('#x-search-preview-result').textContent, /bad/);
+    assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, async () => {
   const { window, errors } = loadPage();
   await settle();
