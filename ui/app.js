@@ -10,6 +10,7 @@
 // 底座一律带 `Impl` 后缀，插件可用 QARegistry.base(name) 取回原实现（避免自递归）。
 
 import { api } from './core/api.js';
+import { FEATURE_SECTIONS } from './core/feature-catalog.js';
 import {
   CORE_SERVICE_LINKS, SESSION_KEEP, THEME_ICON, THEME_LABEL, THEME_VALUES, UPDATE_ACTIVE_STATUSES,
   UPDATE_PHASE_LABELS, UPDATE_STATUS_LABELS
@@ -147,11 +148,11 @@ function renderBanner() {
 }
 
 function switchTab(name) {
-  const featureSections = ['search', 'image-search', 'pixiv', 'daily-report', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'];
+  const featureSections = FEATURE_SECTIONS;
   const gameSections = ['haigui-tang', 'groupGame'];
   const memoryTabs = ['memory', 'people-memory', 'identity'];
   if (name === 'features') {
-    if (!featureSections.includes(state.settingsSection)) state.settingsSection = 'image-search';
+    state.settingsSection = 'feature-center';
     name = 'settings';
   }
   if (name === 'settings') {

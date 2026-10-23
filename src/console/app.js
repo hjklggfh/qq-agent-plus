@@ -26,6 +26,8 @@ import { SendQueue } from '../onebot/sender.js';
 import { SessionRegistry, personaLabelOfPrompt } from '../core/sessions.js';
 import { Orchestrator } from '../core/orchestrator.js';
 import { DailyMomentsManager } from '../features/daily-moments.js';
+import { createAppBackgroundTasks } from '../core/app-background-tasks.js';
+import { FEATURE_CATALOG } from '../../ui/core/feature-catalog.js';
 import { DailyReportManager, reportHostSnapshot } from '../features/daily-report.js';
 import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
@@ -797,6 +799,8 @@ export function createApp({
       ? { runSystemctl: autoUpdateOptions.runSystemctl }
       : {})
   });
+  const backgroundTasks = createAppBackgroundTasks({ config: getConfig, log, orchestrator,
+    dailyMoments, qzoneInteractions, groupDigest, dailyReport, groupGame, autoUpdate });
   async function syncIdentityPilot({ reindex = false, reconfigure = false } = {}) {
     if (!identityPilotEnabled()) {
       identityPilot?.stop();
@@ -1194,7 +1198,7 @@ export function createApp({
             if (feature === '跑团') orchestrator.enforceTrpgState();
             if (feature === 'E站') ehentai.sync();
             if (feature === '群搜图') imageSearch.enforce();
-            if (feature === '群日报') groupDigest.reconfigure();
+            if (feature === '群日报') backgroundTasks.reconcile().catch(error => log('[background] 配置同步失败：', error?.message || error));
             auditWrite('admin-chat.access-update', target, { after: { feature, actorId: senderId } });
             emit('chat-update', target);
           }
@@ -3415,6 +3419,18 @@ export function createApp({
     });
   });
   router.add('GET', '/api/daily-report', async (_req, res) => json(res, 200, dailyReport.status()));
+  router.add('GET', '/api/features', async (_req, res) => {
+    const cfg = getConfig();
+    return json(res, 200, {
+      features: FEATURE_CATALOG.map(feature => ({ ...feature,
+        enabled: feature.id === 'reminders' ? cfg.reminders?.enabled !== false : cfg[feature.configKey]?.enabled === true })),
+      tasks: backgroundTasks.snapshot(),
+      runtime: { mode: cfg.runtime?.mode || 'observe', paused: cfg.runtime?.paused === true },
+      external: ['数据备份、健康巡检、进程保护和审计清理由 systemd 定时器管理',
+        '东京恢复巡检与云端兜底独立运行，保持原有运维入口'],
+      observedAt: Date.now()
+    });
+  });
   router.add('POST', '/api/daily-report/preview', async (req, res) => {
     try { json(res, 200, await dailyReport.preview(await readBody(req, 8192))); }
     catch (error) { json(res, 400, { error: error.message }); }
@@ -3776,10 +3792,6 @@ export function createApp({
         .some((key) => String(patch.persona[key] ?? before[key] ?? '') !== String(before[key] ?? ''));
       if (changed) patch.persona.changedAt = Date.now();
     }
-    const previousProactive = JSON.stringify(cfgNow.proactive || {});
-    const previousPrivateProactive = JSON.stringify(cfgNow.privateProactive || {});
-    const previousDailyMoments = JSON.stringify(cfgNow.dailyMoments || {});
-    const previousQzoneInteractions = JSON.stringify(cfgNow.qzoneInteractions || {});
     const previousIdentityPilot = JSON.stringify(cfgNow.identityPilot || {});
     const previousPersona = JSON.stringify(cfgNow.persona || {});
     const previousSlangPilot = JSON.stringify(cfgNow.slangPilot || {});
@@ -3862,23 +3874,7 @@ export function createApp({
       }
     }
     if (closedThreads) emit('chat-update', '*');
-    if (JSON.stringify(next.proactive || {}) !== previousProactive) {
-      if (next.proactive?.enabled) orchestrator.startProactiveLoop();
-      else orchestrator.stopProactiveLoop();
-    }
-    if (JSON.stringify(next.privateProactive || {}) !== previousPrivateProactive) {
-      if (next.privateProactive?.enabled) orchestrator.startPrivateProactiveLoop();
-      else orchestrator.stopPrivateProactiveLoop();
-    }
-    if (JSON.stringify(next.dailyMoments || {}) !== previousDailyMoments) {
-      dailyMoments.reconfigure();
-    }
-    if (JSON.stringify(next.qzoneInteractions || {}) !== previousQzoneInteractions) {
-      qzoneInteractions.reconfigure();
-    }
-    if (JSON.stringify(next.groupDigest || {}) !== JSON.stringify(cfgNow.groupDigest || {})) {
-      groupDigest.reconfigure();
-    }
+    await backgroundTasks.reconcile();
     if (JSON.stringify(next.incidentPilot || {}) !== previousIncidentPilot) {
       try {
         syncIncidentPilot();
@@ -4547,17 +4543,7 @@ export function createApp({
       }
     }
     refreshTimeControl();
-    orchestrator.startRecoveryLoop();
-    orchestrator.startReminderLoop();
-    if (getConfig().dailyMoments?.enabled) dailyMoments.start();
-    if (getConfig().qzoneInteractions?.enabled) qzoneInteractions.start();
-    if (getConfig().groupDigest?.enabled) groupDigest.start();
-    groupGame.startLoop();   // 内部按配置判断是否推进；重启后从磁盘恢复进行中的局
-    if (getConfig().proactive?.enabled) orchestrator.startProactiveLoop();
-    if (getConfig().privateProactive?.enabled) orchestrator.startPrivateProactiveLoop();
-    orchestrator.startScheduledWakeTicker();
-    autoUpdate.start();
-    dailyReport.start();
+    await backgroundTasks.start();
     log(`控制台已就绪：http://${serverCfg.host}:${port} (${getConfig().runtime.mode})`);
     log(`OneBot: ws=${getConfig().onebot?.wsUrl} http=${getConfig().onebot?.httpUrl}`);
     log(`模型: ${getConfig().api.model || '（未设置，请在设置里选择）'} @ ${getConfig().api.baseUrl}`);
@@ -4578,12 +4564,7 @@ export function createApp({
     clearTimeout(timeControlTimer);
     clearInterval(sseHeartbeat);
     releaseTimeControl();
-    dailyMoments.stop();
-    dailyMoments.abort();
-    qzoneInteractions.stop();
-    await qzoneInteractions.abort();
-    autoUpdate.stop();
-    await dailyReport.stop();
+    await backgroundTasks.stop();
     identityPilot?.stop();
     identityPilot = null;
     await slangPilot?.stop();
@@ -4652,6 +4633,7 @@ export function createApp({
     assetObserver,
     autoUpdate,
     dailyReport,
+    backgroundTasks,
     get incidentPilot() { return incidentPilot; },
     incidentPilotStatus,
     captureIncident(error, context = {}) {

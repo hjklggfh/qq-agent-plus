@@ -9,6 +9,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { test } from 'node:test';
 import { toClassicScript } from './helpers/ui-module-source.mjs';
+import { FEATURE_CATALOG as PUBLIC_FEATURES } from '../ui/core/feature-catalog.js';
 
 let WindowClass = null;
 try {
@@ -46,7 +47,8 @@ function loadPage() {
     return {
       ok: true,
       status: 200,
-      json: async () => (String(url).includes('/api/config') ? cfgStub : {})
+      json: async () => (String(url).includes('/api/config') ? cfgStub : String(url) === '/api/features'
+        ? { features: PUBLIC_FEATURES.map(feature => ({ ...feature, enabled: false })), tasks: [], observedAt: Date.now() } : {})
     };
   };
   window.EventSource = class EventSourceStub {
@@ -134,6 +136,38 @@ test('功能、游戏和记忆入口能抵达原有页面', { skip: SKIP }, asyn
     await settle(60);
     assert.ok(doc.querySelector('#view-people-memory').classList.contains('active'));
     assert.ok(doc.querySelector('[data-tab="memory"]').classList.contains('active'));
+    assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
+test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不执行后台任务', { skip: SKIP }, async () => {
+  const { window, errors } = loadPage();
+  await settle();
+  try {
+    const calls = []; const previousFetch = window.fetch;
+    window.fetch = async (url, options = {}) => {
+      if (url !== '/api/features') return previousFetch(url, options);
+      calls.push(options.method || 'GET');
+      return { ok: true, json: async () => ({
+        features: PUBLIC_FEATURES.map(feature => ({ ...feature, enabled: feature.id === 'daily-report' })),
+        tasks: [{ id: 'daily-report', featureId: 'daily-report', name: '汇报后台', state: 'waiting', needsReview: true, schedule: '每日23:00' }],
+        external: ['外部定时器独立管理'], observedAt: Date.now()
+      }) };
+    };
+    window.switchTab('features'); await settle(60);
+    const doc = window.document;
+    assert.equal(Boolean(doc.querySelector('#feature-center')), true);
+    assert.equal(Boolean(doc.querySelector('[data-global-admin-settings]')), false, 'overview is not a settings editor');
+    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 16);
+    const search = doc.querySelector('#feature-center-search');
+    search.value = '汇报'; search.dispatchEvent(new window.Event('input'));
+    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 1);
+    doc.querySelector('#feature-center-refresh').click(); await settle(30);
+    assert.equal(search.value, '汇报');
+    assert.match(doc.querySelector('#background-task-list').textContent, /待核对/);
+    doc.querySelector('#feature-center-list [data-feature-open="daily-report"]').click(); await settle(60);
+    assert.equal(Boolean(doc.querySelector('#daily-report-time')), true);
+    assert.equal(calls.every(method => method === 'GET'), true);
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });

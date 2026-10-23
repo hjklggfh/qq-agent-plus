@@ -12,14 +12,18 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 const SAMPLE_CHARS = 2200;       // 喂给模型的聊天样本上限（省 token）
 
 export class GroupDigestManager {
-  constructor({ store, sender, log = console.log, now = () => Date.now() } = {}) {
+  constructor({ store, sender, complete = chatCompletion, log = console.log, now = () => Date.now() } = {}) {
     this.store = store;
     this.sender = sender;
+    this.complete = complete;
     this.log = log;
     this.now = now;
     this.timer = null;
     this.running = false;
     this.lastRun = null;
+    this.nextRunAt = 0;
+    this.controller = null;
+    this.currentTask = null;
   }
 
   #cfg() {
@@ -39,10 +43,21 @@ export class GroupDigestManager {
   stop() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.nextRunAt = 0;
+    this.controller?.abort(new Error('Group digest stopped'));
   }
+
+  async shutdown() { this.stop(); await this.currentTask?.catch(() => {}); }
 
   reconfigure() {
     this.stop();
+    this.#scheduleNext();
+  }
+
+  #scheduleNext() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    this.nextRunAt = 0;
     const cfg = this.#cfg();
     if (!cfg.enabled) return;
     const at = nextAtFromHHMM(cfg.time, this.now());
@@ -51,9 +66,10 @@ export class GroupDigestManager {
       return;
     }
     const wait = Math.max(1000, at - this.now());
+    this.nextRunAt = at;
     this.timer = setTimeout(() => {
+      this.#scheduleNext();
       withTrace(newTraceId(), () => this.runOnce()).catch((error) => this.log('[group-digest] 运行出错:', error?.message ?? error));
-      this.reconfigure();   // 排下一天
     }, wait);
     if (this.timer.unref) this.timer.unref();
     this.log(`[group-digest] 已排程：${cfg.time}，群 ${cfg.chats.length} 个`);
@@ -66,36 +82,43 @@ export class GroupDigestManager {
       time: cfg.time,
       chats: cfg.chats,
       running: this.running,
+      nextRunAt: this.nextRunAt,
       lastRun: this.lastRun
     };
   }
 
   /** 立即跑一轮（控制台手动触发/测试用）。返回每个群的执行结果。 */
-  async runOnce() {
-    if (this.running) return { skipped: 'already-running' };
+  runOnce() {
+    if (this.running) return Promise.resolve({ skipped: 'already-running' });
     const cfg = this.#cfg();
-    if (!cfg.chats.length) return { skipped: 'no-chats' };
+    if (!cfg.chats.length) return Promise.resolve({ skipped: 'no-chats' });
     this.running = true;
-    const results = [];
-    try {
-      for (const chatKey of cfg.chats) {
-        try {
-          const r = await this.#digestOne(chatKey, cfg);
-          results.push({ chatKey, ...r });
-        } catch (error) {
-          const msg = String(error?.message ?? error).slice(0, 200);
-          results.push({ chatKey, ok: false, error: msg });
-          this.log(`[group-digest] ${chatKey} 失败：${msg}`);
-        }
-      }
-      this.lastRun = { at: this.now(), results };
-      return { ok: true, results };
-    } finally {
-      this.running = false;
-    }
+    this.controller = new AbortController();
+    this.currentTask = this.#run(cfg, this.controller.signal).finally(() => {
+      this.running = false; this.controller = null; this.currentTask = null;
+    });
+    return this.currentTask;
   }
 
-  async #digestOne(chatKey, cfg) {
+  async #run(cfg, signal) {
+    const results = [];
+    for (const chatKey of cfg.chats) {
+      if (signal.aborted) break;
+      try {
+        const r = await this.#digestOne(chatKey, cfg, signal);
+        results.push({ chatKey, ...r });
+      } catch (error) {
+        const msg = String(error?.message ?? error).slice(0, 200);
+        results.push({ chatKey, ok: false, error: msg });
+        this.log(`[group-digest] ${chatKey} 失败：${msg}`);
+      }
+    }
+    this.lastRun = { at: this.now(), results };
+    return { ok: !signal.aborted, results };
+  }
+
+  async #digestOne(chatKey, cfg, signal) {
+    signal.throwIfAborted();
     if (!String(chatKey).startsWith('group:')) return { ok: false, error: '只支持群聊' };
     // 门禁放在**读消息与调模型之前**：原来只在最后 sendTextBatch 时才被 access 挡住，
     // 于是观察/暂停模式、已移出白名单（allow）或被手改 deny 的群，每天照样读 400 条消息 +
@@ -133,19 +156,20 @@ export class GroupDigestManager {
       '',
       sample.join('\n')
     ].join('\n');
-    const r = await chatCompletion({
+    const r = await this.complete({
       messages: [
         { role: 'system', content: '你是这个群里的普通群友，用口语聊天，不用 Markdown、不列条目、不写"大家"之类的客服腔。' },
         { role: 'user', content: prompt }
       ],
       temperature: 0.7,
-      purpose: 'write'
+      purpose: 'write', signal
       // 不设 maxTokens：思考模型（如 Command Code 上的 deepseek）的思考 token 也吃这个预算，
       // 压太小会出现"思考完预算没了 → content 为空"（2026-09-28 服务器实测）。输出长度用 maxChars 截。
     });
+    signal.throwIfAborted();
     const text = String(r.message?.content || '').trim().slice(0, cfg.maxChars);
     if (!text) return { ok: false, error: '模型没有产出内容' };
-    await this.sender.sendTextBatch(chatKey, [text], {});
+    await this.sender.sendTextBatch(chatKey, [text], { signal });
     return { ok: true, chars: text.length, messages: rows.length, text };
   }
 }

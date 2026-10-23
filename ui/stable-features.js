@@ -205,6 +205,7 @@ import { api } from './core/api.js';
   }
 
   function installGlobalAdminPanel() {
+    if (state.settingsSection === 'feature-center') return;
     const form = document.querySelector('#settings-form');
     if (!form || form.querySelector('[data-global-admin-settings]')) return;
 

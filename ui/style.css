@@ -1772,6 +1772,22 @@ html.boot-show .loading-overlay { opacity: 1; }
 
 /* ── 用量/成本看板 ── */
 .usage-pane { flex: 1; overflow-y: auto; padding: 22px 26px 40px; }
+.feature-center-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+  margin: 16px 0 24px;
+}
+.feature-center-card {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.feature-center-card p { margin: 10px 0; }
+.feature-center-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.feature-center-heading span { font-size: 12px; opacity: .8; }
 
 /* ── 服务与访问控制 ── */
 .control-pane {

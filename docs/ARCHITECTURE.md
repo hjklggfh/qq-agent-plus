@@ -38,6 +38,7 @@ Qzone moments, Qzone interactions and optional identity indexing.
 | Memory | `src/memory/`, `src/identity/` | Member impressions, handoff state and cross-chat identity index |
 | Pilots (observability) | `src/pilots/` | Incident panel, relationship shadow evaluation, slang assets, multimodal-context pilot |
 | Scheduled social work | `src/features/daily-moments.js`, `src/features/qzone-interactions.js` | Independently persisted Qzone decisions and external effects |
+| Feature and background management | `ui/core/feature-catalog.js`, `src/core/background-tasks.js`, `src/core/app-background-tasks.js` | Shared public feature metadata and coordinated scheduler lifecycle; business schedules and durable effects remain module-owned |
 | Runtime guards | `src/core/token-saver.js`, `src/core/time-gate.js`, `src/core/redact.js` | Token ceilings, active-hour gating, log redaction |
 | Operations | `deploy.sh`, `manage.sh`, `scripts/*.mjs`, `src/ops.js` | Installation, systemd service, health, backup and recovery actions |
 

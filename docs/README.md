@@ -41,6 +41,8 @@
 
 ## 开发与维护
 
+- [FEATURE-MANAGEMENT.md](FEATURE-MANAGEMENT.md)：统一功能目录、后台任务生命周期与状态边界。
+
 | 文档 | 说明 |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构总览：模块划分、消息流、存储与外部依赖 |

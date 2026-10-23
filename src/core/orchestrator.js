@@ -542,6 +542,11 @@ export class Orchestrator {
     return !pending.some((m) => m?.mentionsSelf === true);
   }
 
+  stopRecoveryLoop() {
+    clearInterval(this.retryTimer);
+    this.retryTimer = null;
+  }
+
   startRecoveryLoop() {
     clearInterval(this.retryTimer);
     this.store.recoverExpired();
@@ -2364,6 +2369,13 @@ export class Orchestrator {
     if (this.scheduledWakeTicker.unref) this.scheduledWakeTicker.unref();
   }
 
+  stopScheduledWakeTicker() {
+    clearInterval(this.scheduledWakeTicker);
+    this.scheduledWakeTicker = null;
+    for (const item of this.scheduledWakes.values()) clearTimeout(item.timer);
+    this.scheduledWakes.clear();
+  }
+
   fireDueScheduledWakes() {
     const now = Date.now();
     const cfgNow = getConfig();
@@ -3125,6 +3137,8 @@ export class Orchestrator {
   async abortAll() {
     this.aborted = true;
     clearInterval(this.retryTimer);
+    this.stopReminderLoop();
+    this.stopScheduledWakeTicker();
     for (const controller of this.controllers.values()) controller.abort(new Error('Run cancelled'));
     for (const timer of this.wakeTimers.values()) clearTimeout(timer);
     this.wakeTimers.clear();

@@ -35,6 +35,8 @@ import { renderImageSearchSection, bindImageSearchSection } from './image-search
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
 import { renderXSearchSection, bindXSearchSection } from './x-search.js';
 import { renderDailyReportSection, bindDailyReportSection } from './daily-report.js';
+import { FEATURE_CATALOG, FEATURE_SECTIONS } from '../core/feature-catalog.js';
+import { renderFeatureCenter, bindFeatureCenter, loadFeatureCenter } from './feature-center.js';
 import { renderEhentaiSection, bindEhentaiSection } from './ehentai.js';
 import { renderHaiguiTangSection, bindHaiguiTangSection } from './haigui-tang.js';
 /** 把设置解析成实际要应用的主题名。 */
@@ -54,6 +56,7 @@ function startListPoller() {
     if (state.tab === 'chats') loadChats({ quiet: true });
     if (state.tab === 'usage') loadUsageView();   // 无 force：只更新数值，不重建 DOM
     if (state.tab === 'settings') refreshStatus();
+    if (state.tab === 'settings' && state.settingsSection === 'feature-center') loadFeatureCenter({ quiet: true });
   }, refreshIntervalMs());
 }
 
@@ -68,23 +71,12 @@ function renderSettingsSidebar() {
   if (!sidebar) return;
   const allMenu = [
     ['api', '模型 API'],
-    ['search', '搜索服务'],
-    ['image-search', '以图搜图'],
-    ['pixiv', 'PID 搜索'],
-    ['x-search', 'X 账号检索'],
-    ['daily-report', '每晚汇报'],
-    ['ehentai', 'E站检索'],
+    ['feature-center', '功能总览'],
+    ...FEATURE_CATALOG.filter(item => !item.area && !item.section).map(item => [item.id, item.name]),
     ['haigui-tang', '海龟汤'],
-    ['media', 'B站媒体'],
-    ['jm', 'JM 禁漫下载'],
-    ['asr', '语音转文字'],
     ['memory', '记忆'],
     ['experiments', '实验功能'],
     ['groupGame', '群游戏'],
-    ['moments', '每日动态'],
-    ['reminders', '定时提醒'],
-    ['qzone-interactions', '动态互动'],
-    ['time-control', '时间控制'],
     ['token-saver', '省 Token'],
     ['persona', '人设'],
     ['allow', '聊天白名单'],
@@ -94,7 +86,7 @@ function renderSettingsSidebar() {
     ['onebot', 'OneBot']
   ];
   const sectionsByArea = {
-    features: ['search', 'image-search', 'pixiv', 'x-search', 'daily-report', 'ehentai', 'media', 'jm', 'asr', 'moments', 'reminders', 'qzone-interactions', 'time-control'],
+    features: FEATURE_SECTIONS,
     games: ['haigui-tang', 'groupGame'],
     settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
   };
@@ -127,6 +119,10 @@ function renderSettingsImpl() {
   box.classList.toggle('appearance-settings', state.settingsSection === 'appearance');
   box.innerHTML = `
     ${renderSettingsSection(c)}`;
+  if (state.settingsSection === 'feature-center') {
+    bindFeatureCenter();
+    return;
+  }
   if (state.settingsSection === 'appearance') {
     renderAppearancePage();
     return;
@@ -199,6 +195,7 @@ function renderJmSection(c) {
 
 function renderSettingsSection(c) {
   const sec = state.settingsSection || 'api';
+  if (sec === 'feature-center') return renderFeatureCenter();
   if (sec === 'appearance') return '<div id="appearance-page" class="appearance-pane"></div>';
   const sections = {
     api: () => renderApiSection(c),
