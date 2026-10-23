@@ -69,13 +69,15 @@ test('接口准确查账号、只取5条并携带过滤及分页，保留字符�
   await assert.rejects(fetchXPage('Example', settings, { request: async (url) => url.includes('/tweets?') ? { errors: [{}] } : { data: user } }), /格式/);
 });
 
-test('卡片清除CQ注入、敏感帖不下载图片，坏图片只降级自身', async () => {
+test('卡片清除CQ注入、敏感帖保留正文及配图处理，坏图片只降级自身', async () => {
   const page = await fetchXPage('Example', settings, { request: async (url) => url.includes('/tweets?') ? fixture : { data: user } });
   let thumbnails = 0;
   const nodes = await xCardNodes(page, { includeImages: true, selfId: '10001', thumbnail: async () => { thumbnails++; throw new Error('bad'); } });
   assert.equal(nodes.length, 3);
-  assert.equal(thumbnails, 2, '只处理普通帖子两张图');
-  assert.doesNotMatch(JSON.stringify(nodes), /\[CQ:|敏感正文/);
+  assert.equal(thumbnails, 3, '敏感标记不跳过配图');
+  assert.doesNotMatch(JSON.stringify(nodes), /\[CQ:/);
+  assert.match(JSON.stringify(nodes), /敏感正文/);
+  assert.match(JSON.stringify(nodes), /被 X 标记为敏感内容/);
   assert.match(JSON.stringify(nodes), /图片暂不可用|X下一页|北京时间/);
 });
 

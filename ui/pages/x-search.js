@@ -16,13 +16,13 @@ function renderXSearchSection(config) {
   <div class="field"><label for="x-search-relay-url">东京 SSH 隧道地址</label><input id="x-search-relay-url" value="${esc(s.relayUrl || 'http://127.0.0.1:3223')}"></div>
   <div class="field"><label for="x-search-relay-token" id="x-search-relay-token-label">中转令牌（${s.hasRelayToken ? '已保存' : '未配置'}）</label><input id="x-search-relay-token" type="password" autocomplete="new-password" placeholder="留空保留现有中转令牌"><label><input id="x-search-clear-relay-token" type="checkbox"> 清除中转令牌</label></div>
   <p class="hint">X 登录态只保存在东京，此处填写独立服务令牌，不是 X 密码或 Cookie。浏览器按需启动，每页 5 条，通过滚动公开时间线读取更早帖子；不支持回复或转帖筛选。网页限制可能使较早内容暂不可读。</p></div>
-  <div class="field"><label><input id="x-search-translate" type="checkbox" ${s.translateChinese !== false ? 'checked' : ''}> 在非中文正文后附加中文翻译</label><div class="hint">调用当前聊天模型，可能产生费用和额外等待。保留原文并标注机器翻译；失败仍显示原文，敏感帖不送翻译。</div></div>
+  <div class="field"><label><input id="x-search-translate" type="checkbox" ${s.translateChinese !== false ? 'checked' : ''}> 在非中文正文后附加中文翻译</label><div class="hint">调用当前聊天模型，可能产生费用和额外等待。保留原文并标注机器翻译；失败仍显示原文。</div></div>
   <div class="field-row"><div class="field"><label><input id="x-search-images" type="checkbox" ${s.includeImages !== false ? 'checked' : ''}> 附带图片缩略图</label></div>
   <div class="field"><label><input id="x-search-replies" type="checkbox" ${s.includeReplies ? 'checked' : ''}> 包含回复</label></div>
   <div class="field"><label><input id="x-search-reposts" type="checkbox" ${s.includeReposts ? 'checked' : ''}> 包含转帖</label></div></div>
   <div class="field-row"><div class="field"><label>查询超时（秒）</label><input id="x-search-timeout" type="number" min="5" max="60" value="${esc(s.timeoutSeconds ?? 45)}"></div>
   <div class="field"><label>每人查询冷却（秒）</label><input id="x-search-cooldown" type="number" min="5" max="300" value="${esc(s.cooldownSeconds ?? 15)}"></div></div>
-  <p class="hint">官方 API 读取可能产生费用。公开帖子按时间倒序，最多四张配图缩略图／帖，视频仅显示封面和链接；敏感标记帖子仅提供链接。查询有 60 秒内存缓存，翻页状态 10 分钟过期，按群聊／私聊与发送者隔离。</p>
+  <p class="hint">官方 API 读取可能产生费用。公开帖子按时间倒序，最多四张配图缩略图／帖，视频仅显示封面和链接；敏感标记帖子保留提示并展示可读取的正文、翻译及配图。查询有 60 秒内存缓存，翻页状态 10 分钟过期，按群聊／私聊与发送者隔离。</p>
   <h3>试查账号</h3><p class="hint">先保存配置。点击试查使用所选来源读取第一页，并按设置翻译；可能计费，只在网页展示，不发送 QQ。</p>
   <div class="field-row"><div class="field"><label>用户名</label><input id="x-search-preview-user" placeholder="例如 XDevelopers" maxlength="16"></div><button class="btn" id="x-search-preview" type="button">试查最近帖子</button></div>
   <div id="x-search-preview-result" class="hint" role="status"></div>`;
@@ -64,7 +64,7 @@ function bindXSearchSection() {
     try {
       const { page } = await api('/api/x-search/preview', { method: 'POST', body: JSON.stringify({ username }) });
       box.innerHTML = `<p>${esc(page.user.name)} @${esc(page.user.username)} · ${esc(page.fetchedAt)}</p>${page.posts.length
-        ? page.posts.map((post) => `<p>${esc(post.createdAt)}<br>${esc(post.sensitive ? '敏感内容，请查看原帖' : post.text.slice(0, 1800))}${!post.sensitive && post.translation ? `<br><br>中文翻译（机器翻译）：<br>${esc(post.translation)}` : !post.sensitive && post.translationUnavailable ? '<br>中文翻译暂不可用。' : ''}<br><a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">查看原帖</a></p>`).join('') : '<p>没有可显示的帖子。</p>'}`;
+        ? page.posts.map((post) => `<p>${esc(post.createdAt)}<br>${post.sensitive ? '⚠️ 该帖被 X 标记为敏感内容。<br>' : ''}${esc(post.text.slice(0, 1800))}${post.translation ? `<br><br>中文翻译（机器翻译）：<br>${esc(post.translation)}` : post.translationUnavailable ? '<br>中文翻译暂不可用。' : ''}<br><a href="${esc(post.url)}" target="_blank" rel="noopener noreferrer">查看原帖</a></p>`).join('') : '<p>没有可显示的帖子。</p>'}`;
     } catch (error) { box.textContent = error.message; }
     finally { button.disabled = false; }
   });

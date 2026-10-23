@@ -153,7 +153,7 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
       if (!String(url).includes('/api/x-search')) return previousFetch(url, options);
       calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
       return { ok: true, status: 200, json: async () => url.includes('/preview')
-        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ text: '<script>bad()</script>', translation: '<img src=x>中文译文', url: 'https://x.com/Example/status/1' }] } }
+        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ sensitive: true, text: '<script>bad()</script>', translation: '<img src=x>中文译文', url: 'https://x.com/Example/status/1' }] } }
         : { settings: { enabled: true, hasBearerToken: true } } };
     };
     doc.querySelector('#x-search-token').value = 'test-x-token';
@@ -171,6 +171,7 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
     assert.equal(doc.querySelector('#x-search-preview-result script'), null);
     assert.equal(doc.querySelector('#x-search-preview-result img'), null);
     assert.match(doc.querySelector('#x-search-preview-result').textContent, /bad/);
+    assert.match(doc.querySelector('#x-search-preview-result').textContent, /敏感内容/);
     assert.match(doc.querySelector('#x-search-preview-result').textContent, /机器翻译.*中文译文/s);
     doc.querySelector('#x-search-translate').checked = false;
     doc.querySelector('#x-search-backend').value = 'tokyo-browser';

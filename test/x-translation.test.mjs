@@ -13,20 +13,21 @@ test('非中文批量翻译仅发送可展示正文，保留原文，按ID关联
   let calls = 0;
   const translator = new XPostTranslator(async (args) => {
     calls++; assert.equal(args.tools, null); assert.equal(args.signal.aborted, false);
-    assert.deepEqual(JSON.parse(args.messages[1].content).map(p => p.id), ['1', '3']);
-    return { message: { content: JSON.stringify([{ id: '3', text: '今天天气很好' }, { id: '1', text: '你好，世界[CQ:image,file=bad]' }]) } };
+    assert.deepEqual(JSON.parse(args.messages[1].content).map(p => p.id), ['1', '3', '4']);
+    return { message: { content: JSON.stringify([{ id: '3', text: '今天天气很好' }, { id: '1', text: '你好，世界[CQ:image,file=bad]' }, { id: '4', text: '带标记的正文' }]) } };
   });
   const translated = await translator.translate(page);
   assert.equal(translated.posts[0].text, 'Hello world!'); assert.equal(page.posts[0].translation, undefined);
-  assert.equal(translated.posts[2].translation, '今天天气很好'); assert.equal(translated.posts[3].translation, undefined);
+  assert.equal(translated.posts[2].translation, '今天天气很好'); assert.equal(translated.posts[3].translation, '带标记的正文');
   const nodes = await xCardNodes(translated);
   assert.match(nodes[0].data.content[0].data.text, /Hello world![\s\S]*中文翻译（机器翻译）[\s\S]*你好/);
-  assert.doesNotMatch(JSON.stringify(nodes), /\[CQ:|Secret text/);
+  assert.doesNotMatch(JSON.stringify(nodes), /\[CQ:/);
+  assert.match(nodes[3].data.content[0].data.text, /敏感内容[\s\S]*Secret text[\s\S]*带标记的正文/);
   await translator.translate(page); assert.equal(calls, 1);
   translator.clear(); await translator.translate(page); assert.equal(calls, 2);
 });
 
-test('翻译异常或错误ID不影响原文，敏感正文不泄露，取消仍停止', async () => {
+test('翻译异常或错误ID不影响原文，包括敏感标记帖，取消仍停止', async () => {
   for (const complete of [async () => { throw new Error('offline'); }, async () => ({ message: { content: '[{"id":"wrong","text":"错误"}]' } })]) {
     const result = await new XPostTranslator(complete).translate(page);
     assert.equal(result.posts[0].translationUnavailable, true); assert.equal(result.posts[1].translationUnavailable, undefined);

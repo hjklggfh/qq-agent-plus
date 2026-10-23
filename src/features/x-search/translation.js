@@ -17,7 +17,7 @@ export class XPostTranslator {
     const posts = page.posts.map((post) => ({ ...post }));
     const pending = [];
     for (const post of posts) {
-      if (post.sensitive || !needsChineseTranslation(post.text)) continue;
+      if (!needsChineseTranslation(post.text)) continue;
       const text = post.text.slice(0, 1800);
       const key = createHash('sha256').update(text).digest('hex');
       const cached = this.cache.get(key);

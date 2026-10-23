@@ -15,8 +15,8 @@ export async function xCardNodes(page, options = {}) {
     const date = Number.isFinite(Date.parse(post.createdAt))
       ? new Date(post.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '时间未提供';
     const translation = post.translation ? `\n\n中文翻译（机器翻译）：\n${cleanXText(post.translation, 2200)}` : post.translationUnavailable ? '\n\n中文翻译暂不可用。' : '';
-    const content = [textSegment(`${(options.offset || 0) + index + 1}. ${cleanXText(page.user.name, 80)} @${page.user.username}\n${date}（北京时间）\n${post.sensitive ? '该帖被 X 标记为敏感内容，请前往原帖查看。' : cleanXText(post.text) + translation}\n原帖：${post.url}`)];
-    if (!post.sensitive && options.includeImages) {
+    const content = [textSegment(`${(options.offset || 0) + index + 1}. ${cleanXText(page.user.name, 80)} @${page.user.username}\n${date}（北京时间）\n${post.sensitive ? '⚠️ 该帖被 X 标记为敏感内容。\n' : ''}${cleanXText(post.text) + translation}\n原帖：${post.url}`)];
+    if (options.includeImages) {
       // X 每帖最多四张配图；串行解码，总计最多二十张，不下载视频。
       for (const media of post.media.slice(0, 4)) {
         options.signal?.throwIfAborted();
