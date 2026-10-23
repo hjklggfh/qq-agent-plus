@@ -74,7 +74,12 @@ export async function recoverySnapshot(env = process.env) {
 
 function writeState(directory, state) {
   const temp = path.join(directory, `state-${process.pid}.tmp`);
-  fs.writeFileSync(temp, JSON.stringify(state), { mode: 0o600 }); fs.renameSync(temp, path.join(directory, 'state.json'));
+  const file = fs.openSync(temp, 'w', 0o600);
+  try { fs.writeFileSync(file, JSON.stringify(state)); fs.fsyncSync(file); } finally { fs.closeSync(file); }
+  fs.renameSync(temp, path.join(directory, 'state.json'));
+  // Recovery writes must survive a monitoring-host crash before the remote action.
+  const parent = fs.openSync(directory, 'r');
+  try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
 }
 
 function record(directory, sample) {
