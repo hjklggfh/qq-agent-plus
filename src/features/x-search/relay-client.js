@@ -33,8 +33,12 @@ export function validateXRelayUrl(raw) {
 export async function fetchXBrowserPage(username, settings, options = {}) {
   const base = validateXRelayUrl(settings.relayUrl);
   if (!/^[a-z0-9_]{1,15}$/i.test(username)) throw new Error('X 用户名无效');
+  const before = options.next || '';
+  if (before && !/^[0-9]{1,20}$/.test(before)) throw new Error('X 翻页标记无效');
+  const target = new URL(`/account/${username}`, base);
+  if (before) target.searchParams.set('before', before);
   const page = await new Promise((resolve, reject) => {
-    const request = http.get(new URL(`/account/${username}`, base), { signal: options.signal,
+    const request = http.get(target, { signal: options.signal,
       headers: { Authorization: `Bearer ${settings.relayToken}`, Accept: 'application/json' } }, (res) => {
       res.on('error', () => reject(new Error('东京读取连接中断')));
       if (res.statusCode !== 200) {
@@ -51,7 +55,10 @@ export async function fetchXBrowserPage(username, settings, options = {}) {
     request.on('error', () => reject(new Error('东京中转连接失败，请检查 SSH 隧道')));
   });
   if (page?.source !== 'tokyo-browser' || page?.user?.username?.toLowerCase() !== username.toLowerCase() || !Array.isArray(page.posts)) throw new Error('东京返回账号不匹配或格式无效');
+  const posts = normalizeBrowserPosts(username, page.posts.slice(0, 20));
+  if (before && posts.some((post) => BigInt(post.id) >= BigInt(before))) throw new Error('东京返回了重复的翻页结果');
+  if (page.next && (!/^[0-9]{1,20}$/.test(page.next) || posts.length !== 5 || page.next !== posts.at(-1).id)) throw new Error('东京返回翻页标记无效');
   return { user: { username, name: String(page.user.name || username), description: String(page.user.description || '') },
-    posts: normalizeBrowserPosts(username, page.posts.slice(0, 20)), next: '',
+    posts, next: page.next || '',
     fetchedAt: Number.isFinite(Date.parse(page.fetchedAt)) ? page.fetchedAt : new Date().toISOString(), partial: Boolean(page.partial), source: 'tokyo-browser' };
 }

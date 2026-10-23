@@ -1,7 +1,7 @@
 export const DEFAULT_X_SEARCH_CONFIG = Object.freeze({
   backend: 'official', relayUrl: 'http://127.0.0.1:3223', relayToken: '',
   enabled: false, apiBaseUrl: 'https://api.x.com', bearerToken: '',
-  includeReplies: false, includeReposts: false, includeImages: true,
+  includeReplies: false, includeReposts: false, includeImages: true, translateChinese: true,
   timeoutSeconds: 45, cooldownSeconds: 15
 });
 

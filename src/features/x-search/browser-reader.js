@@ -61,7 +61,7 @@ export function browserResponseRows(username, body) {
   return rows;
 }
 
-export function normalizeBrowserPosts(username, rows) {
+export function normalizeBrowserPosts(username, rows, limit = 5) {
   const seen = new Set();
   return rows.flatMap((row) => {
     let url; try { url = new URL(row.url, 'https://x.com'); } catch { return []; }
@@ -74,7 +74,14 @@ export function normalizeBrowserPosts(username, rows) {
     }).slice(0, 4);
     return [{ id: match[2], text: String(row.text || '').slice(0, 25000), createdAt: row.createdAt,
       sensitive: Boolean(row.sensitive), url: `https://x.com/${username}/status/${match[2]}`, media }];
-  }).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || (BigInt(a.id) > BigInt(b.id) ? -1 : 1)).slice(0, 5);
+  }).sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : 1).slice(0, limit);
+}
+
+export function browserPostPage(username, rows, before = '') {
+  if (before && !/^[0-9]{1,20}$/.test(before)) throw new Error('X 翻页标记无效');
+  const candidates = normalizeBrowserPosts(username, rows, 200).filter((post) => !before || BigInt(post.id) < BigInt(before));
+  const posts = candidates.slice(0, 5);
+  return { posts, next: candidates.length > 5 ? posts.at(-1).id : '' };
 }
 
 const READ_PAGE = `(() => {
@@ -100,6 +107,8 @@ const READ_PAGE = `(() => {
 export async function readBrowserAccount(username, options) {
   if (!/^[a-z0-9_]{1,15}$/i.test(username || '') || !xSearchCommand(`X @${username}`)) throw new Error('X 用户名无效');
   const { profileDir, chromePath = '/usr/bin/google-chrome', signal } = options;
+  const before = options.before || '';
+  if (before && !/^[0-9]{1,20}$/.test(before)) throw new Error('X 翻页标记无效');
   if (!profileDir) throw new Error('未配置 X 专用浏览器目录');
   signal?.throwIfAborted();
   const browser = spawn(chromePath, ['--headless=new', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check',
@@ -141,7 +150,7 @@ export async function readBrowserAccount(username, options) {
           void cdp.call('Network.getResponseBody', { requestId: event.params.requestId }, sessionId).then((response) => {
             if (response.base64Encoded || response.body.length > 2 * 1024 * 1024) return;
             let body; try { body = JSON.parse(response.body); } catch { return; }
-            for (const row of browserResponseRows(username, body)) originals.set(row.url, row);
+            for (const row of browserResponseRows(username, body)) if (originals.size < 200) originals.set(row.url, row);
           }).catch(() => {});
         }
       });
@@ -156,18 +165,18 @@ export async function readBrowserAccount(username, options) {
         page = result?.value;
         if (page?.login) throw new Error('X 登录态已失效，请重新手动登录');
         if (page?.protectedAccount) throw new Error('试用版仅读取公开账号');
-        for (const row of page?.rows || []) collected.set(row.url, row);
+        for (const row of page?.rows || []) if (collected.size < 200) collected.set(row.url, row);
         const originalRows = [...originals.values()];
-        const posts = normalizeBrowserPosts(username, originalRows.length ? originalRows : page?.translated ? [] : [...collected.values()]);
-        if (posts.length >= 5 && (originalRows.length || attempt >= 7)) return { user: { username, name: page.name || username, description: page.description || '' }, posts,
-          next: '', fetchedAt: new Date().toISOString(), partial: false, source: 'tokyo-browser', contentSource: originalRows.length ? 'public-timeline-response' : 'rendered-page',
+        const resultPage = browserPostPage(username, originalRows.length ? originalRows : page?.translated ? [] : [...collected.values()], before);
+        if (resultPage.next && (originalRows.length || attempt >= 7)) return { user: { username, name: page.name || username, description: page.description || '' }, ...resultPage,
+          fetchedAt: new Date().toISOString(), partial: false, source: 'tokyo-browser', contentSource: originalRows.length ? 'public-timeline-response' : 'rendered-page',
           ...(options.diagnostics ? { operations: [...operations] } : {}) };
         if (page?.rows?.length) await cdp.call('Runtime.evaluate', { expression: 'window.scrollBy(0,700)' }, sessionId);
       }
-      const posts = normalizeBrowserPosts(username, originals.size ? [...originals.values()] : page?.translated ? [] : [...collected.values()]);
-      if (!posts.length) throw new Error('未读到公开帖子，可能是登录验证、账号受限或网页结构变化');
-      return { user: { username, name: page?.name || username, description: page?.description || '' }, posts,
-        next: '', fetchedAt: new Date().toISOString(), partial: true, source: 'tokyo-browser' };
+      const resultPage = browserPostPage(username, originals.size ? [...originals.values()] : page?.translated ? [] : [...collected.values()], before);
+      if (!resultPage.posts.length) throw new Error(before ? '本次未读取到更早帖子，请重新查询或前往原账号查看。' : '未读到公开帖子，可能是登录验证、账号受限或网页结构变化');
+      return { user: { username, name: page?.name || username, description: page?.description || '' }, ...resultPage,
+        fetchedAt: new Date().toISOString(), partial: true, source: 'tokyo-browser' };
     } finally { signal?.removeEventListener('abort', abort); }
   } finally {
     socket?.close();

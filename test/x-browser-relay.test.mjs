@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { browserResponseRows, normalizeBrowserPosts, readBrowserAccount } from '../src/features/x-search/browser-reader.js';
+import { browserPostPage, browserResponseRows, normalizeBrowserPosts, readBrowserAccount } from '../src/features/x-search/browser-reader.js';
 import { createXBrowserRelay } from '../src/features/x-search/browser-relay.js';
 import { fetchXBrowserPage, validateXRelayUrl, xBrowserThumbnail } from '../src/features/x-search/relay-client.js';
 import sharp from 'sharp';
@@ -84,4 +84,34 @@ test('东京模式无需官方Key，预览不发QQ，两个凭据均不回显', 
   assert.equal(browserCalls, 1);
   assert.equal(manager.snapshot().settings.hasRelayToken, true);
   assert.doesNotMatch(JSON.stringify(manager.snapshot()), new RegExp(token));
+});
+
+test('东京公开时间线按帖子ID翻页，缓存按游标隔离，无重复，QQ会话按人隔离', async (t) => {
+  const rows = Array.from({ length: 12 }, (_, i) => ({ ...post, url: `https://x.com/Example/status/${100 - i}` }));
+  let reads = 0;
+  const relay = createXBrowserRelay({ token, profileDir: '/unused', read: async (username, options) => {
+    reads++; return { ...page, ...browserPostPage(username, [rows[0], ...rows], options.before) };
+  } });
+  await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve));
+  t.after(() => relay.stop());
+  const settings = { ...DEFAULT_X_SEARCH_CONFIG, enabled: true, backend: 'tokyo-browser', relayToken: token,
+    relayUrl: `http://127.0.0.1:${relay.server.address().port}`, includeImages: false, translateChinese: false };
+  const first = await fetchXBrowserPage('Example', settings);
+  assert.deepEqual(first.posts.map(p => p.id), ['100', '99', '98', '97', '96']);
+  assert.equal(first.next, '96');
+  const second = await fetchXBrowserPage('Example', settings, { next: first.next });
+  assert.deepEqual(second.posts.map(p => p.id), ['95', '94', '93', '92', '91']);
+  const last = await fetchXBrowserPage('Example', settings, { next: second.next });
+  assert.deepEqual(last.posts.map(p => p.id), ['90', '89']); assert.equal(last.next, '');
+  await fetchXBrowserPage('Example', settings, { next: first.next }); assert.equal(reads, 3);
+  await assert.rejects(fetchXBrowserPage('Example', settings, { next: '../../home' }), /标记/);
+  const sent = [];
+  const manager = new XSearchManager({ getConfig: () => ({ xSearch: settings }), canRun: () => true, onebot: { selfId: '1' },
+    forward: async (_chat, payload) => { sent.push(payload); return { message_id: sent.length }; } });
+  assert.equal((await manager.start({ username: 'Example' }, 'private:1', 'a', '1')).ok, true);
+  assert.match((await manager.start({ next: true }, 'private:1', 'b', '2')).error, /下一页/);
+  manager.cooldowns.clear();
+  assert.equal((await manager.start({ next: true }, 'private:1', 'c', '1')).ok, true);
+  assert.match(sent[1].nodes[0].data.content[0].data.text, /^6\./);
+  assert.match(sent[1].nodes[0].data.content[0].data.text, /status\/95/);
 });

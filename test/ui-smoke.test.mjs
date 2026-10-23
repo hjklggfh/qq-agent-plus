@@ -153,13 +153,14 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
       if (!String(url).includes('/api/x-search')) return previousFetch(url, options);
       calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
       return { ok: true, status: 200, json: async () => url.includes('/preview')
-        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ text: '<script>bad()</script>', url: 'https://x.com/Example/status/1' }] } }
+        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ text: '<script>bad()</script>', translation: '<img src=x>中文译文', url: 'https://x.com/Example/status/1' }] } }
         : { settings: { enabled: true, hasBearerToken: true } } };
     };
     doc.querySelector('#x-search-token').value = 'test-x-token';
     doc.querySelector('#save-cfg-btn').click(); await settle(50);
     assert.equal(calls[0].url, '/api/x-search/settings');
     assert.equal(calls[0].body.bearerToken, 'test-x-token');
+    assert.equal(calls[0].body.translateChinese, true);
     assert.equal(doc.querySelector('#x-search-token').value, '');
     assert.match(doc.querySelector('#x-search-token-label').textContent, /已保存/);
     doc.querySelector('#save-cfg-btn').click(); await settle(50);
@@ -170,6 +171,8 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
     assert.equal(doc.querySelector('#x-search-preview-result script'), null);
     assert.equal(doc.querySelector('#x-search-preview-result img'), null);
     assert.match(doc.querySelector('#x-search-preview-result').textContent, /bad/);
+    assert.match(doc.querySelector('#x-search-preview-result').textContent, /机器翻译.*中文译文/s);
+    doc.querySelector('#x-search-translate').checked = false;
     doc.querySelector('#x-search-backend').value = 'tokyo-browser';
     doc.querySelector('#x-search-backend').dispatchEvent(new window.Event('change'));
     assert.equal(doc.querySelector('#x-search-official-fields').style.display, 'none');
@@ -179,6 +182,7 @@ test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子H
     doc.querySelector('#save-cfg-btn').click(); await settle(50);
     assert.equal(calls.at(-1).body.backend, 'tokyo-browser');
     assert.equal(calls.at(-1).body.relayToken, 'relay-test-token');
+    assert.equal(calls.at(-1).body.translateChinese, false);
     assert.equal(doc.querySelector('#x-search-relay-token').value, '');
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }

@@ -44,9 +44,9 @@ export function createXBrowserRelay(options) {
       })();
       await task; return;
     }
-    const match = req.url?.match(/^\/account\/([a-zA-Z0-9_]{1,15})$/);
+    const match = req.url?.match(/^\/account\/([a-zA-Z0-9_]{1,15})(?:\?before=([0-9]{1,20}))?$/);
     if (req.method !== 'GET' || !match) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
-    const username = match[1]; const key = username.toLowerCase();
+    const username = match[1]; const before = match[2] || ''; const key = `${username.toLowerCase()}:${before}`;
     const cached = cache.get(key);
     if (cached && Date.now() - Date.parse(cached.fetchedAt) < 60000) { respond(res, 200, cached); return; }
     if (active) { respond(res, 429, { error: '东京浏览器正在查询，请稍后重试' }); return; }
@@ -56,7 +56,7 @@ export function createXBrowserRelay(options) {
     res.on('close', disconnected);
     task = (async () => {
       try {
-        const page = await read(username, { profileDir, chromePath: options.chromePath, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) });
+        const page = await read(username, { profileDir, before, chromePath: options.chromePath, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45000)]) });
         cache.set(key, page);
         if (cache.size > 30) cache.delete(cache.keys().next().value);
         respond(res, 200, page);

@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { xSearchConfig } from './config.js';
 import { fetchXPage, xThumbnail } from './client.js';
 import { fetchXBrowserPage, xBrowserThumbnail } from './relay-client.js';
+import { XPostTranslator } from './translation.js';
 
 const cleanXText = (value, limit = 1800) => String(value || '').replace(/\[CQ:[^\]]*\]/gi, '').replace(/[\x00-\x08\x0b-\x1f]/g, '').slice(0, limit);
 const textSegment = (text) => ({ type: 'text', data: { text } });
@@ -13,10 +14,11 @@ export async function xCardNodes(page, options = {}) {
   for (const [index, post] of page.posts.entries()) {
     const date = Number.isFinite(Date.parse(post.createdAt))
       ? new Date(post.createdAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '时间未提供';
-    const content = [textSegment(`${index + 1}. ${cleanXText(page.user.name, 80)} @${page.user.username}\n${date}（北京时间）\n${post.sensitive ? '该帖被 X 标记为敏感内容，请前往原帖查看。' : cleanXText(post.text)}\n原帖：${post.url}`)];
+    const translation = post.translation ? `\n\n中文翻译（机器翻译）：\n${cleanXText(post.translation, 2200)}` : post.translationUnavailable ? '\n\n中文翻译暂不可用。' : '';
+    const content = [textSegment(`${(options.offset || 0) + index + 1}. ${cleanXText(page.user.name, 80)} @${page.user.username}\n${date}（北京时间）\n${post.sensitive ? '该帖被 X 标记为敏感内容，请前往原帖查看。' : cleanXText(post.text) + translation}\n原帖：${post.url}`)];
     if (!post.sensitive && options.includeImages) {
-      // 一帖最多两张缩略图，串行解码，总计最多十张，不下载视频。
-      for (const media of post.media.slice(0, 2)) {
+      // X 每帖最多四张配图；串行解码，总计最多二十张，不下载视频。
+      for (const media of post.media.slice(0, 4)) {
         options.signal?.throwIfAborted();
         if (!media.url) continue;
         try { content.push(await thumbnail(media.url, options.signal)); }
@@ -26,7 +28,7 @@ export async function xCardNodes(page, options = {}) {
     }
     nodes.push(node(content));
   }
-  nodes.push(node([textSegment(`X · @${page.user.username}\n${cleanXText(page.user.description, 240)}\n本页 ${page.posts.length} 条，按发布时间倒序。${page.posts.length ? '' : '该筛选条件下没有可显示的帖子。'}\n${page.next ? '发送「X下一页」查看更早的帖子。' : '没有下一页。'}\n获取时间：${page.fetchedAt}${page.partial ? '\n接口返回部分错误，本页可能不完整。' : ''}`)]));
+  nodes.push(node([textSegment(`X · @${page.user.username}\n${cleanXText(page.user.description, 240)}\n本页 ${page.posts.length} 条，按发布时间倒序。${page.posts.length ? '' : '该筛选条件下没有可显示的帖子。'}\n${page.next ? '发送「X下一页」查看更早的帖子。' : page.partial ? '本次未读取到下一页，可稍后重新查询或查看原账号。' : '没有下一页。'}\n获取时间：${page.fetchedAt}${page.partial ? '\n本页可能不完整。' : ''}`)]));
   return nodes;
 }
 
@@ -38,6 +40,7 @@ export class XSearchManager {
     this.cache = new Map();
     this.sessions = new Map();
     this.cooldowns = new Map();
+    this.translator = new XPostTranslator(options.complete);
     this.fingerprint = JSON.stringify(this.settings());
   }
   settings() { return xSearchConfig(this.options.getConfig().xSearch); }
@@ -50,11 +53,12 @@ export class XSearchManager {
     if (fingerprint !== this.fingerprint) {
       this.active?.controller.abort();
       this.cache.clear(); this.sessions.clear(); this.cooldowns.clear();
+      this.translator.clear();
       this.fingerprint = fingerprint;
     }
     if (this.active?.chatKey && !this.options.canRun(this.active.chatKey)) this.active.controller.abort();
   }
-  async stop() { this.active?.controller.abort(); await this.task; this.cache.clear(); this.sessions.clear(); }
+  async stop() { this.active?.controller.abort(); await this.task; this.cache.clear(); this.sessions.clear(); this.translator.clear(); }
   async preview(username) {
     const result = await this.start({ username }, '', '', 'preview');
     if (result.error) throw new Error(result.error);
@@ -80,7 +84,7 @@ export class XSearchManager {
     const active = { controller, chatKey };
     this.active = active;
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(settings.timeoutSeconds * 1000)]);
-    this.task = this.run({ username, next: command.next ? session.next : '', key, chatKey, messageId, settings, signal })
+    this.task = this.run({ username, next: command.next ? session.next : '', offset: command.next ? session.offset : 0, key, chatKey, messageId, settings, signal })
       .finally(() => { if (this.active === active) this.active = null; });
     return this.task;
   }
@@ -92,15 +96,16 @@ export class XSearchManager {
       let page = this.cache.get(cacheKey);
       if (!page || Date.now() - Date.parse(page.fetchedAt) > 60000) {
         page = settings.backend === 'tokyo-browser'
-          ? await (this.options.browserRequest || fetchXBrowserPage)(username, settings, { signal })
+          ? await (this.options.browserRequest || fetchXBrowserPage)(username, settings, { next, signal })
           : await fetchXPage(username, settings, { next, signal, request: this.options.request });
         this.cache.set(cacheKey, page);
         if (this.cache.size > 30) this.cache.delete(this.cache.keys().next().value);
       }
       signal.throwIfAborted();
+      if (settings.translateChinese) page = await this.translator.translate(page, signal);
       if (!chatKey) return { page }; // 控制台预览不发送 QQ，也不下载缩略图。
       const nodes = await xCardNodes(page, { selfId: this.options.onebot.selfId,
-        includeImages: settings.includeImages, signal, thumbnail: this.options.thumbnail
+        includeImages: settings.includeImages, offset: job.offset, signal, thumbnail: this.options.thumbnail
           || (settings.backend === 'tokyo-browser' ? (url, imageSignal) => xBrowserThumbnail(url, settings, imageSignal) : undefined) });
       const ensureAllowed = () => {
         signal.throwIfAborted();
@@ -120,7 +125,7 @@ export class XSearchManager {
           if (await this.visible(chatKey, fallback?.message_id, signal) !== true) return { sendUnknown: true };
         }
       }
-      this.sessions.set(key, { username, next: page.next, at: Date.now() });
+      this.sessions.set(key, { username, next: page.next, offset: (job.offset || 0) + page.posts.length, at: Date.now() });
       if (this.sessions.size > 100) this.sessions.delete(this.sessions.keys().next().value);
       return { ok: true };
     } catch (error) {

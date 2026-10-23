@@ -598,7 +598,7 @@ export function createApp({
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const xSearch = new XSearchManager({
-    getConfig, canRun, onebot,
+    getConfig, canRun, onebot, complete: chatCompletion,
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options)
   });
   const ehentai = new EhentaiManager({
