@@ -6,6 +6,8 @@
 // automated slang research is retired, and admin.ownerUin is the sole
 // administrator configuration source.
 import * as legacy from './config-legacy.js';
+import { validateCrossChatPatch } from '../memory/cross-chat-policy.js';
+import { validateKnowledgePatch } from '../llm/knowledge-search.js';
 import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
@@ -305,6 +307,10 @@ export function updateConfig(patch) {
     patch && typeof patch === 'object' ? patch : {}
   );
   const requestedAdmin = normalizedRequestedAdmin(rawPatch, current);
+  const memoryPatch = rawPatch.memory?.__replace__ || rawPatch.memory;
+  if (memoryPatch && Object.hasOwn(memoryPatch, 'crossChat')) validateCrossChatPatch(memoryPatch.crossChat);
+  const searchPatch = rawPatch.webSearch?.__replace__ || rawPatch.webSearch;
+  if (searchPatch && Object.hasOwn(searchPatch, 'knowledge')) validateKnowledgePatch(searchPatch.knowledge);
   if (Object.hasOwn(rawPatch, 'trpg')) validateTrpgPatch(rawPatch.trpg);
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);

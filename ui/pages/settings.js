@@ -457,6 +457,14 @@ function renderSearchSection(c) {
     <h3 id="settings-search">搜索服务</h3>
     <div class="checkbox-row"><input type="checkbox" id="cfg-websearch" ${c.webSearch?.enabled !== false ? 'checked' : ''} />
       <label for="cfg-websearch">联网搜索：启用 web_search / web_fetch 工具</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-knowledge-enabled" ${c.webSearch?.knowledge?.enabled !== false ? 'checked' : ''} />
+      <label for="cfg-knowledge-enabled">百科与热点：查梗优先读百科，B站热点按需查询</label></div>
+    <div class="field-row">
+      <div class="field"><label>百科最多词条数</label><input id="cfg-knowledge-entries" type="number" min="1" max="3" value="${esc(c.webSearch?.knowledge?.maxEntries ?? 2)}" /></div>
+      <div class="field"><label>每条正文字符上限</label><input id="cfg-knowledge-chars" type="number" min="200" max="1200" value="${esc(c.webSearch?.knowledge?.summaryChars ?? 700)}" /></div>
+      <div class="field"><label>每榜热点条数</label><input id="cfg-knowledge-hot" type="number" min="3" max="10" value="${esc(c.webSearch?.knowledge?.hotLimit ?? 6)}" /></div>
+    </div>
+    <div class="hint">无需额外 Key，跟随联网搜索总开关。正文保留来源链接，百科约缓存10分钟、热点3分钟；源站不可用时可用原搜索补查，热榜不代表梗的定义。</div>
     <div class="field"><label>搜索提供方</label>
       <select id="cfg-searchprovider">
         <option value="bing" ${prov === 'bing' ? 'selected' : ''}>Bing 网页解析</option>
@@ -605,7 +613,19 @@ function renderMemorySettingsSection(c) {
       <div class="hint">改成「仅本会话」后，模型在群里只看得到这个群里观察到的印象；控制台人物记忆页仍可查全部（来源不交给模型）。</div>
     </div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-mem-hideprivate" ${vis.hidePrivateInGroup ? 'checked' : ''} />
-      <label for="cfg-mem-hideprivate">群聊里隐藏「私聊来源」的印象</label></div>`;
+      <label for="cfg-mem-hideprivate">群聊里隐藏「私聊来源」的印象</label></div>
+    <h3>跨对话认人与回忆</h3>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-recall-enabled" ${mem.crossChat?.enabled === true ? 'checked' : ''} />
+      <label for="cfg-recall-enabled">回忆本轮说话者在其他窗口的具体对话</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-recall-privacy" ${mem.crossChat?.privacy === true ? 'checked' : ''} />
+      <label for="cfg-recall-privacy">开启聊天隐私：仅记起当前窗口的内容</label></div>
+    <div class="hint">按QQ号识人，不按昵称猜测。启用回忆且关闭隐私后，可带入同一人在其他允许会话的发言与可确认的机器人回复，包括私聊；仍遵守上面的可见性限制。开启隐私会屏蔽跨窗口片段及混合来源印象、停用旧交接摘要并中断在途聊天，保留原记录；已发送到当前窗口的内容无法撤回。</div>
+    <div class="field-row">
+      <div class="field"><label>每次回忆总字符上限</label><input id="cfg-recall-chars" type="number" min="300" max="3000" value="${esc(mem.crossChat?.maxChars ?? 1200)}" /></div>
+      <div class="field"><label>每次最多片段数</label><input id="cfg-recall-messages" type="number" min="1" max="8" value="${esc(mem.crossChat?.maxMessages ?? 4)}" /></div>
+      <div class="field"><label>回看天数</label><input id="cfg-recall-days" type="number" min="1" max="90" value="${esc(mem.crossChat?.lookbackDays ?? 30)}" /></div>
+    </div>
+    <div class="hint">没有匹配就不注入；最多2位说话者、2个来源窗口，不额外调用模型整理。省Token模式进一步收紧字符上限，需要更多时每轮最多追加2次关键词检索。字符数不等于精确Token数。</div>`;
 }
 
 function renderTimeControlSection(c) {

@@ -105,6 +105,13 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'memory') {
     patch.memory = {
       ...(c.memory || {}),
+      crossChat: {
+        enabled: chk('#cfg-recall-enabled', c.memory?.crossChat?.enabled === true),
+        privacy: chk('#cfg-recall-privacy', c.memory?.crossChat?.privacy === true),
+        maxChars: clampInt(val('#cfg-recall-chars', c.memory?.crossChat?.maxChars), 300, 3000, 1200),
+        maxMessages: clampInt(val('#cfg-recall-messages', c.memory?.crossChat?.maxMessages), 1, 8, 4),
+        lookbackDays: clampInt(val('#cfg-recall-days', c.memory?.crossChat?.lookbackDays), 1, 90, 30)
+      },
       consolidateEnabled: chk('#cfg-mem-consolidate', c.memory?.consolidateEnabled !== false),
       useChatModel: chk('#cfg-mem-usechat', c.memory?.useChatModel !== false),
       provider: val('#cfg-mem-provider', c.memory?.provider || '').trim(),
@@ -552,6 +559,12 @@ async function saveConfig({ quiet = false } = {}) {
     const enteredTavilyKey = val('#cfg-tavily-key', '').trim();
     patch.webSearch = {
       ...c.webSearch,
+      knowledge: {
+        enabled: chk('#cfg-knowledge-enabled', c.webSearch?.knowledge?.enabled !== false),
+        maxEntries: clampInt(val('#cfg-knowledge-entries', c.webSearch?.knowledge?.maxEntries), 1, 3, 2),
+        summaryChars: clampInt(val('#cfg-knowledge-chars', c.webSearch?.knowledge?.summaryChars), 200, 1200, 700),
+        hotLimit: clampInt(val('#cfg-knowledge-hot', c.webSearch?.knowledge?.hotLimit), 3, 10, 6)
+      },
       enabled: chk('#cfg-websearch', c.webSearch?.enabled !== false),
       provider: val('#cfg-searchprovider', c.webSearch?.provider || 'bing'),
       searchUrl: val('#cfg-searchurl', c.webSearch?.searchUrl || 'https://cn.bing.com/search').trim() || 'https://cn.bing.com/search',

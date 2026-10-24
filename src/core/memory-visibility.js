@@ -10,7 +10,8 @@ import { getConfig } from './config.js';
 export function memoryVisibilityOf(cfg = getConfig()) {
   const v = cfg?.memory?.visibility || {};
   return {
-    mode: v.mode === 'perChat' ? 'perChat' : 'global',
+    mode: cfg.memory?.crossChat?.privacy === true || v.mode === 'perChat' ? 'perChat' : 'global',
+    ...(cfg.memory?.crossChat?.privacy === true ? { strictChat: true } : {}),
     hidePrivateInGroup: v.hidePrivateInGroup === true
   };
 }
@@ -19,6 +20,7 @@ export function memoryVisibilityOf(cfg = getConfig()) {
 export function impressionVisible(entry, chatKey, vis = memoryVisibilityOf()) {
   const sources = Array.isArray(entry?.sourceChatKeys) ? entry.sourceChatKeys.map(String) : [];
   const key = String(chatKey || '');
+  if (vis.strictChat && (!sources.length || sources.some(source => source !== key))) return false;
   if (vis.mode === 'perChat' && !sources.includes(key)) return false;
   if (vis.hidePrivateInGroup && key.startsWith('group:') && sources.some((k) => k.startsWith('private:'))) return false;
   return true;

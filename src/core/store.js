@@ -958,6 +958,39 @@ export class ChatStore {
       WHERE chat_key=? AND self=0 AND sender_id=? LIMIT 1`).get(chatKey, id));
   }
 
+  /** Bounded, indexed recall. Never scan message JSON files or return unrelated group speakers. */
+  recallPersonMessages(userId, options = {}) {
+    const { currentChat, since, until, query = '', limit = 4 } = options;
+    const sourceAllowed = options.sourceAllowed;
+    if (!/^\d{1,15}$/.test(String(userId)) || typeof sourceAllowed !== 'function') return [];
+    const cap = Math.min(8, Math.max(1, Number(limit) || 4));
+    const candidates = this.db.prepare(`SELECT chat_key AS chatKey,id,mid,ts,substr(text,1,1000) AS text
+      FROM messages WHERE self=0 AND sender_id=? AND chat_key!=? AND ts BETWEEN ? AND ?
+        AND event_kind='message' ORDER BY ts DESC LIMIT 120`)
+      .all(String(userId), currentChat, since, until);
+    const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 4);
+    const rows = []; const seen = new Set();
+    for (const row of candidates) {
+      if (!sourceAllowed(row.chatKey) || !row.text.trim()) continue;
+      // In a group, only replies explicitly targeted at this QQ number qualify.
+      const reply = this.db.prepare(`SELECT chat_key AS chatKey,id,ts,substr(text,1,1000) AS text
+        FROM messages WHERE chat_key=? AND self=1 AND event_kind='message'
+          AND ts>=? AND ts<=? AND (?=1 OR target_user_id=?)
+          AND NOT EXISTS (SELECT 1 FROM messages AS next WHERE next.chat_key=? AND next.self=0
+            AND next.sender_id=? AND next.ts>? AND next.ts<messages.ts)
+        ORDER BY ts,id LIMIT 1`).get(row.chatKey, row.ts, Math.min(until, row.ts + 300000),
+          row.chatKey === `private:${userId}` ? 1 : 0, String(userId), row.chatKey, String(userId), row.ts);
+      if (terms.length && !terms.every(term => `${row.text} ${reply?.text || ''}`.toLowerCase().includes(term))) continue;
+      for (const item of [{ ...row, self: false }, ...(reply ? [{ ...reply, self: true }] : [])]) {
+        const key = `${item.chatKey}:${item.id}`;
+        if (seen.has(key)) continue;
+        rows.push(item); seen.add(key);
+        if (rows.length >= cap) return rows;
+      }
+    }
+    return rows;
+  }
+
   /** 实验身份库启用时才调用：为跨会话 QQ 查询创建索引。 */
   ensureIdentityLookupIndex() {
     this.db.exec(`CREATE INDEX IF NOT EXISTS messages_sender_time
