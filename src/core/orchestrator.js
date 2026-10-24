@@ -109,6 +109,9 @@ function proactiveWindowState(raw, now) {
 import { safeSlice } from './util.js';
 import { PrivateProactive } from './private-proactive.js';
 import { canRun } from './access.js';
+import { recallAvailable } from '../memory/cross-chat-recall.js';
+import { recallPolicyKey } from '../memory/cross-chat-policy.js';
+import { knowledgeSettings } from '../llm/knowledge-search.js';
 import { assertTimeAllowed, isTimeActive, TimeControlError, watchTimeWindow, withTimeScope } from './time-gate.js';
 import { vendorOfConfig, vendorOfBaseUrl } from '../pricing/model-prices.js';
 import { budgetStatus } from './budget.js';
@@ -1780,6 +1783,8 @@ export class Orchestrator {
       if (!ttsConfigured(cfg) && d.name === 'send_voice') return false;
       if (cfg.reminders?.enabled === false && d.name === 'remind') return false;
       if (!searchEnabled && (d.name === 'web_search' || d.name === 'web_fetch')) return false;
+      if (['meme_lookup', 'hot_topics'].includes(d.name) && !knowledgeSettings(cfg).enabled) return false;
+      if (d.name === 'recall_conversations' && !recallAvailable(cfg, chatKey)) return false;
       if (!selfWakeEnabled && d.name === 'schedule_wake') return false;
       // ASR 按量计费：开关关掉或没配 key 就不注入，避免模型调用必失败；也防误配置导致意外计费
       if (!asrEnabled && d.name === 'get_message_audio') return false;
@@ -1848,6 +1853,7 @@ export class Orchestrator {
       .update(systemPrompt)
       .update('\0')
       .update(JSON.stringify(openAiTools))
+      .update(recallPolicyKey(cfg))
       .digest('hex');
 
     let priorProviderMessages = [];
@@ -1977,6 +1983,7 @@ export class Orchestrator {
 
     const ctx = {
       chatKey, kind, chatId,
+      recallPolicyKey: recallPolicyKey(cfg),
       triggerEntries,
       selfId: this.onebot.selfId,
       selfNickname,

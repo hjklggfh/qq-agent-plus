@@ -63,7 +63,7 @@ function loadPage() {
     const raw = fs.readFileSync(path.join(UI, file), 'utf8');
     new vm.Script(toClassicScript(raw, file), { filename: `ui/${file}` }).runInContext(ctx);
   }
-  return { window, fetchLog, errors };
+  return { window, fetchLog, errors, ctx };
 }
 
 test('真实 DOM 冒烟：加载全部脚本、主导航切换入口不抛', { skip: SKIP }, async () => {
@@ -369,6 +369,40 @@ test('外观系统可即时切换、保存并恢复默认', { skip: SKIP }, asyn
     assert.equal(doc.documentElement.dataset.theme, 'dark');
     assert.equal(doc.documentElement.dataset.trail, 'off');
     assert.deepEqual(errors, []);
+  } finally { window.happyDOM?.abort?.(); }
+});
+
+test('记忆和搜索设置展示实际开关及预算，保存包含独立配置', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const cfg = { api: {}, memory: { crossChat: { enabled: true, privacy: true, maxChars: 600, maxMessages: 2, lookbackDays: 7 } },
+      webSearch: { knowledge: { enabled: false, summaryChars: 500, maxEntries: 1, hotLimit: 3 } } };
+    const container = window.document.createElement('div');
+    window.document.body.append(container);
+    container.innerHTML = window.renderMemorySettingsSection(cfg) + window.renderSearchSection(cfg);
+    assert.equal(container.querySelector('#cfg-recall-enabled').checked, true);
+    assert.equal(container.querySelector('#cfg-recall-privacy').checked, true);
+    assert.equal(container.querySelector('#cfg-recall-chars').value, '600');
+    assert.equal(container.querySelector('#cfg-knowledge-enabled').checked, false);
+    assert.equal(container.querySelector('#cfg-knowledge-chars').value, '500');
+    assert.ok(container.textContent.includes('已发送到当前窗口的内容无法撤回'));
+    const patches = [];
+    window.fetch = async (_url, options = {}) => {
+      if (options.method === 'POST') patches.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({ config: cfg }) };
+    };
+    window.__recallConfig = cfg;
+    vm.runInContext('state.config = __recallConfig; state.settingsSection = "memory";', ctx);
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches[0].memory.crossChat.privacy, true);
+    assert.equal(patches[0].memory.crossChat.maxChars, 600);
+    assert.equal(Object.hasOwn(patches[0], 'webSearch'), false);
+    vm.runInContext('state.config = __recallConfig; state.settingsSection = "search";', ctx);
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches[1].webSearch.knowledge.enabled, false);
+    assert.equal(patches[1].webSearch.knowledge.summaryChars, 500);
+    assert.equal(Object.hasOwn(patches[1], 'memory'), false);
   } finally { window.happyDOM?.abort?.(); }
 });
 

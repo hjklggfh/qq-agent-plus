@@ -15,6 +15,9 @@
 
 ## 功能说明
 
+- [CROSS-CHAT-RECALL.md](CROSS-CHAT-RECALL.md)：同QQ号跨窗口具体对话回忆、聊天隐私开关及Token预算。
+- [KNOWLEDGE-SEARCH.md](KNOWLEDGE-SEARCH.md)：梗百科正文与B站热点查询、来源、缓存及搜索回退。
+
 - [DAILY-REPORT.md](DAILY-REPORT.md)：每晚私聊管理员的当日 Token、费用和服务器状态报告。
 
 | 文档 | 说明 |

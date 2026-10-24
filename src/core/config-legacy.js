@@ -169,6 +169,7 @@ export const DEFAULT_CONFIG = {
   // 联网搜索（默认 Bing 网页解析，无需 key；可选 DeepSeek/智谱/博查/百度/秘塔）
   webSearch: {
     enabled: true,
+    knowledge: { enabled: true, maxEntries: 2, summaryChars: 700, hotLimit: 6 },
     searchUrl: 'https://cn.bing.com/search',
     maxResults: 6,
     // 可选：'bing' | 'deepseek' | 'zhipu' | 'bocha' | 'baidu' | 'metaso' | 'doubao' | 'tavily' | 'aggregate'
@@ -634,6 +635,7 @@ export const DEFAULT_CONFIG = {
   blocklist: {},
   // 记忆自动整理：条数超阈值且距上次超过冷却时间时，在运行结束后后台合并/去重/删过时
   memory: {
+    crossChat: { enabled: false, privacy: false, maxChars: 1200, maxMessages: 4, lookbackDays: 30 },
     consolidateEnabled: true,
     consolidateMinIntervalMs: 21600000,  // 默认 6 小时
     handoffEnabled: true,

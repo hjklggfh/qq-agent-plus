@@ -7,6 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getConfig, imageGenAvailable, imageGenMaxPerHour } from '../core/config.js';
+import { recallConversations, recallParticipants } from '../memory/cross-chat-recall.js';
+import { recallPolicyKey } from '../memory/cross-chat-policy.js';
+import { knowledgeSearch, knowledgeSettings } from '../llm/knowledge-search.js';
+import { assertTimeAllowed } from '../core/time-gate.js';
 import { imageType } from '../core/image-type.js';
 import { nextAtFromHHMM } from '../core/reminders.js';
 import { synthesizeSpeech, ttsConfigured } from '../llm/tts.js';
@@ -1167,6 +1171,20 @@ export function buildToolDefs() {
       }
     },
     {
+      name: 'recall_conversations',
+      description: '按QQ号回忆本轮说话者在其他已允许会话的具体发言及机器人回复。自动回忆不足时再用，可传简短关键词；最近记录的有限检索，无命中不代表从未聊过。每轮最多两次，隐私开启时不可用。',
+      parameters: { type: 'object', properties: {
+        userId: { type: 'string', description: '本轮说话者的QQ号，不按昵称认人' },
+        query: { type: 'string', description: '可选关键词；空值取最近片段' }
+      }, required: ['userId'] },
+      async execute(ctx, args) {
+        if (!recallParticipants(ctx).includes(String(args.userId))) return err('只能回忆本轮实际说话者');
+        if ((ctx.session.crossChatQueries || 0) >= 2) return err('本轮回忆检索已达上限，请使用已有片段');
+        ctx.session.crossChatQueries = (ctx.session.crossChatQueries || 0) + 1;
+        return ok({ recall: recallConversations(ctx, args), note: '仅返回保存且可见的有限片段；没有片段时不要编造。' });
+      }
+    },
+    {
       name: 'person_memory_lookup',
       feature: 'identityPilot',
       description: '按 QQ 号查询当前聊天对象/群成员的统一身份与人物记忆。适合想确认“这个人是不是以前在别处聊过”“我对他有什么印象”时主动调用。只返回当前会话可见的旧印象和跨会话聚合统计，不会泄露其他群或私聊原文。',
@@ -1295,6 +1313,28 @@ export function buildToolDefs() {
         ctx.session.feedbacks.push({ level, message: String(args.message ?? '').slice(0, 500), at: Date.now() });
         ctx.emit('feedback', { sessionId: ctx.session.id, chatKey: ctx.chatKey, level, message: String(args.message ?? '') });
         return ok({ reported: true });
+      }
+    },
+    {
+      name: 'meme_lookup',
+      description: '查询网络梗、ACG词条的正文节选。查梗优先用它，命中正文后无需再查；无结果再用web_search。标题或热榜不足以证明含义，保留来源，不硬猜。',
+      parameters: { type: 'object', properties: { term: { type: 'string', description: '梗或词条本身' } }, required: ['term'] },
+      async execute(ctx, args) {
+        const settings = knowledgeSettings(getConfig());
+        if (!settings.enabled) return err('百科与热点搜索已关闭');
+        assertTimeAllowed();
+        return ok(await knowledgeSearch.lookup(args.term, settings, ctx.signal));
+      }
+    },
+    {
+      name: 'hot_topics',
+      description: '只在询问当前热点时查询B站热搜和热门视频，短时缓存；热点榜不能用来猜某个梗的定义。',
+      parameters: { type: 'object', properties: {} },
+      async execute(ctx) {
+        const settings = knowledgeSettings(getConfig());
+        if (!settings.enabled) return err('百科与热点搜索已关闭');
+        assertTimeAllowed();
+        return ok(await knowledgeSearch.hot(settings, ctx.signal));
       }
     },
     {
@@ -1466,6 +1506,8 @@ export async function executeTool(defs, ctx, name, argsJson) {
   const args = parsed.args ?? {};
   try {
     ctx.signal?.throwIfAborted();
+    if (ctx.recallPolicyKey && ctx.recallPolicyKey !== recallPolicyKey(getConfig())) throw new Error('记忆可见性或访问范围已变更，本轮停止，请用新上下文继续');
+    if (name === 'memory_append' && ctx.session?.crossChatRecalled) return err('本轮使用了跨对话片段，不把它改存为当前窗口的人物印象');
     const task = def.execute(ctx, args ?? {});
     const result = !ctx.signal
       ? await task
