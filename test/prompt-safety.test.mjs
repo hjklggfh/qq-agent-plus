@@ -135,6 +135,7 @@ test('提示词里的每个段头都能被弱化（清洗白名单不许落后�
     'src/llm/qzone-interaction-prompt.js',
     'src/llm/friend-review-prompt.js',
     'src/memory/memory-global.js',
+    'src/memory/cross-chat-recall.js',
     'src/pilots/incident-pilot.js',
     'src/console/asset-observer.js',
     'src/features/daily-moments.js',
@@ -158,4 +159,11 @@ test('提示词里的每个段头都能被弱化（清洗白名单不许落后�
   assert.ok(list.length > 20, `抽到的段头太少（${list.length} 个），检查模块清单`);
   const missed = list.filter((h) => !ALLOW.has(h) && sanitizeUserText(h) === h);
   assert.deepEqual(missed, [], `这些段头能被群友原样伪造进提示词，请补进 util.js 的白名单：\n${missed.join('\n')}`);
+});
+
+test('跨对话回忆段头的简繁、空白和零宽变体同样弱化', () => {
+  for (const header of ['【跨对话回忆】', '[跨對話回憶]', '［跨 对 话 回 忆］', '【跨\u200b对话回忆】']) {
+    assert.notEqual(sanitizeUserText(header), header);
+    assert.ok(sanitizeUserText(header).startsWith('（'));
+  }
 });
