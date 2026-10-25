@@ -35,6 +35,7 @@ import { renderImageSearchSection, bindImageSearchSection } from './image-search
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
 import { renderXSearchSection, bindXSearchSection } from './x-search.js';
 import { renderDailyReportSection, bindDailyReportSection } from './daily-report.js';
+import { renderRecallControls, bindRecallControls } from './cross-chat-recall.js';
 import { FEATURE_CATALOG, FEATURE_SECTIONS } from '../core/feature-catalog.js';
 import { renderFeatureCenter, bindFeatureCenter, loadFeatureCenter } from './feature-center.js';
 import { renderEhentaiSection, bindEhentaiSection } from './ehentai.js';
@@ -129,6 +130,7 @@ function renderSettingsImpl() {
   }
   bindSettingsEvents(c);
   bindCrossSectionControls();
+  if (state.settingsSection === 'memory') bindRecallControls();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'x-search') bindXSearchSection();
@@ -625,7 +627,8 @@ function renderMemorySettingsSection(c) {
       <div class="field"><label>每次最多片段数</label><input id="cfg-recall-messages" type="number" min="1" max="8" value="${esc(mem.crossChat?.maxMessages ?? 4)}" /></div>
       <div class="field"><label>回看天数</label><input id="cfg-recall-days" type="number" min="1" max="90" value="${esc(mem.crossChat?.lookbackDays ?? 30)}" /></div>
     </div>
-    <div class="hint">没有匹配就不注入；最多2位说话者、2个来源窗口，不额外调用模型整理。省Token模式进一步收紧字符上限，需要更多时每轮最多追加2次关键词检索。字符数不等于精确Token数。</div>`;
+    <div class="hint">按话题和时间线索筛选；没有匹配就不注入。最多2位说话者、2个来源窗口，不额外调用模型整理。续接上下文保留旧片段时自动去重；每轮最多追加2次检索。字符数不等于精确Token数。</div>
+    ${renderRecallControls(c)}`;
 }
 
 function renderTimeControlSection(c) {

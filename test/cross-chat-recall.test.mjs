@@ -23,7 +23,7 @@ function config(patch = {}) {
   return cfg;
 }
 const ctx = () => ({ chatKey: 'group:20000', kind: 'group', chatId: '20000', store,
-  session: {}, triggerEntries: [{ senderId: '12345', text: '昨天说的那个', id: 100 }],
+  session: {}, triggerEntries: [{ senderId: '12345', text: '继续聊聊', id: 100 }],
   memory: { formatForPrompt: () => '', formatHandoffForPrompt: () => '旧跨窗口摘要' } });
 store.appendIncoming('private:12345', { mid: '1', senderId: '12345', text: '下周去杭州看展', ts: now - 3000 });
 store.appendSelf('private:12345', { mid: '2', text: '我建议上午去看展', ts: now - 2000 });

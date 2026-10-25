@@ -117,6 +117,8 @@ export class SessionRegistry {
       triggerReason: s.triggerReason ?? s.contextReason ?? '',
       contextTier: s.contextTier ?? null,
       promptChars: s.promptChars ?? 0,
+      recall: s.crossChatRecall ? { chars: s.crossChatRecall.totalChars, savedChars: s.crossChatRecall.savedChars,
+        queries: s.crossChatRecall.entries?.length || 0 } : null,
       rounds: s.rounds ?? 0,
       conversationMode: s.conversationMode ?? 'legacy',
       threadId: s.threadId ?? null,

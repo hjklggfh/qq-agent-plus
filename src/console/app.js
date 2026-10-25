@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRouter } from './router.js';
 import { recallPolicyKey } from '../memory/cross-chat-policy.js';
+import { installCrossChatRoutes } from '../memory/cross-chat-routes.js';
 
 import { asrApiKey, asrAvailable, asrConfigured, asrCredentialForSlot, asrCredentialResolve, asrCredentialSlot, asrCredentialSlotOf, asrCredentials, asrEndpointHost, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, ASR_PROVIDERS, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, imageGenKeyOwnedBy, imageGenKeyResolve, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, pinImageGenKeyHost, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
@@ -3864,11 +3865,7 @@ export function createApp({
     }
     auditWrite('config.update', 'config', { req, before: auditBefore, after: next, changed: changedTopKeys(auditBefore, next) });
     store.setMaxPerChat(next.store?.maxMessagesPerChat ?? 0);
-    if (previousRecallPolicy !== recallPolicyKey(next)) {
-      // Old in-flight prompts may already contain recalled text. Cancel them before new writes.
-      for (const controller of orchestrator.controllers.values()) controller.abort(new Error('记忆可见性或访问范围已变更'));
-      for (const chatKey of store.listChats()) store.closeConversationThread(chatKey, 'memory-policy-changed');
-    }
+    enforceRecallPolicy(previousRecallPolicy);
     orchestrator.enforceTrpgState();
     let closedThreads = 0;
     imageSearch.enforce();
@@ -4605,6 +4602,15 @@ export function createApp({
     store.close();
   }
 
+  function enforceRecallPolicy(previous) {
+    if (previous === recallPolicyKey(getConfig())) return;
+    for (const controller of orchestrator.controllers.values()) controller.abort(new Error('记忆可见性或访问范围已变更'));
+    for (const chatKey of store.listChats()) store.closeConversationThread(chatKey, 'memory-policy-changed');
+  }
+  installCrossChatRoutes({
+    addRoute: (method, routePath, handler, options) => router.add(method, routePath, handler, options),
+    json, readBody, sessions, getConfig, updateConfig, policyKey: recallPolicyKey, enforcePolicy: enforceRecallPolicy, auditWrite
+  });
   installTrpgRoutes({
     addRoute: (method, routePath, handler) => router.add(method, routePath, handler),
     updateConfig,

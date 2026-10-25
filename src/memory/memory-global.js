@@ -5,6 +5,7 @@ import { todayKey, sanitizeUserText, ZONE_OFFSET_MS } from '../core/util.js';
 import { cappedByTokenSaver, tokenSaverCapsOf } from '../core/token-saver.js';
 import { GlobalPersonMemoryStore } from './global-person-memory-store.js';
 import { memoryVisibilityOf, visibleImpressions } from '../core/memory-visibility.js';
+import { recallPolicyFingerprint } from './cross-chat-policy.js';
 
 const MEMORY_DIR = path.join(DATA_DIR, 'memory');
 const chatDirName = (chatKey) => String(chatKey).replace(/[^a-z0-9_]/gi, '_');
@@ -65,10 +66,13 @@ export class MemoryStore {
   getHandoff(chatKey) {
     this.people.listSourceChats();
     const raw = readJson(handoffFile(chatKey)); if (!raw) return null;
+    const cfg = getConfig();
+    const restricted = Object.keys(cfg.memory?.crossChat?.chats || {}).length > 0 || cfg.memory?.crossChat?.excludedMessages?.length > 0;
+    if (raw.recallPolicyFingerprint ? raw.recallPolicyFingerprint !== recallPolicyFingerprint(cfg) : restricted) return null;
     const expiresAt = Number(raw.expiresAt) || 0;
     if (expiresAt && expiresAt <= Date.now()) { try { fs.rmSync(handoffFile(chatKey), { force: true }); } catch { /* 有意忽略：过期交接删失败＝文件残留，下次读取时重试 */ } return null; }
     return {
-      version: 1, topic: clean(raw.topic, 200), summary: clean(raw.summary, 1200), hypotheses: list(raw.hypotheses, 6, 300), evidence: list(raw.evidence, 8, 300),
+      version: 1, recallPolicyFingerprint: raw.recallPolicyFingerprint || '', topic: clean(raw.topic, 200), summary: clean(raw.summary, 1200), hypotheses: list(raw.hypotheses, 6, 300), evidence: list(raw.evidence, 8, 300),
       facts: list(raw.facts, 8), decisions: list(raw.decisions, 6), rejectedDirections: list(raw.rejectedDirections, 6), openQuestions: list(raw.openQuestions, 6),
       nextStep: clean(raw.nextStep, 400), participantIds: list(raw.participantIds, 16, 40), lastReply: clean(raw.lastReply, 600), sourceSessionId: clean(raw.sourceSessionId, 100),
       updatedAt: Number(raw.updatedAt) || 0, expiresAt
@@ -80,7 +84,7 @@ export class MemoryStore {
     const ttl = Math.min(10080, Math.max(5, Number(state?.ttlMinutes) || Number(getConfig().memory?.handoffTtlMinutes) || 1440));
     const pick = (key, n, chars = 240) => Array.isArray(state?.[key]) ? list(state[key], n, chars) : list(prev[key], n, chars);
     const handoff = {
-      version: 1, topic: clean(state?.topic ?? prev.topic, 200), summary: clean(state?.summary ?? meta?.summary ?? prev.summary, 1200),
+      version: 1, recallPolicyFingerprint: recallPolicyFingerprint(getConfig()), topic: clean(state?.topic ?? prev.topic, 200), summary: clean(state?.summary ?? meta?.summary ?? prev.summary, 1200),
       hypotheses: pick('hypotheses', 6, 300), evidence: pick('evidence', 8, 300), facts: pick('facts', 8), decisions: pick('decisions', 6),
       rejectedDirections: pick('rejectedDirections', 6), openQuestions: pick('openQuestions', 6), nextStep: clean(state?.nextStep ?? prev.nextStep, 400),
       participantIds: list([...(prev.participantIds || []), ...(state?.participantIds || []), ...(meta?.participantIds || [])], 16, 40),

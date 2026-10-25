@@ -13,6 +13,7 @@
 import { asrAvailable, getConfig, imageGenAvailable } from '../core/config.js';
 import { visionEnabled } from './vision-scan.js';
 import { recallConversations } from '../memory/cross-chat-recall.js';
+import { privateRecallContext } from '../memory/cross-chat-policy.js';
 import { TRPG_NARRATOR_RULES } from '../features/trpg/prompt.js';
 import { cappedByTokenSaver, tokenSaverCapsOf } from '../core/token-saver.js';
 // 滑条换算放在独立模块（零依赖），避免 config.js ↔ prompt.js 循环依赖。
@@ -885,10 +886,10 @@ export function buildUserPrompt(ctx) {
   }
 
   // 工作状态靠近最新消息，避免在长历史中间被模型忽略。
-  const handoffText = !cfg.memory?.crossChat?.privacy && !ctx.trpgNarrator && typeof ctx.memory?.formatHandoffForPrompt === 'function'
+  const handoffText = !privateRecallContext(cfg, ctx.chatKey) && !ctx.trpgNarrator && typeof ctx.memory?.formatHandoffForPrompt === 'function'
     ? ctx.memory.formatHandoffForPrompt(ctx.chatKey)
     : '';
-  const checkpointText = ctx.trpgNarrator || cfg.memory?.crossChat?.privacy ? '' : formatThreadCheckpoint(ctx.threadCheckpoint);
+  const checkpointText = ctx.trpgNarrator || privateRecallContext(cfg, ctx.chatKey) ? '' : formatThreadCheckpoint(ctx.threadCheckpoint);
   const stalePrefix = staleNote ? `${staleNote}
 ` : '';
   if (ctx.conversationMode === 'lifecycle' && checkpointText) parts.push(stalePrefix + checkpointText);

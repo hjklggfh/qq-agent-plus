@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { openDatabase } from './sqlite.js';
 import { DATA_DIR } from './config.js';
 import { safeSlice } from './util.js';
+import { planRecallQuery, recallRelevance } from '../memory/cross-chat-query.js';
 
 function entry(row) {
   if (!row) return null;
@@ -962,17 +963,26 @@ export class ChatStore {
   recallPersonMessages(userId, options = {}) {
     const { currentChat, since, until, query = '', limit = 4 } = options;
     const sourceAllowed = options.sourceAllowed;
+    const messageAllowed = options.messageAllowed || (() => true);
     if (!/^\d{1,15}$/.test(String(userId)) || typeof sourceAllowed !== 'function') return [];
     const cap = Math.min(8, Math.max(1, Number(limit) || 4));
-    const candidates = this.db.prepare(`SELECT chat_key AS chatKey,id,mid,ts,substr(text,1,1000) AS text
+    const plan = options.plan || planRecallQuery(query, until);
+    const select = `SELECT chat_key AS chatKey,id,mid,ts,substr(text,1,1000) AS text
       FROM messages WHERE self=0 AND sender_id=? AND chat_key!=? AND ts BETWEEN ? AND ?
-        AND event_kind='message' ORDER BY ts DESC LIMIT 120`)
+        AND event_kind='message'`;
+    const candidates = this.db.prepare(`${select} ORDER BY ts DESC LIMIT 120`)
       .all(String(userId), currentChat, since, until);
-    const terms = String(query).toLowerCase().split(/\s+/).filter(Boolean).slice(0, 4);
-    const rows = []; const seen = new Set();
+    // Additional keyword matches can reach past the newest 120 rows, still within the indexed date range.
+    const terms = plan.terms.slice(0, 8);
+    if (terms.length) candidates.push(...this.db.prepare(`${select} AND (${terms.map(() => 'instr(lower(text),?)>0').join(' OR ')}) ORDER BY ts DESC LIMIT 120`)
+      .all(String(userId), currentChat, since, until, ...terms));
+    const ranked = [];
+    const anchorKeys = new Set();
     for (const row of candidates) {
-      if (!sourceAllowed(row.chatKey) || !row.text.trim()) continue;
-      // In a group, only replies explicitly targeted at this QQ number qualify.
+      const anchor = `${row.chatKey}:${row.id}`;
+      if (anchorKeys.has(anchor) || !sourceAllowed(row.chatKey) || !messageAllowed(row) || !row.text.trim()) continue;
+      anchorKeys.add(anchor);
+      if (plan.sourceKind && !row.chatKey.startsWith(`${plan.sourceKind}:`)) continue;
       const reply = this.db.prepare(`SELECT chat_key AS chatKey,id,ts,substr(text,1,1000) AS text
         FROM messages WHERE chat_key=? AND self=1 AND event_kind='message'
           AND ts>=? AND ts<=? AND (?=1 OR target_user_id=?)
@@ -980,11 +990,18 @@ export class ChatStore {
             AND next.sender_id=? AND next.ts>? AND next.ts<messages.ts)
         ORDER BY ts,id LIMIT 1`).get(row.chatKey, row.ts, Math.min(until, row.ts + 300000),
           row.chatKey === `private:${userId}` ? 1 : 0, String(userId), row.chatKey, String(userId), row.ts);
-      if (terms.length && !terms.every(term => `${row.text} ${reply?.text || ''}`.toLowerCase().includes(term))) continue;
+      const allowedReply = reply && messageAllowed(reply) ? reply : null;
+      const score = recallRelevance(`${row.text} ${allowedReply?.text || ''}`, plan);
+      if (terms.length && !score) continue;
+      ranked.push({ row, reply: allowedReply, score });
+    }
+    ranked.sort((a, b) => b.score - a.score || b.row.ts - a.row.ts);
+    const rows = []; const seen = new Set();
+    for (const { row, reply, score } of ranked) {
       for (const item of [{ ...row, self: false }, ...(reply ? [{ ...reply, self: true }] : [])]) {
         const key = `${item.chatKey}:${item.id}`;
         if (seen.has(key)) continue;
-        rows.push(item); seen.add(key);
+        rows.push({ ...item, score, anchorTs: row.ts }); seen.add(key);
         if (rows.length >= cap) return rows;
       }
     }

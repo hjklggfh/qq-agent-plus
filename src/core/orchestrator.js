@@ -1517,7 +1517,8 @@ export class Orchestrator {
           rolloverArmedMs: conversation?.rolloverArmedMs,
           acceptedAt: session.startedAt
         },
-        checkpointState,
+        checkpointState: { ...checkpointState,
+          recallKeys: [...new Set([...(session.priorRecallKeys || []), ...(session.crossChatRecall?.keys || [])])].slice(-512) },
         sourceMessageIds: (triggerEntries || []).map((m) => m.id),
         messages: runResult?.providerTranscriptDelta || [],
         maxTranscriptChars: conversation?.maxTranscriptChars,
@@ -1888,10 +1889,15 @@ export class Orchestrator {
       ? this.store.latestThreadCheckpoint?.(chatKey)
       : null;
     const lifecycleContinuation = priorProviderMessages.length > 0;
+    // Keys are committed in the same transaction as the actual provider transcript.
+    const priorRecallKeys = lifecycleContinuation && Array.isArray(threadCheckpoint?.state?.recallKeys)
+      ? threadCheckpoint.state.recallKeys : [];
+    session.priorRecallKeys = priorRecallKeys;
 
     // 首轮带完整上下文；生命周期后续轮只附加增量，旧消息保持字节级稳定以命中 DeepSeek 前缀缓存。
     const userPrompt = buildUserPrompt({
       chatKey, kind, chatId, chatName,
+      priorRecallKeys,
       triggerEntries,
       store: this.store,
       memory: this.memory,
@@ -1983,6 +1989,7 @@ export class Orchestrator {
 
     const ctx = {
       chatKey, kind, chatId,
+      priorRecallKeys,
       recallPolicyKey: recallPolicyKey(cfg),
       triggerEntries,
       selfId: this.onebot.selfId,

@@ -406,6 +406,52 @@ test('记忆和搜索设置展示实际开关及预算，保存包含独立配�
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('回忆窗口规则可独立保存；来源片段按文字展示且纠错可确认与恢复', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const cfg = { api: {}, memory: { crossChat: { enabled: true, privacy: false,
+      chats: { 'private:12345': { allowSource: false } }, excludedMessages: [] } } };
+    const container = window.document.createElement('div'); window.document.body.append(container);
+    container.innerHTML = window.renderMemorySettingsSection(cfg);
+    const patches = []; let exclusions = [];
+    window.fetch = async (url, options = {}) => {
+      let data = {};
+      if (url === '/api/recall-traces') data = { sessions: [{ id: 'recall-1', chatKey: 'group:20000', startedAt: 1000, chars: 120, savedChars: 60 }], excludedMessages: exclusions };
+      if (url === '/api/recall-traces/recall-1') data = { chatKey: 'group:20000', startedAt: 1000,
+        recall: { entries: [{ mode: 'auto', query: '游戏', injectedChars: 120, skipped: 0,
+          fragments: [{ chatKey: 'private:12345', id: 1, ts: 1000, userId: '12345', text: '<img src=x onerror=alert(1)>', reused: false }] }] } };
+      if (url === '/api/config' && options.method === 'POST') { patches.push(JSON.parse(options.body)); data = { config: cfg }; }
+      if (url === '/api/recall-exclusions') {
+        const body = JSON.parse(options.body); patches.push(body);
+        exclusions = body.action === 'restore' ? [] : [{ chatKey: body.chatKey, id: body.id, reason: body.reason }];
+        data = { ok: true, excludedMessages: exclusions };
+      }
+      return { ok: true, status: 200, json: async () => data };
+    };
+    window.__recallConfig = cfg;
+    vm.runInContext('state.config = __recallConfig; state.settingsSection = "memory";', ctx);
+    window.bindRecallControls(); await settle(20);
+    const doc = window.document;
+    doc.querySelector('#recall-rule-id').value = '20000'; doc.querySelector('#recall-rule-add').click();
+    const rule = doc.querySelector('[data-chatkey="group:20000"]');
+    rule.querySelector('[data-rule="privacy"]').checked = true;
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches[0].memory.crossChat.chats.__replace__['group:20000'].privacy, true);
+    assert.equal(patches[0].memory.crossChat.chats.__replace__['private:12345'].allowSource, false);
+    doc.querySelector('[data-recall-detail]').click(); await settle(20);
+    assert.equal(Boolean(doc.querySelector('#recall-trace-detail img')), false);
+    assert.ok(doc.querySelector('#recall-trace-detail').textContent.includes('<img'));
+    doc.querySelector('[data-recall-exclude="incorrect"]').click();
+    doc.querySelector('[data-confirm-accept]').click(); await settle(20);
+    assert.equal(patches[1].confirm, true); assert.equal(patches[1].reason, 'incorrect');
+    assert.ok(doc.querySelector('#recall-exclusions').textContent.includes('记忆纠错'));
+    doc.querySelector('[data-recall-restore]').click(); doc.querySelector('[data-confirm-accept]').click(); await settle(20);
+    assert.equal(patches[2].action, 'restore');
+    assert.ok(doc.querySelector('#recall-exclusions').textContent.includes('暂无排除项'));
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('真实 DOM 冒烟：api() 走 fetch 桩', { skip: SKIP }, async () => {
   const { window, fetchLog } = loadPage();
   await settle();

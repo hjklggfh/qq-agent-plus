@@ -24,6 +24,7 @@ import { saveImageSearchSettings } from './image-search.js';
 import { savePixivSettings } from './pixiv.js';
 import { saveXSearchSettings } from './x-search.js';
 import { saveDailyReportSettings } from './daily-report.js';
+import { readRecallRules } from './cross-chat-recall.js';
 import { saveEhentaiSettings } from './ehentai.js';
 import { saveHaiguiTangSettings } from './haigui-tang.js';
 async function saveConfig({ quiet = false } = {}) {
@@ -106,6 +107,8 @@ async function saveConfig({ quiet = false } = {}) {
     patch.memory = {
       ...(c.memory || {}),
       crossChat: {
+        ...(c.memory?.crossChat || {}),
+        chats: { __replace__: readRecallRules(c.memory?.crossChat?.chats || {}) },
         enabled: chk('#cfg-recall-enabled', c.memory?.crossChat?.enabled === true),
         privacy: chk('#cfg-recall-privacy', c.memory?.crossChat?.privacy === true),
         maxChars: clampInt(val('#cfg-recall-chars', c.memory?.crossChat?.maxChars), 300, 3000, 1200),
