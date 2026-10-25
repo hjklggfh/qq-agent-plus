@@ -472,7 +472,7 @@ export class OneBotClient {
     return this.sendSegments(kind, id, segments, signal);
   }
 
-  async sendSticker(kind, id, imageUrl, { replyToMessageId = null, atUserId = null, signal } = {}) {
+  async sendSticker(kind, id, imageUrl, { replyToMessageId = null, atUserId = null, text = '', signal } = {}) {
     const segments = [];
     if (replyToMessageId !== undefined && replyToMessageId !== null && String(replyToMessageId).trim() !== '') {
       const rid = String(replyToMessageId).trim();
@@ -495,6 +495,7 @@ export class OneBotClient {
       segments.push({ type: 'at', data: { qq: at } });
     }
     segments.push({ type: 'image', data: { file: String(imageUrl) } });
+    if (String(text || '').trim()) segments.push({ type: 'text', data: { text: escapeCqText(`\n${String(text).trim()}`) } });
     return this.sendSegments(kind, id, segments, signal, { timeoutMs: MEDIA_TIMEOUT_MS });
   }
 

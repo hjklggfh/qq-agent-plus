@@ -411,7 +411,7 @@ export class SendQueue {
    * ⚠️ payload 里**绝不能放 base64 本体**：它会被 beginSend 写进 outbox 表，几 MB 的图
    * 直接把数据目录写胖。所以这里只记体积与来源类型。
    */
-  image(chatKey, { url, bytes = 0, label = '' } = {}, options = {}) {
+  image(chatKey, { url, bytes = 0, label = '', text: caption = '' } = {}, options = {}) {
     const [kind, id] = String(chatKey).split(':');
     const chain = this.#chain(chatKey);
     return chain(async () => {
@@ -420,15 +420,17 @@ export class SendQueue {
       if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
       this.#checkRate(chatKey);
       await sleep(randInt(600, 1500)); // 发图前真人式的短暂停顿
-      const data = await this.#deliver(chatKey, options, { type: 'image', bytes: Number(bytes) || 0 }, () => this.onebot.sendSticker(kind, id, url, {
+      const detail = String(caption || '').trim().slice(0, 6000);
+      const data = await this.#deliver(chatKey, options, { type: 'image', bytes: Number(bytes) || 0, ...(detail ? { text: detail } : {}) }, () => this.onebot.sendSticker(kind, id, url, {
         replyToMessageId: options.replyToMessageId ?? null,
         atUserId: options.atUserId ?? null,
+        text: detail,
         signal: options.signal
       }));
       const ts = Date.now();
       let targetUserId = this.#replyTarget(chatKey, options);
       if (!targetUserId && kind === 'private') targetUserId = String(id);
-      const text = `[图片${label ? `:${String(label).slice(0, 40)}` : ''}]`;
+      const text = `[图片${label ? `:${String(label).slice(0, 40)}` : ''}]${detail ? `\n${detail}` : ''}`;
       this.#afterSent(() => {
         this.store.appendSelf(chatKey, {
         text,

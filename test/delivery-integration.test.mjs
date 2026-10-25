@@ -411,18 +411,22 @@ it('image()：按 image 段发出、留档写 [图片] 而不是表情包，且 
 
   // 用一段足够长的假 base64：短了就算写进 outbox 也看不出来
   const body = Buffer.alloc(4096, 7).toString('base64');
-  const out = await sender.image('group:1', { url: `base64://${body}`, bytes: 4096, label: '初音ミク' });
+  const detail = '视频标题\nhttps://www.bilibili.com/video/BV1iFnb6tE5V\n播放：0';
+  const out = await sender.image('group:1', { url: `base64://${body}`, bytes: 4096, label: '初音ミク', text: detail }, { replyToMessageId: '-42' });
   assert.equal(out.message_id, 77);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].kind, 'group');
   assert.equal(calls[0].id, '1');
   assert.equal(calls[0].url, `base64://${body}`, '原样把 url 交给 onebot（它负责拼 image 段）');
+  assert.equal(calls[0].opts.replyToMessageId, '-42');
+  assert.equal(calls[0].opts.text, detail);
 
   // 留档：必须是"图片"。写成 [表情包:…] 会让模型自己读到的"我发过什么"与 outbox 记账都失真
   const selfTexts = store.recent('group:1', { limit: 5 }).filter((m) => m.self).map((m) => m.text);
   assert.ok(selfTexts.some((x) => x.startsWith('[图片') && x.includes('初音ミク')),
     `留档应含 [图片:初音ミク]，实际 ${JSON.stringify(selfTexts)}`);
   assert.equal(selfTexts.some((x) => x.includes('表情包')), false, '图片不该被记成表情包');
+  assert.equal(selfTexts.some((x) => x.includes(detail)), true, '图片附带的详情必须留档');
 
   // ⚠️ outbox 的 payload 里绝不能出现 base64 本体：那是会被 beginSend 写进 sqlite 的字段，
   //    几 MB 的图会把数据目录写胖（这里直接查表，不靠推断）。

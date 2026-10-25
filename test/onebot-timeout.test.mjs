@@ -41,3 +41,13 @@ test('文本与表情用 15 秒超时，语音与图片（表情包）用 60 秒
   assert.equal(seen[2].segments[0].type, 'record');
   assert.equal(seen[3].segments[0].type, 'image');
 });
+
+test('引用+封面+文字详情组成一条消息，文字不解析为CQ段', async () => {
+  const { bot, seen } = clientWithRecorder();
+  await bot.sendSticker('private', 123, 'base64://AAAA', { replyToMessageId: '-42', text: '标题[CQ:at,qq=all]\nhttps://www.bilibili.com/video/BV1iFnb6tE5V' });
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0].segments.map(s => s.type), ['reply', 'image', 'text']);
+  assert.equal(seen[0].segments[0].data.id, '-42');
+  assert.equal(seen[0].segments[2].data.text.startsWith('\n标题[CQ：at'), true);
+  assert.equal(seen[0].timeoutMs, 60000);
+});

@@ -588,7 +588,7 @@ export function createApp({
     dataDir: DATA_DIR,
     getConfig,
     sender,
-    log: moduleLog('bilibili')
+    log: { info: (...args) => log(...args), warn: moduleLog('bilibili') }
   });
   const imageSearch = new ImageSearchManager({
     dataDir: DATA_DIR, getConfig, canRun, onebot, store,
@@ -1331,7 +1331,7 @@ export function createApp({
       }
     }
     // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
-    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, segments, isSelf });
+    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, segments, messageId: event.message_id, isSelf });
     if (
       !isSelf
       && (

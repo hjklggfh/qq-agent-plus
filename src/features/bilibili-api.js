@@ -67,6 +67,17 @@ async function getJson(url, { headers = {}, timeoutMs = 15000 } = {}) {
   return { ok: true, data: payload };
 }
 
+// 元信息/播放接口也可能要求匿名指纹。只对只读请求刷新一次，不使用登录凭据。
+async function getVideoJson(url, { timeoutMs = 15000 } = {}) {
+  let cookie = await ensureFingerprint({ timeoutMs });
+  let result = await getJson(url, { headers: cookie ? { Cookie: cookie } : {}, timeoutMs });
+  if (!result.ok && (result.status === 412 || result.code === -412)) {
+    cookie = await ensureFingerprint({ timeoutMs, force: true });
+    result = await getJson(url, { headers: cookie ? { Cookie: cookie } : {}, timeoutMs });
+  }
+  return result;
+}
+
 // ── 链接解析 ──────────────────────────────────────────────────────────────
 
 /** BV 号形态（BV + 10 位 base58）。单独抽出来，避免两处正则不一致。 */
@@ -203,7 +214,7 @@ export async function fetchVideoInfo(link, { timeoutMs = 15000 } = {}) {
     // 番剧：走 pgc 接口拿 ep 对应的 avid/cid，再复用 video 接口的元信息形态
     const epId = l.epId;
     if (!epId) return { ok: false, error: '番剧链接暂只支持 /ep 形式（ss 形式请点进具体一集）' };
-    const r = await getJson(`${API}/pgc/view/web/season?ep_id=${epId}`, { timeoutMs });
+    const r = await getVideoJson(`${API}/pgc/view/web/season?ep_id=${epId}`, { timeoutMs });
     if (!r.ok) return { ok: false, error: `番剧信息获取失败：${r.error}` };
     const ep = (r.data?.episodes || []).find((e) => Number(e.ep_id) === Number(epId)) || r.data?.episodes?.[0];
     if (!ep) return { ok: false, error: '番剧剧集信息为空' };
@@ -226,7 +237,7 @@ export async function fetchVideoInfo(link, { timeoutMs = 15000 } = {}) {
 
   const q = l?.bvid ? `bvid=${encodeURIComponent(l.bvid)}` : (l?.aid ? `aid=${l.aid}` : '');
   if (!q) return { ok: false, error: '无法识别的视频标识（既没有 BV 号也没有 av 号）' };
-  const r = await getJson(`${API}/x/web-interface/view?${q}`, { timeoutMs });
+  const r = await getVideoJson(`${API}/x/web-interface/view?${q}`, { timeoutMs });
   if (!r.ok) {
     const hint = /啥都木有|-404/.test(String(r.error)) ? '（视频可能已删除或仅会员可见）' : '';
     return { ok: false, error: `视频信息获取失败：${r.error}${hint}` };
@@ -248,7 +259,10 @@ export async function fetchVideoInfo(link, { timeoutMs = 15000 } = {}) {
     bvid, aid: Number(d.aid || l?.aid) || 0,
     cid: Number(pg?.cid ?? d.cid) || 0,
     page: wantPage, pageTotal: pages.length || 1,
-    pageTitle: String(pg?.part || '').trim()
+    pageTitle: String(pg?.part || '').trim(),
+    stats: Object.fromEntries(['view', 'danmaku', 'like', 'coin', 'favorite', 'reply'].map(key => [key,
+      typeof d.stat?.[key] === 'number' && Number.isFinite(d.stat[key]) && d.stat[key] >= 0 ? Math.floor(d.stat[key]) : null
+    ]))
   };
 }
 
@@ -269,7 +283,7 @@ export function qualityLabel(qn) { return QN_LABEL[Number(qn)] || `${qn}P`; }
 export async function getPlayUrl(bvid, cid, { qn = 16, timeoutMs = 15000 } = {}) {
   if (!bvid || !cid) return { ok: false, error: '缺少 bvid 或 cid' };
   const q = `bvid=${encodeURIComponent(bvid)}&cid=${cid}&qn=${qn}&fnval=1&fnver=0&fourk=0`;
-  const r = await getJson(`${API}/x/player/playurl?${q}`, { timeoutMs });
+  const r = await getVideoJson(`${API}/x/player/playurl?${q}`, { timeoutMs });
   if (!r.ok) return { ok: false, error: `取流失败：${r.error}` };
   const d = r.data || {};
   const urls = urlListOf(d?.durl?.[0]?.url);
@@ -925,4 +939,17 @@ export function shareCaption(info, { link = '' } = {}) {
   const url = link || (info?.bvid ? `https://www.bilibili.com/video/${info.bvid}` : '');
   if (url) bits.push(url);
   return bits.join('\n');
+}
+
+/** 卡片详情使用本次API数据；未知统计不填0，不调用模型补造。 */
+export function videoDetailCaption(info, { link = '' } = {}) {
+  const count = key => info.stats?.[key] == null ? '未知' : formatPlay(info.stats[key]);
+  return [
+    String(info.title || 'B站视频').replace(/\s+/g, ' ').trim().slice(0, 300),
+    link || `https://www.bilibili.com/video/${info.bvid}`,
+    `作者：${String(info.author || '未知').replace(/\s+/g, ' ').trim().slice(0, 100)}`,
+    `播放：${count('view')} | 弹幕：${count('danmaku')}`,
+    `点赞：${count('like')} | 投币：${count('coin')}`,
+    `收藏：${count('favorite')} | 评论：${count('reply')}`
+  ].join('\n');
 }
