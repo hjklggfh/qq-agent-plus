@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { getConfig, imageGenAvailable, imageGenMaxPerHour } from '../core/config.js';
 import { recallConversations, recallParticipants } from '../memory/cross-chat-recall.js';
 import { recallPolicyKey } from '../memory/cross-chat-policy.js';
+import { searchChatHistory } from '../memory/chat-history-search.js';
 import { knowledgeSearch, knowledgeSettings } from '../llm/knowledge-search.js';
 import { assertTimeAllowed } from '../core/time-gate.js';
 import { imageType } from '../core/image-type.js';
@@ -738,6 +739,19 @@ export function buildToolDefs() {
           return sendErr(error);
         }
       }
+    },
+    {
+      name: 'search_chat_history',
+      description: '用关键词查原始聊天记录。实际调用QQ历史接口分页读取并筛选，同时查询agent保存的原文；结果区分来源，给出时间、原QQ消息ID、相邻片段和覆盖范围。确认以前聊过什么、当时最终方案时先查它，不能凭印象猜结论。默认当前窗口；跨窗口仍受隐私规则和本轮说话者范围限制。QQ未提供原生全库关键词接口，每轮最多2次/共8页，没找到不表示从未发生。',
+      parameters: { type: 'object', properties: {
+        query: { type: 'string', description: '具体关键词，例如服务器 部署；不要只填“上次那个”' },
+        chatKey: { type: 'string', description: '可选，默认当前窗口。跨窗口必须是允许的group:群号或private:QQ号' },
+        since: { type: 'string', description: '可选起始日期YYYY-MM-DD（北京时间）或带时区ISO时间' },
+        until: { type: 'string', description: '可选结束日期，日期包含当天' },
+        beforeMessageId: { type: 'string', description: '继续向前翻时使用上次coverage.nextCursor，负数消息ID原样保留' },
+        pages: { type: 'integer', description: '本次最多读取几页，1~4，默认4；每页50条，仅少量相关片段进入上下文' }
+      }, required: ['query'] },
+      async execute(ctx, args) { return ok(await searchChatHistory(ctx, args)); }
     },
     {
       name: 'get_recent_messages',

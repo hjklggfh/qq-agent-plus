@@ -4,6 +4,9 @@
 本功能补充其他窗口的具体消息片段。升级默认不自动启用；启用后默认不打开聊天隐私。
 隐私关闭意味着同一人在允许群聊与私聊里的内容可以用于当前回答。
 
+需要主动按关键词查证当时的原始对话，可用新增的 `search_chat_history`；它实际读取QQ历史分页，
+并查询已保存的原文，区别于自动带入的回忆片段。范围与协议限制见 [QQ-HISTORY-SEARCH.md](QQ-HISTORY-SEARCH.md)。
+
 ```json
 { "memory": { "crossChat": {
   "enabled": true, "privacy": false, "maxChars": 1200, "maxMessages": 4, "lookbackDays": 30

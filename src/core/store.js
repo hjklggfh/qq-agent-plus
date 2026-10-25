@@ -92,6 +92,7 @@ export class ChatStore {
         PRIMARY KEY (chat_key, id), UNIQUE (chat_key, mid)
       );
       CREATE INDEX IF NOT EXISTS messages_pending ON messages(chat_key, state, available_at, id);
+      CREATE INDEX IF NOT EXISTS messages_chat_time ON messages(chat_key, ts DESC);
       CREATE TABLE IF NOT EXISTS runs (
         id TEXT PRIMARY KEY, chat_key TEXT NOT NULL, state TEXT NOT NULL,
         expires_at INTEGER NOT NULL, error TEXT
@@ -957,6 +958,41 @@ export class ChatStore {
     if (!id) return false;
     return Boolean(this.db.prepare(`SELECT 1 FROM messages
       WHERE chat_key=? AND self=0 AND sender_id=? LIMIT 1`).get(chatKey, id));
+  }
+
+  /** Explicit keyword retrieval over retained original messages, not prompt/handoff text. */
+  searchHistoryMessages(chatKey, { terms = [], since = 0, until = Date.now() } = {}) {
+    const words = terms.filter(word => typeof word === 'string' && word.length >= 2).slice(0, 8);
+    if (!words.length || !/^(group|private):\d{1,15}$/.test(chatKey)) return { rows: [], truncated: false };
+    const matches = this.db.prepare(`SELECT id,mid,ts,sender_id,sender_name,self,target_user_id,event_kind,
+      substr(text,1,8000) AS text FROM messages WHERE chat_key=? AND ts BETWEEN ? AND ?
+      AND event_kind='message' AND mid IS NOT NULL AND mid!=''
+      AND (${words.map(() => 'instr(lower(substr(text,1,8000)),?)>0').join(' OR ')})
+      ORDER BY ts DESC LIMIT 201`).all(chatKey, since, until, ...words);
+    const originals = matches.slice(0, 200);
+    const anchors = [...originals].sort((a, b) => recallRelevance(b.text, { terms: words }) - recallRelevance(a.text, { terms: words }) || b.ts - a.ts).slice(0, 6);
+    for (const anchor of anchors) {
+      for (const direction of ['older', 'newer']) {
+        const comparison = direction === 'older' ? '<' : '>';
+        const order = direction === 'older' ? 'DESC' : 'ASC';
+        const neighbor = this.db.prepare(`SELECT id,mid,ts,sender_id,sender_name,self,target_user_id,event_kind,
+          substr(text,1,8000) AS text FROM messages WHERE chat_key=? AND event_kind='message'
+          AND mid IS NOT NULL AND mid!='' AND ts BETWEEN ? AND ?
+          AND (ts ${comparison} ? OR (ts=? AND id ${comparison} ?)) ORDER BY ts ${order},id ${order} LIMIT 1`)
+          .get(chatKey, Math.max(since, anchor.ts - 300000), Math.min(until, anchor.ts + 300000), anchor.ts, anchor.ts, anchor.id);
+        if (neighbor) originals.push(neighbor);
+      }
+    }
+    return { truncated: matches.length > 200, rows: originals.map(row => ({
+      localId: row.id, messageId: String(row.mid), ts: row.ts, senderId: String(row.sender_id || ''),
+      senderName: row.sender_name || row.sender_id || '', text: row.text, self: Boolean(row.self),
+      targetUserId: row.target_user_id || '', eventKind: row.event_kind, source: 'agent-archive'
+    })) };
+  }
+
+  historyDateAnchor(chatKey, since, until) {
+    return this.db.prepare(`SELECT mid,ts FROM messages WHERE chat_key=? AND ts BETWEEN ? AND ?
+      AND event_kind='message' AND mid IS NOT NULL AND mid!='' ORDER BY ts DESC LIMIT 1`).get(chatKey, since, until) || null;
   }
 
   /** Bounded, indexed recall. Never scan message JSON files or return unrelated group speakers. */

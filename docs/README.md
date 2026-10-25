@@ -15,6 +15,8 @@
 
 ## 功能说明
 
+- [QQ-HISTORY-SEARCH.md](QQ-HISTORY-SEARCH.md)：按关键词读取QQ原始历史、分页/日期定位、来源与覆盖范围。
+
 - [CROSS-CHAT-RECALL.md](CROSS-CHAT-RECALL.md)：同QQ号跨窗口具体对话回忆、聊天隐私开关及Token预算。
 - [KNOWLEDGE-SEARCH.md](KNOWLEDGE-SEARCH.md)：梗百科正文与B站热点查询、来源、缓存及搜索回退。
 

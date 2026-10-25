@@ -29,6 +29,7 @@ export const EXPERIMENTAL_READ_ONLY_TOOLS = new Set([
 // 且结果（条目 id）直接决定下一步（要拿它去 send_sticker）—— 与"同轮 finish"是两个互斥的错，
 // 这一档的语义（串行、等结果、别提前 finish）正好对上。
 export const EXPERIMENTAL_ORDERED_READ_TOOLS = new Set([
+  'search_chat_history', // QQ历史接口分页读取保持串行，避免并发扫历史。
   'list_stickers',
   'get_sticker_image',
   'read_forward',

@@ -136,6 +136,7 @@ test('提示词里的每个段头都能被弱化（清洗白名单不许落后�
     'src/llm/friend-review-prompt.js',
     'src/memory/memory-global.js',
     'src/memory/cross-chat-recall.js',
+    'src/memory/chat-history-search.js',
     'src/pilots/incident-pilot.js',
     'src/console/asset-observer.js',
     'src/features/daily-moments.js',
