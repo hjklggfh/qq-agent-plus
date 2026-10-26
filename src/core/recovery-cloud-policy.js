@@ -1,5 +1,6 @@
 export const CLOUD_RECOVERY_POLICY = Object.freeze({ outageMs: 600000, ioFailureMs: 300000, graceMs: 600000,
-  cooldownMs: 3600000, dailyReboots: 2, maxGapMs: 180000, baselineMaxAgeMs: 86400000 });
+  cooldownMs: 3600000, dailyReboots: 2, maxGapMs: 180000, baselineMaxAgeMs: 86400000,
+  attemptExpiryMs: 86400000 });
 
 // This state machine only nominates an action; a fresh ECS status and last health
 // recheck are required before reserving and issuing the normal reboot.
@@ -12,9 +13,21 @@ export function cloudRecoveryDecision(previous, sample, serviceState, now = Date
   }
   state.cloudLastAt = now;
   if (sample.reachable) {
-    if (state.knownBoot && state.knownBoot !== sample.bootId) { delete state.serverAttempted; delete state.hostFailureAt; delete state.ioFailureAt; }
+    if (state.knownBoot && state.knownBoot !== sample.bootId) {
+      const hadAttempted = state.serverAttempted;
+      delete state.serverAttempted; delete state.serverAttemptedAt; delete state.hostFailureAt; delete state.ioFailureAt;
+      if (hadAttempted && state.serverRecovery) {
+        state.serverRecovery = { ...state.serverRecovery, outcome: 'boot-changed-after-request', recoveredAt: new Date(now).toISOString() };
+      }
+    }
     state.knownBoot = sample.bootId; state.baselineAt = now; state.baselineUptime = sample.uptimeSeconds;
     state.suppressed = sample.recoverySuppressed === true || (sample.serviceState === 'inactive' && sample.serviceResult === 'success');
+  }
+  const acceptedAt = Date.parse(state.serverRecovery?.at || '');
+  if (state.serverAttempted && state.serverRecovery?.outcome === 'accepted-not-yet-recovered'
+    && Number.isFinite(acceptedAt) && now - acceptedAt >= policy.attemptExpiryMs) {
+    delete state.serverAttempted; delete state.serverAttemptedAt;
+    state.serverRecovery = { ...state.serverRecovery, outcome: 'accepted-expired-without-observed-boot', expiredAt: new Date(now).toISOString() };
   }
   if (state.serverReboots.some(time => now - time < policy.graceMs)) return { state, candidate: false, reason: 'server-reboot-grace' };
   if (state.cloudGraceUntil > now) return { state, candidate: false, reason: 'cloud-transition-grace' };

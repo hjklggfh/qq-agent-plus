@@ -10,6 +10,9 @@ import { cloudRecoveryDecision, ecsAllowsRecovery } from './recovery-cloud-polic
 export const RECOVERY_POLICY = Object.freeze({ failureMs: 5 * 60000, bootGraceSeconds: 600,
   cooldownMs: 3600000, dailyRestarts: 2, maxSampleGapMs: 180000 });
 
+const CLOUD_STATE_KEYS = ['knownBoot', 'baselineAt', 'baselineUptime', 'suppressed', 'cloudLastAt', 'cloudGraceUntil',
+  'hostFailureAt', 'ioFailureAt', 'serverAttempted', 'serverAttemptedAt', 'serverRecovery', 'serverReboots'];
+
 export function recoveryDecision(previous, sample, now = Date.now(), policy = RECOVERY_POLICY) {
   const state = structuredClone(previous || {});
   const events = (state.restarts || []).filter(time => Number.isFinite(time) && now - time < 86400000);
@@ -148,6 +151,7 @@ async function recoveryWatchUnlocked(args = [], env = process.env) {
   const decision = recoveryDecision(previous, sample);
   const cloudEnabled = env.QQ_RECOVERY_ECS_ENABLED === '1';
   const cloudDecision = cloudRecoveryDecision(previous, sample, decision.state);
+  for (const key of CLOUD_STATE_KEYS) if (!Object.hasOwn(cloudDecision.state, key)) delete decision.state[key];
   Object.assign(decision.state, cloudDecision.state, { lastAt: decision.state.lastAt, restarts: decision.state.restarts,
     attempted: decision.state.attempted, failureAt: decision.state.failureAt, bootId: decision.state.bootId });
   let result = { action: decision.action, reason: decision.reason, serverRebootEnabled: cloudEnabled };
@@ -177,7 +181,7 @@ async function recoveryWatchUnlocked(args = [], env = process.env) {
           if (!recheck.candidate) result.cloudRecovery = 'last-recheck-inhibits-reboot';
           else {
             Object.assign(decision.state, recheck.state);
-            decision.state.serverAttempted = true; decision.state.serverReboots.push(Date.now());
+            decision.state.serverAttempted = true; decision.state.serverAttemptedAt = Date.now(); decision.state.serverReboots.push(Date.now());
             decision.state.serverRecovery = { outcome: 'unknown', at: new Date().toISOString() };
             writeState(directory, decision.state);
             try {
