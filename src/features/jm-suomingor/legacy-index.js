@@ -928,7 +928,8 @@ async function runJob(job) {
         deletedImages: false,
         note: '图片为站点原始文件；较新的本子带站点防爬的竖切打乱，本技能会按站点返回的 scramble_id 还原。',
       };
-      await fsp.writeFile(path.join(dl.albumDir, 'metadata.json'), JSON.stringify(meta, null, 2), 'utf8');
+      // 缓存重发沿用原元数据，避免丢失原始标题、下载时间及删除原图记录。
+      if (!dl.cachedPdf) await fsp.writeFile(path.join(dl.albumDir, 'metadata.json'), JSON.stringify(meta, null, 2), 'utf8');
     } catch (error) {
       warn(`metadata.json 写入失败（不影响下载）：${error?.message ?? error}`);
     }
@@ -943,6 +944,8 @@ async function runJob(job) {
     // ③ 上传（若开启「合成 PDF 后删除原图」，这里只是收尾顺序的前半段 —— 见 ④）
     const dest = resolveUploadTarget(c, chatKey, kind);
     let uploadNote = '';
+    let uploadError = '';
+    let filenameCompatibilityNote = '';
     let deliveryConfirmed = false;
     if (c.uploadMode === 'off') {
       deliveryConfirmed = true;
@@ -966,12 +969,15 @@ async function runJob(job) {
             const r = await uploadFile({
               onebot, chatKey: dest, filePath: part, name: path.basename(part),
               publish: c.uploadMode !== 'off', checkQuota: c.checkQuota,
+              fallbackName: `JM${dl.album.id}.part${sent + 1}of${parts.length}.pdf`, log,
             });
             if (r.ok) {
               sent += 1;
               deliveryConfirmed = true;
-              rememberGroupFile(dest, r.fileId, path.basename(part), onebot);
+              rememberGroupFile(dest, r.fileId, r.fileName || path.basename(part), onebot);
+              if (r.compatibilityNote) filenameCompatibilityNote = r.compatibilityNote;
             } else {
+              uploadError = r.error;
               uploadNote += `\n第 ${sent + 1} 卷上传失败：${r.error}`;
               break;
             }
@@ -984,16 +990,19 @@ async function runJob(job) {
       } else {
         const r = await uploadFile({
           onebot, chatKey: dest, filePath: deliverPath, name: deliverName || path.basename(deliverPath),
-          checkQuota: c.checkQuota,
+          checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}.pdf`, log,
         });
         if (r.ok) {
           deliveryConfirmed = true;
-          rememberGroupFile(dest, r.fileId, deliverName || path.basename(deliverPath), onebot);
+          const uploadedName = r.fileName || deliverName || path.basename(deliverPath);
+          rememberGroupFile(dest, r.fileId, uploadedName, onebot);
+          filenameCompatibilityNote = r.compatibilityNote || '';
           uploadNote = dest.startsWith('group:')
-            ? `📎 已上传到本群群文件：${deliverName || path.basename(deliverPath)}（${humanSize(size)}）${r.note ? `\nℹ️ ${r.note}` : ''}`
-            : `📎 已发送文件：${deliverName || path.basename(deliverPath)}（${humanSize(size)}）`;
+            ? `📎 已上传到本群群文件：${uploadedName}（${humanSize(size)}）${r.note ? `\nℹ️ ${r.note}` : ''}`
+            : `📎 已发送文件：${uploadedName}（${humanSize(size)}）`;
         } else {
-          uploadNote = `⚠️ 文件上传失败（已自动重试，原图已保留）：${r.error}`;
+          uploadError = r.error;
+          uploadNote = `⚠️ 文件上传失败（PDF 和原图已保留）：${r.error}`;
         }
       }
     }
@@ -1001,7 +1010,7 @@ async function runJob(job) {
     // ④ 按需删除原图（省空间模式）
     // 顺序说明：删除排在"上传"之后 —— 上传用的是 PDF 而不是原图，
     //          放在这里还能保证"上传失败时原图仍在"，便于重发补传。
-    const wantCleanup = c.deleteImagesAfterPdf && c.outputFormat === 'pdf' && Boolean(pdfInfo) && deliveryConfirmed;
+    const wantCleanup = c.deleteImagesAfterPdf && c.outputFormat === 'pdf' && Boolean(pdfInfo) && deliveryConfirmed && !uploadError;
 
     let cleanup = null;
     if (wantCleanup) {
@@ -1051,10 +1060,12 @@ async function runJob(job) {
 
     const lines = [];
     if (!cardSent) {
-      lines.push(`✅ 「${displayName}」（JM${dl.album.id}）处理好啦`);
+      lines.push(uploadError
+        ? `⚠️ 「${displayName}」（JM${dl.album.id}）处理完成，但文件上传失败`
+        : `✅ 「${displayName}」（JM${dl.album.id}）处理好啦`);
       if (dl.album.description) lines.push(`简介：${toSimplified(dl.album.description).slice(0, 500)}`);
     } else {
-      lines.push('✅ 处理好啦（简介见上图）');
+      lines.push(uploadError ? '⚠️ 处理完成，但文件上传失败（简介见上图）' : '✅ 处理好啦（简介见上图）');
     }
     const submitter = firstSubmitters.get(`${chatKey}:${albumId}`) || (whoName ? { id: who || '', name: whoName } : null);
     // 首次发车：昵称 + QQ 号（认不出人时整行不发，也不显示空占位）
@@ -1064,16 +1075,19 @@ async function runJob(job) {
     else if (subName || subId) lines.push(`首次发车：${subName || subId}`);
     if (record.pdfError) lines.push(`PDF 没生成：${record.pdfError}`);
     if (uploadNote) lines.push(uploadNote);
+    if (filenameCompatibilityNote) lines.push(filenameCompatibilityNote);
     if (dl.totals.fail > 0) lines.push(`有 ${dl.totals.fail} 张没下下来，重发同一个 ID 会接着补下。`);
     await say(lines.join('\n'));
 
     // 运维细节只写日志
     if (cleanup) log(`已删除原图 ${cleanup.files} 个（释放 ${humanSize(cleanup.freed)}），只保留 PDF：${dl.albumDir}`);
     else if (c.deleteImagesAfterPdf && !pdfInfo) log(`设置了「合成 PDF 后删除原图」，但本次 PDF 未生成 → 已保留原图`);
-    if (pdfInfo) log(`JM${dl.album.id} 完成：${pdfInfo.pages} 页/${humanSize(pdfInfo.bytes)}，目录 ${dl.albumDir}`);
+    if (pdfInfo) log(`JM${dl.album.id} ${uploadError ? '处理完成但上传失败' : '完成'}：${pdfInfo.pages} 页/${humanSize(pdfInfo.bytes)}，目录 ${dl.albumDir}`);
+    if (uploadError) warn(`JM${dl.album.id} 文件未送达，错误码及尝试次数见 jm-upload 诊断日志`);
 
-    record.stage = 'done';
-    record.ok = true;
+    record.stage = uploadError ? 'upload_failed' : 'done';
+    record.ok = !uploadError;
+    if (uploadError) record.error = uploadError;
     record.finishedAt = Date.now();
     pushHistory(record);
     return record;
