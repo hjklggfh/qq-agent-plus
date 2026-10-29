@@ -13,7 +13,7 @@ function fixture(t) {
   return { filePath, size: fs.statSync(filePath).size };
 }
 
-test('-134 业务拒绝只尝试一次，如实报告并保留本地文件', async (t) => {
+test('未启用失败换名策略时，-134 业务拒绝只尝试一次并保留本地文件', async (t) => {
   const { filePath } = fixture(t);
   let uploads = 0;
   let lookups = 0;
@@ -394,4 +394,76 @@ test('混合自动重试和文件名重试分别计数，末次错误原文保�
   assert.equal(result.filenameRetries, 1);
   assert.match(result.error, /已尝试 4 次，自动重试 2 次，备用文件名重试 1 次/);
   assert.equal(result.error.endsWith(failures.at(-1)), true);
+});
+
+for (const reason of ['retcode=100 code=-134 文件上传失败', 'network timeout']) {
+  test(`JM 原标题只调用一次，失败后编号名只调用一次：${reason}`, async (t) => {
+    const { filePath, size } = fixture(t);
+    const server = backend(size, (_params, state, accept) => {
+      if (state.uploads.length === 1) throw new Error(reason);
+      return accept();
+    });
+    const result = await uploadFile({ onebot: server.onebot, chatKey: 'group:100001', filePath,
+      name: '原标题.pdf', fallbackName: 'JM1485785.pdf', fallbackOnFailure: true, checkQuota: false });
+    assert.equal(result.ok, true);
+    assert.equal(result.attempts, 2);
+    assert.equal(result.retries, 0);
+    assert.equal(result.filenameRetries, 1);
+    assert.equal(result.compatibilityNote, FILENAME_COMPATIBILITY_NOTE);
+    assert.deepEqual(server.uploads.map(x => x.name), ['原标题.pdf', 'JM1485785.pdf']);
+    assert.equal(server.files.length, 1);
+  });
+}
+
+test('JM 编号名也失败时立即停止，报告真实次数并保留原名与编号名两次错误', async (t) => {
+  const { filePath, size } = fixture(t);
+  const server = backend(size, (_params, state) => {
+    throw new Error(state.uploads.length === 1 ? 'retcode=100 code=-134 原名上传失败' : 'network timeout 编号名上传失败');
+  });
+  const result = await uploadFile({ onebot: server.onebot, chatKey: 'group:100001', filePath,
+    fallbackName: 'JM1485785.pdf', fallbackOnFailure: true, checkQuota: false });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.retries, 0);
+  assert.equal(result.filenameRetries, 1);
+  assert.equal(server.uploads.length, 2);
+  assert.match(result.error, /原文件名：retcode=100 code=-134 原名上传失败/);
+  assert.match(result.error, /编号文件名：network timeout 编号名上传失败/);
+  assert.equal(result.compatibilityNote, '');
+  assert.equal(fs.existsSync(filePath), true);
+});
+
+test('JM 原名返回确认失败但文件已经入库，不执行编号名重试', async (t) => {
+  const { filePath, size } = fixture(t);
+  const server = backend(size, (_params, _state, accept) => {
+    accept();
+    throw new Error('retcode=100 code=-134 文件上传失败');
+  });
+  const result = await uploadFile({ onebot: server.onebot, chatKey: 'group:100001', filePath,
+    fallbackName: 'JM1485785.pdf', fallbackOnFailure: true, checkQuota: false });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.filenameRetries, 0);
+  assert.equal(result.usedFallbackName, false);
+  assert.equal(result.compatibilityNote, '');
+  assert.equal(server.files.length, 1);
+});
+
+test('JM 失败后群文件列表无法核对，不能直接换编号名重传', async (t) => {
+  const { filePath } = fixture(t);
+  let uploads = 0;
+  const result = await uploadFile({ chatKey: 'group:100001', filePath,
+    fallbackName: 'JM1485785.pdf', fallbackOnFailure: true, checkQuota: false,
+    onebot: { async call(action) {
+      if (action === 'get_group_root_files') {
+        if (uploads) throw new Error('lookup timeout');
+        return { files: [] };
+      }
+      uploads++;
+      throw new Error('retcode=100 code=-134 文件上传失败');
+    } } });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.filenameRetries, 0);
+  assert.equal(uploads, 1);
 });

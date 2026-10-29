@@ -8,10 +8,14 @@ import test from 'node:test';
 // 跑真实的入队→缓存→上传→简介→清理链路；只替换 PDF worker 和卡片渲染，隔离网络及生产数据。
 const legacyUrl = new URL('../src/features/jm-suomingor/legacy-index.js', import.meta.url).href;
 const dailyStub = `
+  import fs from 'node:fs';
   export const collect = () => {}, buildDigestFromState = () => {}, sendDigest = () => {},
     loadDigestItems = () => [], renderDigestImage = () => {}, sendDigestImage = () => {};
   export const cleanTitle = x => x, fetchSiteCover = async () => '';
-  export const renderAlbumImage = async () => '/mock/jm-card.png';
+  export const renderAlbumImage = async ({ outPath }) => {
+    fs.writeFileSync(outPath, 'rendered-image');
+    return outPath;
+  };
 `;
 const pdfStub = 'export const detect = () => ({ ok: true, python: "unused" }); export const runTask = () => { throw new Error("缓存重发不应生成 PDF"); };';
 const hook = registerHooks({ resolve(specifier, context, nextResolve) {
@@ -74,11 +78,15 @@ test('缓存 PDF 的实际调用链保留标题、元数据、原图并正确显
         uploaded.push({ ...params });
         if (failSecondPart && params.name.includes('.part2of')) throw new Error('code=-134');
         if (mode === 'reject') throw new Error('retcode=100 code=-134 文件上传失败');
-        if (mode === 'compat' && !/^JM\d+(?:\.part\d+of\d+)?\.pdf$/.test(params.name)) throw new Error('文件名包含非法字符');
+        if (mode === 'compat' && !/^JM\d+(?:\.part\d+of\d+)?\.pdf$/.test(params.name)) throw new Error('retcode=100 code=-134 文件上传失败');
         files.push({ file_id: `real-${files.length}`, file_name: params.name, file_size: fs.statSync(params.file).size });
         return { file_id: 'temporary-id' };
       },
-      async sendSegments() {
+      async sendSegments(_kind, _id, segments) {
+        const cardPath = segments.find(segment => segment.type === 'image')?.data?.file?.replace(/^file:\/\//, '');
+        assert.equal(path.dirname(cardPath), root, '简介图片必须生成在已挂载的数据根目录');
+        assert.equal(path.basename(cardPath), 'album-card-group_100001.jpg');
+        assert.equal(fs.readFileSync(cardPath, 'utf8'), 'rendered-image');
         if (!card) throw new Error('模拟卡片发送失败，检查文字简介');
       }
     };
@@ -117,8 +125,8 @@ test('缓存 PDF 的实际调用链保留标题、元数据、原图并正确显
   }
 
   const rejected = await run({ mode: 'reject', cleanup: true });
-  assert.equal(rejected.uploaded.length, 1);
-  assert.match(rejected.summary, /已尝试 1 次，未自动重试/);
+  assert.equal(rejected.uploaded.length, 2);
+  assert.match(rejected.summary, /已尝试 2 次，未自动重试，备用文件名重试 1 次/);
   assert.doesNotMatch(rejected.summary, /已使用编号文件名|✅/);
 
   const normal = await run({ mode: 'normal', cleanup: true });

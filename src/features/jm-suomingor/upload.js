@@ -102,11 +102,12 @@ export async function groupQuota(onebot, groupId) {
  * @param {boolean} [opts.publish] true = 入库并直接发出来；false = 只入库
  * @param {number}  [opts.timeoutMs]
  * @param {boolean} [opts.checkQuota] 上传前是否预检群文件配额
- * @param {string} [opts.fallbackName] JM 调用方提供的编号文件名，仅明确格式错误时重试一次
+ * @param {string} [opts.fallbackName] JM 调用方提供的编号文件名
+ * @param {boolean} [opts.fallbackOnFailure] 原名失败并完成回查后，改编号名尝试一次
  * @param {function} [opts.log] 仅记录白名单诊断字段，不写鉴权信息或原始响应
  * @returns {Promise<{ok:boolean, fileId?:string, scope?:string, error?:string, quota?:object}>}
  */
-export async function uploadFile({ onebot, chatKey, filePath, name, publish = true, timeoutMs = 600000, checkQuota = true, fallbackName, log }) {
+export async function uploadFile({ onebot, chatKey, filePath, name, publish = true, timeoutMs = 600000, checkQuota = true, fallbackName, fallbackOnFailure = false, log }) {
   if (!onebot?.call) return { ok: false, error: '没有可用的 onebot 客户端（不在钩子/工具上下文里）' };
   if (!filePath || !fs.existsSync(filePath)) return { ok: false, error: `文件不存在：${filePath}` };
 
@@ -135,6 +136,7 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
     let attempts = 0;
     let retries = 0;
     let filenameRetries = 0;
+    let firstError = null;
     let lastError = null;
     const emit = (event, fields = {}) => {
       // 不记录路径、作品标题、原始异常和 OneBot 参数，防止凭据随异常串进入诊断日志。
@@ -202,6 +204,7 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
           note: '协议端已返回成功，群文件列表暂未回查到',
         });
       } catch (error) {
+        firstError ??= error;
         lastError = error;
         const codes = uploadErrorCodes(error);
         // 仅允许数字业务码 / 标准网络错误名进入日志。
@@ -211,7 +214,8 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
         const listed = await findGroupFile(onebot, id, fileNames, size);
         if (listed.file) return listedSuccess(listed.file, 'QQ 返回发送确认失败，但文件已在群文件中');
         if (!listed.ok) break;
-        if (alternate && !filenameRetries && isFilenameFormatError(error)) {
+        // JM 按用户指定策略：原标题一次，失败后编号名一次；不从 -134 推断拒绝原因。
+        if (alternate && !filenameRetries && (fallbackOnFailure || isFilenameFormatError(error))) {
           attemptKind = 'filename_fallback';
         } else {
           // 备用名只调用一次，其失败后也不再自动重复改名/重传。
@@ -232,7 +236,7 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
     return finish({
       ok: false,
       quota,
-      error: `上传群文件失败（已尝试 ${attempts} 次，${retries ? `自动重试 ${retries} 次` : '未自动重试'}${filenameRetries ? '，备用文件名重试 1 次' : ''}）：${lastError?.message ?? lastError}`,
+      error: `上传群文件失败（已尝试 ${attempts} 次，${retries ? `自动重试 ${retries} 次` : '未自动重试'}${filenameRetries ? '，备用文件名重试 1 次' : ''}）：${filenameRetries ? `原文件名：${firstError?.message ?? firstError}；编号文件名：` : ''}${lastError?.message ?? lastError}`,
     });
   }
 

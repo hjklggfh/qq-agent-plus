@@ -969,7 +969,7 @@ async function runJob(job) {
             const r = await uploadFile({
               onebot, chatKey: dest, filePath: part, name: path.basename(part),
               publish: c.uploadMode !== 'off', checkQuota: c.checkQuota,
-              fallbackName: `JM${dl.album.id}.part${sent + 1}of${parts.length}.pdf`, log,
+              fallbackName: `JM${dl.album.id}.part${sent + 1}of${parts.length}.pdf`, fallbackOnFailure: true, log,
             });
             if (r.ok) {
               sent += 1;
@@ -990,7 +990,7 @@ async function runJob(job) {
       } else {
         const r = await uploadFile({
           onebot, chatKey: dest, filePath: deliverPath, name: deliverName || path.basename(deliverPath),
-          checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}.pdf`, log,
+          checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}.pdf`, fallbackOnFailure: true, log,
         });
         if (r.ok) {
           deliveryConfirmed = true;
@@ -1052,7 +1052,9 @@ async function runJob(job) {
         desc: toSimplified(String(dl.album.description || '')).slice(0, 400),
         cover,
       };
-      const imagePath = await renderAlbumImage({ payload });
+      // 与 PDF 使用同一个数据根目录，协议容器只挂载该目录；不同会话不能相互覆盖。
+      const imagePath = await renderAlbumImage({ payload,
+        outPath: path.join(downloadRoot(), `album-card-${chatKey.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`) });
       cardSent = await sendAlbumCard(onebot, chatKey, imagePath);
     } catch (error) {
       warn(`简介卡片渲染/发送失败，降级文字版：${error?.message ?? error}`);
