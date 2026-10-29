@@ -25,6 +25,9 @@ QQ Agent Plus is a QQ group-chat agent for Linux servers. It connects to an exte
 service and runs each turn as an isolated OpenAI Chat Completions session; it does not depend on
 DSH, MCP, Electron or a Windows runtime.
 
+Release [v9.0.1](https://github.com/hjklggfh/qq-agent-plus/releases/tag/v9.0.1) includes JM upload fixes,
+QQ history search, cross-chat recall improvements and Bilibili forwarding fixes. See the [release notes](docs/releases/v9.0.1.md).
+
 ## Highlights
 
 Every capability below originates from a failure observed in a production group chat; the failure
