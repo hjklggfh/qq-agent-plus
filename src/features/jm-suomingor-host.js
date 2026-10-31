@@ -111,6 +111,7 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
     fetch: async (url, options = {}) => {
       const { responseType: _responseType, ...requestInit } = options || {};
       const response = await fetch(url, requestInit);
+      if (_responseType === 'stream') return response;
       return responseFromFetch(response, url);
     }
   };

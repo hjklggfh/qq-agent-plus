@@ -39,6 +39,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 import traceback
 
 from pdf_stream import PdfStream
@@ -193,6 +194,7 @@ def run_task(task):
     failed = []
     warnings = []
     restored = 0
+    timings = {"decodeMs": 0, "restoreMs": 0, "prepareMs": 0, "encodeMs": 0, "pdfWriteMs": 0}
     ok_count = 0
     done = 0
 
@@ -209,14 +211,20 @@ def run_task(task):
                     # A malformed or exceptionally large page must not exhaust the service.
                     if img.width * img.height > 24_000_000:
                         raise ValueError(f"图片像素过大：{img.width}x{img.height}（上限 2400 万像素）")
+                    phase_start = time.perf_counter()
                     img.load()
+                    timings["decodeMs"] += (time.perf_counter() - phase_start) * 1000
+                    phase_start = time.perf_counter()
                     prepared = _prepare(img, path, do_descramble, scramble_id, album_id,
-                                        max_dim, to_rgb)
+                                        max_dim, to_rgb, timings=timings)
+                    timings["prepareMs"] += (time.perf_counter() - phase_start) * 1000
                     try:
+                        phase_start = time.perf_counter()
                         with tempfile.NamedTemporaryFile(suffix=".jpg", dir=os.path.dirname(output),
                                                          delete=False) as jpeg:
                             jpeg_path = jpeg.name
                             prepared.save(jpeg, "JPEG", quality=quality)
+                        timings["encodeMs"] += (time.perf_counter() - phase_start) * 1000
                         jpeg_size = prepared.size
                     finally:
                         if prepared is not img:
@@ -224,7 +232,9 @@ def run_task(task):
             except Exception as exc:  # noqa: BLE001
                 failed.append({"page": os.path.basename(path), "error": f"{type(exc).__name__}: {exc}"})
             else:
+                phase_start = time.perf_counter()
                 pdf.append_jpeg(jpeg_path, *jpeg_size)
+                timings["pdfWriteMs"] += (time.perf_counter() - phase_start) * 1000
                 if max_output_bytes and pdf.file.tell() > max_output_bytes:
                     raise ValueError("PDF 超过文件大小上限，请缩小页码范围")
                 if do_descramble and segmentation_num(scramble_id, album_id, filename_stem(path)) > 0:
@@ -243,14 +253,16 @@ def run_task(task):
         if not ok_count:
             pdf.abort()
             emit({"t": "result", "ok": False, "error": f"全部 {total} 张图都读不出来，无法生成 PDF",
-                  "failed": failed[:20]})
+                  "failed": failed[:20], "timings": timings})
             return 1
         emit({"t": "progress", "stage": "pdf", "done": 0, "total": 1, "ok": 0, "fail": 0})
+        phase_start = time.perf_counter()
         pdf.finish()
+        timings["pdfWriteMs"] += (time.perf_counter() - phase_start) * 1000
     except Exception as exc:  # noqa: BLE001
         pdf.abort()
         emit({"t": "result", "ok": False, "error": f"PDF 写入失败：{exc}",
-              "trace": traceback.format_exc()[-800:]})
+              "trace": traceback.format_exc()[-800:], "timings": timings})
         return 1
 
     try:
@@ -273,15 +285,19 @@ def run_task(task):
         "descrambled": do_descramble,
         "failed": failed[:50],
         "warnings": warnings[:20],
+        "timings": {key: round(value, 2) for key, value in timings.items()},
     })
     return 0
 
 
-def _prepare(img, path, do_descramble, scramble_id, album_id, max_dim, to_rgb):
+def _prepare(img, path, do_descramble, scramble_id, album_id, max_dim, to_rgb, timings=None):
     """单张：还原 → 缩放 → 转 RGB。返回可直接进 PDF 的 PIL 图像。"""
     num = segmentation_num(scramble_id, album_id, filename_stem(path)) if do_descramble else 0
     if num > 0:
+        phase_start = time.perf_counter()
         img = descramble(img, num)
+        if timings is not None:
+            timings["restoreMs"] += (time.perf_counter() - phase_start) * 1000
     if max_dim > 0 and max(img.size) > max_dim:
         ratio = max_dim / float(max(img.size))
         new_size = (max(1, int(img.size[0] * ratio)), max(1, int(img.size[1] * ratio)))

@@ -8,6 +8,7 @@ import { clearSearchSessions, resolveSearchFollowup } from './search-session.js'
 const TOOL_PREFIX = 'jm_';
 
 function responseFromHost(result, fallbackUrl) {
+  if (typeof result?.arrayBuffer === 'function' && result?.headers?.get) return result;
   const body = Buffer.isBuffer(result?.body)
     ? result.body
     : result?.body instanceof Uint8Array
@@ -57,7 +58,7 @@ export function activate(api) {
     fetch: async (url, options = {}) => {
       const toolFetch = fetchContext.getStore();
       if (typeof toolFetch !== 'function') throw new Error('JM 网络请求只能在工具执行期间使用');
-      const result = await toolFetch(url, { ...options, responseType: 'bytes' });
+      const result = await toolFetch(url, { ...options, responseType: options.responseType === 'stream' ? 'stream' : 'bytes' });
       return responseFromHost(result, url);
     },
     log: (...args) => api.log.info(...args),

@@ -30,6 +30,36 @@ function settle(ms = 250) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保持一致', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const cfg = { jm: { concurrency: 48, cdnStrategy: 'fixed' } };
+    window.__jmConfig = cfg;
+    vm.runInContext('state.config = __jmConfig; state.settingsSection = "jm";', ctx);
+    const container = window.document.createElement('div');
+    window.document.body.append(container);
+    container.innerHTML = vm.runInContext('renderJmSection(__jmConfig)', ctx);
+    const input = container.querySelector('#cfg-jm-concurrency');
+    assert.equal(input.max, '48');
+    assert.equal(input.value, '48');
+    assert.equal(container.querySelector('#cfg-jm-cdn-strategy').value, 'fixed');
+    const patches = [];
+    window.fetch = async (_url, opts = {}) => {
+      if (opts.method === 'POST') patches.push(JSON.parse(opts.body));
+      return { ok: true, json: async () => ({ config: cfg }) };
+    };
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches[0].jm.concurrency, 48);
+    assert.equal(patches[0].jm.cdnStrategy, 'fixed');
+    input.value = '1';
+    container.querySelector('#cfg-jm-cdn-strategy').value = 'adaptive';
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches[1].jm.concurrency, 1);
+    assert.equal(patches[1].jm.cdnStrategy, 'adaptive');
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 function loadPage() {
   const window = new WindowClass({ url: 'http://127.0.0.1:3210/' });
   // 骨架进 DOM；script 标签不交给 happy-dom 自己加载，由测试按清单手动按序执行

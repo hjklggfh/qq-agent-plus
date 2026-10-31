@@ -54,6 +54,7 @@ export const DEFAULT_CONFIG = {
     restore: true,
     maxPages: 500,
     concurrency: 4,
+    cdnStrategy: 'adaptive',
     timeoutSeconds: 30,
     pdfQuality: 85,
     pdfMaxDim: 0,

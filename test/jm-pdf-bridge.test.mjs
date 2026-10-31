@@ -32,6 +32,9 @@ test('JM PDF bridge sends only worker data and clears its child handle', {
     });
     assert.equal(result.ok, true, result.error);
     assert.equal(result.pagesOk, 1);
+    assert.equal(result.timings.restoreMs, 0, '未启用竖切还原时不能虚报还原耗时');
+    assert.ok(result.timings.decodeMs >= 0);
+    assert.ok(result.timings.pdfWriteMs >= 0);
     assert.equal(control.child, null);
     assert.ok(fs.statSync(output).size > 1024);
   } finally {

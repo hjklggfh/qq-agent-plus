@@ -9,6 +9,7 @@
 //   · scramble_id 由 /chapter_view_template 单独返回（用另一把密钥 18comicAPPContent）
 
 import crypto from 'node:crypto';
+import { createImageDownloader } from './image-download.js';
 
 // undici 只用来做「走代理」这一件事。默认不用代理，所以这里做成可选依赖：
 // 宿主环境没装 undici、或用户没配代理时，全程走宿主给的 fetch，照样能下载。
@@ -34,13 +35,15 @@ export const APP_DATA_SECRET = '185Hcomic3PAPP7R';
 export const APP_TOKEN_SECRET_2 = '18comicAPPContent'; // /chapter_view_template 专用密钥
 
 export const IMAGE_DOMAINS = [
-  'cdn-msp.jmapiproxy1.cc',
   'cdn-msp.jmapiproxy2.cc',
+  'cdn-msp.jmapiproxy1.cc',
   'cdn-msp2.jmapiproxy2.cc',
   'cdn-msp3.jmapiproxy2.cc',
   'cdn-msp.jmapinodeudzn.net',
   'cdn-msp3.jmapinodeudzn.net',
 ];
+// CDN 可能返回不同编码版本；仅在两个主节点间优选，其余保留原有顺序兜底。
+export const IMAGE_ADAPTIVE_DOMAINS = ['cdn-msp.jmapiproxy2.cc', 'cdn-msp.jmapiproxy1.cc'];
 export const DEFAULT_API_DOMAINS = ['www.cdnhjk.net', 'www.cdngwc.cc', 'www.cdngwc.net', 'www.cdngwc.club'];
 export const DEFAULT_WEB_DOMAINS = ['18comic.vip', '18comic.org', 'jm-comic2.cc', 'jm-comic3.cc'];
 
@@ -242,13 +245,13 @@ export function createClient(options = {}) {
       try {
         dispatcher = new ProxyAgentCtor(wantProxy);
       } catch (error) {
-        warn(`代理地址无效（改为直连）：${wantProxy} — ${error?.message ?? error}`);
+        warn('JM 代理地址无效，改为直连（不记录代理凭据）');
       }
     } else {
-      warn(`配置了代理 ${wantProxy}，但运行环境没有 undici，无法启用 —— 改为直连`);
+      warn('JM 配置了代理，但运行环境没有 undici，改为直连');
     }
   }
-  if (wantProxy && dispatcher) warn(`禁漫请求走代理：${wantProxy}`);
+  if (wantProxy && dispatcher) warn('JM 使用配置代理（不记录代理凭据）');
 
   // 走代理时必须用 undici 自己的 fetch —— dispatcher 是 undici 的概念，
   // 宿主包装过的 fetch 不一定会把它透传下去。直连时用宿主给的 fetch 即可。
@@ -257,10 +260,12 @@ export function createClient(options = {}) {
   async function httpGet(url, { headers = {}, timeoutOverride, retries = 1, asText = false } = {}) {
     if (typeof fetchImpl !== 'function') return { ok: false, status: 0, text: '', error: '运行环境没有可用的 fetch' };
     const t = timeoutOverride || getTimeout();
-    const signal = AbortSignal.timeout(t);
     let lastError = '';
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      options.signal?.throwIfAborted();
+      const timeoutSignal = AbortSignal.timeout(t);
+      const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
       try {
         const res = await doFetch(url, {
           method: 'GET',
@@ -278,6 +283,7 @@ export function createClient(options = {}) {
           url: res.url || url,
         };
       } catch (error) {
+        options.signal?.throwIfAborted();
         lastError = error?.name === 'TimeoutError' ? `超时（${Math.round(t / 1000)} 秒）` : error?.message ?? String(error);
         if (attempt < retries) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
       }
@@ -382,29 +388,21 @@ export function createClient(options = {}) {
   const buildImageUrl = (domain, photoId, fileName) =>
     `https://${domain}/media/photos/${photoId}/${encodeURIComponent(String(fileName).split('/').pop())}`;
 
-  /** 下载一张图：图片域名与 query 都轮询（缺 v 参数会返回空数据）。 */
-  async function fetchImage(photoId, fileName) {
-    const ts = tsSeconds();
-    const variants = [`v=${ts}`, ''];
-    const errors = [];
-    for (const domain of IMAGE_DOMAINS) {
-      for (const q of variants) {
-        const url = `${buildImageUrl(domain, photoId, fileName)}${q ? `?${q}` : ''}`;
-        const res = await httpGet(url, {
-          headers: {
-            'user-agent': UA_APP,
-            accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-            referer: `https://${IMAGE_DOMAINS[0]}/`,
-            'accept-language': 'zh-CN,zh;q=0.9',
-          },
-          retries: 0,
-        });
-        if (res.ok && res.buffer?.length > 512) return res.buffer;
-        errors.push(`${domain}${q ? '(带v)' : '(不带v)'}: ${res.status || res.error || '空数据'}`);
-      }
-    }
-    throw new Error(errors.slice(0, 3).join('；'));
-  }
-
-  return { httpGet, jmApi, albumInfo, photoInfo, searchAlbums, fetchScrambleId, fetchImage, buildImageUrl };
+  const images = createImageDownloader({
+    fetchImpl: doFetch,
+    buildImageUrl,
+    domains: options.imageDomains || IMAGE_DOMAINS,
+    adaptiveDomains: options.adaptiveDomains || IMAGE_ADAPTIVE_DOMAINS,
+    getTimeout,
+    signal: options.signal,
+    concurrency: options.concurrency,
+    strategy: options.cdnStrategy,
+    hedgeDelayMs: options.hedgeDelayMs,
+    headers: { 'user-agent': UA_APP, accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      // 保留杭州临时优化使用的 Referer，不随优选域名改变。
+      referer: 'https://cdn-msp.jmapiproxy1.cc/', 'accept-language': 'zh-CN,zh;q=0.9' }
+  });
+  const fetchImage = async (photoId, fileName) => (await images.downloadImage(photoId, fileName)).buffer;
+  return { httpGet, jmApi, albumInfo, photoInfo, searchAlbums, fetchScrambleId, fetchImage, buildImageUrl,
+    downloadImage: images.downloadImage, downloadStats: images.snapshot, close: () => dispatcher?.close() };
 }

@@ -201,6 +201,7 @@ function runTaskUnqueued({ python, task, onProgress, timeoutMs = 300000 }) {
             restored: msg.restored,
             failed: msg.failed || [],
             warnings: msg.warnings || [],
+            timings: msg.timings || {},
             error: msg.ok === true ? undefined : msg.error || '未知错误',
             trace: msg.trace,
           };

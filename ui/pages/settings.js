@@ -155,8 +155,9 @@ function renderJmSection(c) {
     </div>
     <div class="field-row">
       <div class="field"><label>最大页数</label><input type="number" id="cfg-jm-max-pages" min="1" max="5000" value="${value('maxPages', 500)}"></div>
-      <div class="field"><label>下载并发</label><input type="number" id="cfg-jm-concurrency" min="1" max="8" value="${value('concurrency', 4)}"></div>
+      <div class="field"><label>下载并发</label><input type="number" id="cfg-jm-concurrency" min="1" max="48" value="${value('concurrency', 4)}"></div>
       <div class="field"><label>请求超时（秒）</label><input type="number" id="cfg-jm-timeout" min="5" max="300" value="${value('timeoutSeconds', 30)}"></div>
+      <div class="field"><label>图片 CDN 策略</label><select id="cfg-jm-cdn-strategy"><option value="adaptive"${j.cdnStrategy !== 'fixed' ? ' selected' : ''}>自动优选与慢请求回退</option><option value="fixed"${j.cdnStrategy === 'fixed' ? ' selected' : ''}>固定顺序（兼容模式）</option></select></div>
     </div>
     <div class="field-row">
       <div class="field"><label>PDF 图片质量</label><input type="number" id="cfg-jm-pdf-quality" min="30" max="95" value="${value('pdfQuality', 85)}"></div>

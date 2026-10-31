@@ -30,6 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as engine from './engine.js';
+import { validateImage } from './image-download.js';
 import * as pdfBridge from './pdf.js';
 import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
@@ -356,6 +357,8 @@ async function performControl({ action, albumId, onebot, chatKey }) {
     if (!task.control) task.control = { paused: false, deleted: false, child: null };
     task.control.paused = false; // 先解除暂停，让等待循环能退出
     task.control.deleted = true;
+    task.control.abortController?.abort();
+    await task.control.downloadSettled;
     try { task.control.child?.kill('SIGKILL'); } catch { /* ignore */ }
   }
   // 本地目录：先删图片目录里的独立子目录，再兜底删 jm-<id> 根
@@ -418,7 +421,8 @@ function cfg() {
     domains: String(c.domains ?? '').trim(),
     maxPages: num(c.maxPages, 500, 1, 5000),
     multiChapter: c.multiChapter !== false,
-    concurrency: num(c.concurrency, 4, 1, 8),
+    concurrency: num(c.concurrency, 4, 1, 48),
+    cdnStrategy: c.cdnStrategy === 'fixed' ? 'fixed' : 'adaptive',
     timeoutSeconds: num(c.timeoutSeconds, 30, 5, 300),
     restore: c.restore !== false,
     outputFormat: String(c.outputFormat || 'pdf').toLowerCase() === 'images' ? 'images' : 'pdf',
@@ -494,13 +498,14 @@ const log = (...a) => api?.log?.(...a);
 const warn = (...a) => api?.warn?.(...a);
 
 /** 建一个绑定当前配置的引擎客户端。 */
-function client() {
+function client(options = {}) {
   return engine.createClient({
     fetchImpl: fetchImpl(),
     timeoutMs: () => cfg().timeoutSeconds * 1000,
     domains: cfg().domains,
     warn,
     proxy: cfg().proxy,
+    ...options,
   });
 }
 
@@ -652,8 +657,14 @@ function gateChat(chatKey) {
 async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
   const c = cfg();
   const task = { control };
-  const api0 = client();
+  const api0 = client({ concurrency: c.concurrency, cdnStrategy: c.cdnStrategy, signal: control?.abortController?.signal });
+  const startedAt = Date.now();
+  const imageStats = { concurrency: c.concurrency, strategy: c.cdnStrategy, actualConcurrency: 0, images: 0, success: 0, failed: 0, cached: 0, imageMs: 0 };
+  let finishDownload;
+  if (control) control.downloadSettled = new Promise(resolve => { finishDownload = resolve; });
+  try {
   const album = await api0.albumInfo(albumId);
+  ensureAlive(task);
 
   const chapters = album.series.length
     ? (c.multiChapter ? album.series : album.series.slice(0, 1))
@@ -667,6 +678,7 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
   const chapterResults = [];
 
   for (let i = 0; i < chapters.length; i++) {
+    ensureAlive(task);
     const chapter = chapters[i];
     let photo;
     try {
@@ -700,6 +712,8 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
         )
       : albumDir;
     await fsp.mkdir(chapterDir, { recursive: true });
+    const imageStartedAt = Date.now();
+    imageStats.actualConcurrency = Math.max(imageStats.actualConcurrency, Math.min(c.concurrency, names.length));
 
     const pages = [];
     let cursor = 0;
@@ -711,11 +725,17 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
         const target = path.join(chapterDir, names[idx]);
         totals.total += 1;
         try {
-          if (fs.existsSync(target) && (await fsp.stat(target)).size > 1024) {
+          let cached = false;
+          if (fs.existsSync(target)) {
+            try { await validateImage(target, control?.abortController?.signal); cached = true; }
+            catch { control?.abortController?.signal.throwIfAborted(); }
+          }
+          if (cached) {
             totals.ok += 1; // 之前下过（同一 ID 重发时补下）
+            imageStats.cached++;
           } else {
-            const buf = await api0.fetchImage(photo.id || chapter.id, names[idx]);
-            await fsp.writeFile(target, buf);
+            await api0.downloadImage(photo.id || chapter.id, names[idx], target);
+            ensureAlive(task);
             totals.ok += 1;
           }
           pages[idx] = target;
@@ -724,12 +744,17 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
           failed.push({ chapter: chapter.id, error: `${names[idx]}：${error?.message ?? error}` });
         }
         totals.pages += 1;
+        imageStats.success = totals.ok;
+        imageStats.failed = totals.fail;
         if (totals.pages % 5 === 0) {
           onProgress?.({ stage: 'download', chapter: i + 1, chapters: chapters.length, ...totals });
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(c.concurrency, names.length)) }, worker));
+    imageStats.images += names.length;
+    await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(c.concurrency, names.length)) }, worker));
+    imageStats.imageMs += Date.now() - imageStartedAt;
+    ensureAlive(task);
     onProgress?.({ stage: 'download', chapter: i + 1, chapters: chapters.length, ...totals });
 
     chapterResults.push({
@@ -747,12 +772,25 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
     scrambleId = await api0.fetchScrambleId(chapterResults[0].id);
   }
 
+  imageStats.success = totals.ok;
+  imageStats.failed = totals.fail;
   return { album, albumDir, chapters: chapterResults, totals, failed, scrambleId };
+  } finally {
+    const network = api0.downloadStats();
+    log(`[jm-download] ${JSON.stringify({ albumId: String(albumId), ...network, downloaded: network.success,
+      ...imageStats, elapsedMs: Date.now() - startedAt,
+      mibPerSecond: imageStats.imageMs > 0 ? network.bytes / 1048576 / (imageStats.imageMs / 1000) : 0 })}`);
+    try { await api0.close(); } finally { finishDownload?.(); }
+  }
 }
 
 // ───────────────────────── 主任务 ─────────────────────────
 
 async function runJob(job) {
+  const jobStartedAt = Date.now();
+  if (job.control) job.control.abortController = new AbortController();
+  const timings = { downloadMs: 0, pdfMs: 0, restoreMs: 0, pdfWriteMs: 0, uploadMs: 0 };
+  let downloadFinished = false;
   const c = cfg();
   const { albumId, chatKey, kind, sender, onebot, who, whoName } = job;
   const say = (text) => sendText(sender, onebot, chatKey, text);
@@ -814,6 +852,8 @@ async function runJob(job) {
             },
           });
         })());
+    timings.downloadMs = Date.now() - jobStartedAt;
+    downloadFinished = true;
     if (cachedPdf) await say(`📦 JM${albumId} 命中最近 ${c.keepHours} 小时内的 PDF，直接重新发送，不重新下载。`);
     record.title = toSimplified(dl.album.name);
     record.description = toSimplified(dl.album.description || '');
@@ -872,6 +912,7 @@ async function runJob(job) {
         max_dim: c.pdfMaxDim,
         chapters: dl.chapters.map((ch) => ({ name: ch.name, pages: ch.pages })),
       };
+      const pdfStartedAt = Date.now();
       const res = await pdfBridge.runTask({
         python: worker.python,
         task,
@@ -884,6 +925,9 @@ async function runJob(job) {
           }
         },
       });
+      timings.pdfMs = Date.now() - pdfStartedAt;
+      timings.restoreMs = res.timings?.restoreMs || 0;
+      timings.pdfWriteMs = res.timings?.pdfWriteMs || 0;
       if (res.ok) {
         pdfInfo = res;
         deliverPath = res.output;
@@ -943,6 +987,7 @@ async function runJob(job) {
 
     // ③ 上传（若开启「合成 PDF 后删除原图」，这里只是收尾顺序的前半段 —— 见 ④）
     const dest = resolveUploadTarget(c, chatKey, kind);
+    const uploadStartedAt = Date.now();
     let uploadNote = '';
     let uploadError = '';
     let filenameCompatibilityNote = '';
@@ -1007,6 +1052,7 @@ async function runJob(job) {
       }
     }
 
+    timings.uploadMs = Date.now() - uploadStartedAt;
     // ④ 按需删除原图（省空间模式）
     // 顺序说明：删除排在"上传"之后 —— 上传用的是 PDF 而不是原图，
     //          放在这里还能保证"上传失败时原图仍在"，便于重发补传。
@@ -1110,6 +1156,10 @@ async function runJob(job) {
     await say(`❌ JM${albumId} 处理失败：${record.error}`);
     warn(`JM${albumId} 任务失败：${error?.stack ?? error}`);
     return record;
+  } finally {
+    if (!downloadFinished) timings.downloadMs = Date.now() - jobStartedAt;
+    log(`[jm-performance] ${JSON.stringify({ albumId: String(albumId), stage: record.stage, ok: record.ok,
+      ...timings, totalMs: Date.now() - jobStartedAt })}`);
   }
 }
 
