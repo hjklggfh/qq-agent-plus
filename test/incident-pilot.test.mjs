@@ -210,4 +210,6 @@ test('disabled existing pilot remains readable but cannot mutate or capture', as
   assert.equal(reader.get(incident.id).message, 'saved');
   assert.equal(reader.capture(new Error('ignored')), null);
   assert.throws(() => reader.setChatControl('group:1', { mode: 'blocked' }), /未启用/);
+  // Windows 上必须先关库再让 fixture 删目录；只靠 t.after 会因句柄未释放导致 EPERM。
+  await reader.stop();
 });

@@ -537,6 +537,15 @@ export function createApp({
   // ── 组件 ──
   const visionScan = { running: false };   // 模型图片输入能力扫描的运行状态
   const store = new ChatStore(cfg.store?.maxMessagesPerChat ?? 0);   // 0 = 不限
+  // 私聊运行模式与群聊共用 incident-pilot 的 chat_runtime_controls（按 chatKey 一行），
+  // 但只认私聊自己的三个值；历史/异常值一律收敛为 normal。
+  const privateRuntimeMode = (control) =>
+    ['functions', 'blocked'].includes(control?.mode) ? control.mode : 'normal';
+  const chatRuntimeMode = (chatKey) => {
+    if (!String(chatKey || '').startsWith('private:')) return 'normal';
+    return privateRuntimeMode(incidentPilot?.getChatControl?.(chatKey));
+  };
+  const canRunFunctions = (chatKey) => canRun(chatKey) && chatRuntimeMode(chatKey) !== 'blocked';
   const memory = new MemoryStore();
   const sessions = new SessionRegistry(cfg.store?.keepSessionFiles ?? 0);   // 0 = 不限
   let incidentPilot = null;
@@ -591,29 +600,29 @@ export function createApp({
     log: { info: (...args) => log(...args), warn: moduleLog('bilibili') }
   });
   const imageSearch = new ImageSearchManager({
-    dataDir: DATA_DIR, getConfig, canRun, onebot, store,
+    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, onebot, store,
     download: safeFetchBinary,
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const pixiv = new PixivManager({
-    dataDir: DATA_DIR, getConfig, updateConfig, canRun, onebot, log: moduleLog('pixiv'),
+    dataDir: DATA_DIR, getConfig, updateConfig, canRun: canRunFunctions, onebot, log: moduleLog('pixiv'),
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const xSearch = new XSearchManager({
-    dataDir: DATA_DIR, getConfig, canRun, onebot, complete: chatCompletion,
+    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, onebot, complete: chatCompletion,
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options)
   });
   const ehentai = new EhentaiManager({
-    dataDir: DATA_DIR, getConfig, canRun, log: moduleLog('ehentai'),
+    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, log: moduleLog('ehentai'),
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const haiguiTang = new HaiguiTangManager({
-    dataDir: DATA_DIR, getConfig, canRun, log: moduleLog('haigui-tang'), complete: chatCompletion,
+    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, log: moduleLog('haigui-tang'), complete: chatCompletion,
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
   const jmFeature = initJmFeature({
@@ -627,7 +636,7 @@ export function createApp({
   let identityPilotError = '';
   // 定时提醒：落盘持久化（重启不丢），到点由编排器走主动唤醒让模型说出来
   const reminders = new ReminderStore();
-  const trpg = new TrpgManager({ dataDir: DATA_DIR, getConfig, canRun });
+  const trpg = new TrpgManager({ dataDir: DATA_DIR, getConfig, canRun: canRunFunctions });
   const orchestrator = new Orchestrator({
     store,
     memory,
@@ -1173,8 +1182,9 @@ export function createApp({
       // 模型在私聊里不该是上帝视角（2026-09-29 审查 P2）
       eventKind: isSelf && groupGame?.isSecretSelfMessage?.(chatKey, event.message_id) ? 'game-secret' : trpgAction ? 'trpg-action' : hasFileSegment && !isSelf ? 'file-attachment' : 'message'
     };
+    const runtimeMode = chatRuntimeMode(chatKey);
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: passiveFileOnly || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1185,10 +1195,11 @@ export function createApp({
     }
     emit('chat-update', chatKey);
     if (passiveFileOnly) return;
+    if (runtimeMode === 'blocked') return;
     // 管理员私聊指令先于跑团/下载器/模型消费，避免其他玩法接管时误解配置操作。
     if (adminAccessCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) return;
+      if (!canRunFunctions(chatKey) || orchestrator.paused || arrivedInactive) return;
       let reply;
       try {
         reply = executeAdminChatAccessCommand(adminAccessCommand, {
@@ -1217,7 +1228,7 @@ export function createApp({
     }
     // 跑团优先接管本窗口，行动不再落入下载器或普通聊天触发逻辑。
     if (!isSelf && (trpgCommand || trpgManaged || trpg.narratorActive(chatKey))) {
-      if (!canRun(chatKey) || orchestrator.paused || arrivedInactive) {
+      if (!canRunFunctions(chatKey) || orchestrator.paused || arrivedInactive) {
         store.markRead(chatKey, [stored.id]);
         return;
       }
@@ -1241,9 +1252,9 @@ export function createApp({
     // 明确搜图指令在入库时即消费，防止同群其他模型任务或重启重新领取。
     if (xCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         void xSearch.start(xCommand, chatKey, stored.id, senderId).then(async (result) => {
-          if (result.error && canRun(chatKey) && !orchestrator.paused) {
+          if (result.error && canRunFunctions(chatKey) && !orchestrator.paused) {
             await sender.sendTextBatch(chatKey, [result.error], { runId: `x-search-hint-${stored.id}`, preserveCode: false });
           }
           if (result.sendUnknown) log('[x-search] 发送结果待核对，未自动重发');
@@ -1253,9 +1264,9 @@ export function createApp({
     }
     if (pidCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         void pixiv.start(pidCommand, chatKey, stored.id).then(async (result) => {
-          if (result?.isError && !result.sendUnknown && canRun(chatKey) && !orchestrator.paused && (result.immediate || getConfig().pixiv?.enabled)) {
+          if (result?.isError && !result.sendUnknown && canRunFunctions(chatKey) && !orchestrator.paused && (result.immediate || getConfig().pixiv?.enabled)) {
             await sender.sendTextBatch(chatKey, [result.content], { runId: `pixiv-hint-${stored.id}`, preserveCode: false });
           }
         }).catch((error) => log('[pixiv] PID 任务异常:', error?.name || 'Error'));
@@ -1264,9 +1275,9 @@ export function createApp({
     }
     if (ehCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         void ehentai.handle(ehCommand, chatKey, stored.id).then(async (result) => {
-          if (result.error && !result.sendUnknown && canRun(chatKey) && !orchestrator.paused) {
+          if (result.error && !result.sendUnknown && canRunFunctions(chatKey) && !orchestrator.paused) {
             try { await sender.sendTextBatch(chatKey, [result.error], { runId: `ehentai-error-${stored.id}`, preserveCode: false }); }
             catch (error) { log('[ehentai] 错误提示发送失败:', error?.message ?? error); }
           }
@@ -1276,9 +1287,9 @@ export function createApp({
     }
     if (haiguiCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         void haiguiTang.handle(haiguiCommand, chatKey, stored.id).then(async (result) => {
-          if (result?.error && canRun(chatKey) && !orchestrator.paused) {
+          if (result?.error && canRunFunctions(chatKey) && !orchestrator.paused) {
             try { await sender.sendTextBatch(chatKey, [result.error], { runId: `haigui-tang-error-${stored.id}`, preserveCode: false }); }
             catch (error) { log('[haigui-tang] 错误提示发送失败:', error?.message ?? error); }
           }
@@ -1288,7 +1299,7 @@ export function createApp({
     }
     if (searchCommand) {
       store.markRead(chatKey, [stored.id]);
-      if (canRun(chatKey) && !orchestrator.paused && !arrivedInactive) {
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         await imageSearch.start(searchCommand, chatKey, stored.id);
       }
       return;
@@ -1344,7 +1355,7 @@ export function createApp({
     // 解析不了的消息返回 false，照常走下面的普通链路落到模型手里兜底。
     if (!isSelf && kind === 'private' && groupGame?.consumePrivateAction
       && await groupGame.consumePrivateAction(chatKey, stored)) return;
-    if (!isSelf) orchestrator.onIncoming(chatKey);
+    if (!isSelf && runtimeMode === 'normal') orchestrator.onIncoming(chatKey);
   }
 
   // ── 启动/重连补齐 ──
@@ -2149,10 +2160,15 @@ export function createApp({
   router.add('GET', /^\/api\/chats\/(group|private)_(\d+)\/runtime-control$/, async (req, res, params) => {
     const key = `${params[1]}:${params[2]}`;
     const meta = store.getChatMeta(key);
+    const control = incidentPilot?.getChatControl(key) || {
+      chatKey: key, mode: params[1] === 'private' ? 'normal' : 'auto', reason: '', version: 0
+    };
+    const runtimeMode = params[1] === 'private'
+      ? { ...control, mode: privateRuntimeMode(control) }
+      : null;
     return json(res, 200, {
-      control: incidentPilot?.getChatControl(key) || {
-        chatKey: key, mode: 'auto', reason: '', version: 0
-      },
+      runtimeMode,
+      control,
       decision: incidentPilot?.chatDecision(key, meta) || {
         allowed: meta.held === 0,
         mode: 'legacy',
@@ -2164,11 +2180,43 @@ export function createApp({
     });
   });
   router.add('PUT', /^\/api\/chats\/(group|private)_(\d+)\/runtime-control$/, async (req, res, params) => {
+    const key = `${params[1]}:${params[2]}`;
+    const body = await readBody(req);
+    const requested = String(body.mode || '').trim().toLowerCase();
+    const privateMode = {
+      normal: 'normal', 正常: 'normal', 正常模式: 'normal',
+      functions: 'functions', function: 'functions', 'function-only': 'functions', function_only: 'functions', 功能: 'functions', 仅功能: 'functions', 仅功能模式: 'functions',
+      blocked: 'blocked', block: 'blocked', 'full-block': 'blocked', full_block: 'blocked', 完全阻塞: 'blocked'
+    }[requested];
+    if (params[1] === 'private') {
+      if (!privateMode) return json(res, 400, { error: 'mode 必须是 normal、functions 或 blocked' });
+      if (!incidentPilot?.active) return json(res, 409, { error: '异常处理实验当前未启用' });
+      const control = incidentPilot.setChatControl(key, {
+        mode: privateMode,
+        reason: body.reason,
+        expectedVersion: body.expectedVersion,
+        updatedBy: 'console'
+      });
+      const decision = orchestrator.enforceChatControl(key);
+      let backlog = { action: 'keep', marked: 0, kept: store.unreadCount(key) };
+      if (decision.allowed && body.backlogAction === 'discard') {
+        backlog = { action: 'discard', marked: store.markAllRead(key), kept: 0 };
+      } else if (decision.allowed && body.backlogAction === 'recent') {
+        backlog = { action: 'recent', ...store.keepLatestPending(key) };
+        if (backlog.kept > 0) orchestrator.scheduleWake(key, 0);
+      }
+      emit('chat-update', key);
+      return json(res, 200, {
+        ok: true,
+        runtimeMode: { ...control, mode: privateMode },
+        control,
+        decision,
+        backlog
+      });
+    }
     if (!incidentPilot?.active) {
       return json(res, 409, { error: '异常处理实验当前未启用' });
     }
-    const key = `${params[1]}:${params[2]}`;
-    const body = await readBody(req);
     if (!['auto', 'blocked', 'continue'].includes(body.mode)) {
       return json(res, 400, { error: 'mode 必须是 auto、blocked 或 continue' });
     }
@@ -2242,6 +2290,11 @@ export function createApp({
     try {
       const chatKey = `${params[1]}:${params[2]}`;
       assertCanSend(chatKey);
+      const runtimeMode = chatRuntimeMode(chatKey);
+      if (runtimeMode === 'blocked') {
+        const reason = incidentPilot?.getChatControl(chatKey)?.reason || '该会话已完全阻塞';
+        return json(res, 409, { error: reason });
+      }
       const decision = incidentPilot?.chatDecision(chatKey, store.getChatMeta(chatKey));
       if (decision && !decision.allowed) {
         return json(res, 409, { error: decision.reason || '该会话当前被阻塞' });
@@ -4134,11 +4187,17 @@ export function createApp({
     const cfgNow = getConfig();
     const chats = store.listChats().map((key) => {
       const meta = store.getChatMeta(key);
+      const incidentControl = incidentPilot?.getChatControl(key) || null;
+      const runtimeMode = key.startsWith('private:') && incidentControl
+        ? { ...incidentControl, mode: privateRuntimeMode(incidentControl) }
+        : null;
+      const incidentDecision = incidentPilot?.chatDecision(key, meta) || null;
       return {
         key,
         ...meta,
-        incidentControl: incidentPilot?.getChatControl(key) || null,
-        incidentDecision: incidentPilot?.chatDecision(key, meta) || null,
+        runtimeMode,
+        incidentControl,
+        incidentDecision,
         ...(cfgNow.timeControl?.enabled
           ? { timeControl: timeControlState(cfgNow.timeControl, key) } : {})
       };

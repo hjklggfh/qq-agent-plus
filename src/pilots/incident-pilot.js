@@ -6,7 +6,8 @@ import { redactText } from '../core/redact.js';
 
 const DB_NAME = 'incident-pilot.sqlite';
 const INCIDENT_STATES = new Set(['open', 'acknowledged', 'resolved']);
-const CHAT_MODES = new Set(['auto', 'blocked', 'continue']);
+const GROUP_CHAT_MODES = new Set(['auto', 'blocked', 'continue']);
+const PRIVATE_CHAT_MODES = new Set(['normal', 'functions', 'blocked']);
 const SEVERITY_ORDER = { info: 0, warning: 1, error: 2, critical: 3 };
 
 // 脱敏规则统一在 core/redact.js（orchestrator 写 journal 的工具有错行同口径）
@@ -465,8 +466,12 @@ export class IncidentPilotManager {
     if (!/^(group|private):\d+$/.test(key)) {
       throw Object.assign(new Error('会话标识无效'), { httpStatus: 400 });
     }
-    if (!CHAT_MODES.has(mode)) {
-      throw Object.assign(new Error('会话模式必须是 auto、blocked 或 continue'), { httpStatus: 400 });
+    const isPrivate = key.startsWith('private:');
+    const allowedModes = isPrivate ? PRIVATE_CHAT_MODES : GROUP_CHAT_MODES;
+    if (!allowedModes.has(mode)) {
+      throw Object.assign(new Error(isPrivate
+        ? '私聊模式必须是 normal、functions 或 blocked'
+        : '群聊模式必须是 auto、blocked 或 continue'), { httpStatus: 400 });
     }
     const current = this.getChatControl(key);
     if (expectedVersion != null && Number(expectedVersion) !== current.version) {
@@ -513,6 +518,15 @@ export class IncidentPilotManager {
         mode: control.mode,
         effectiveState: 'blocked',
         reason: control.reason || '管理员已阻塞该会话',
+        control
+      };
+    }
+    if (control.mode === 'functions') {
+      return {
+        allowed: false,
+        mode: control.mode,
+        effectiveState: 'functions',
+        reason: control.reason || '该会话处于仅功能模式',
         control
       };
     }

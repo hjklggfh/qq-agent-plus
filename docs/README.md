@@ -32,7 +32,7 @@
 | [STABLE_FEATURE_MIGRATION_NOTES.md](STABLE_FEATURE_MIGRATION_NOTES.md) | 实验/退役功能留下的一次性兼容边界（身份、好友、异常、黑话） |
 | [EXPERIMENTAL_FEATURE_STANDARD.md](EXPERIMENTAL_FEATURE_STANDARD.md) | 实验功能的开发规范：开关、默认值、降级与转正流程 |
 | [ASSET_OBSERVABILITY.md](ASSET_OBSERVABILITY.md) | AI 资产观测（表情/黑话等）的统计口径与控制台入口 |
-| [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界 |
+| [PRIVATE_PROACTIVE.md](PRIVATE_PROACTIVE.md) | 主动私信适配：白名单、演练模式、冷场/冷却、状态与安全边界，以及与私聊运行模式的关系 |
 | [BILIBILI-AUTO-FORWARD.md](BILIBILI-AUTO-FORWARD.md) | B 站视频链接自动下载、合并音视频并转发到群聊 |
 | [IMAGE-SEARCH.md](IMAGE-SEARCH.md) | 以图搜图：SerpApi、Google Lens、Yandex、trace.moe，国内或东京中转、指令和平台限制 |
 | [PIXIV.md](PIXIV.md) | 内置 PID 搜索：旧插件迁移、会话分级、作品核实、多页分批与继续取图 |

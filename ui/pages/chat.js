@@ -358,6 +358,16 @@ async function loadChats({ quiet = false } = {}) {
 }
 
 function chatControlIcon(chat) {
+  const isPrivate = String(chat.key || '').startsWith('private:');
+  const runtimeMode = chat.runtimeMode?.mode || 'normal';
+  if (runtimeMode === 'blocked') return { icon: '■', label: isPrivate ? '私聊完全阻塞' : '会话完全阻塞' };
+  if (runtimeMode === 'functions') return { icon: '⚙', label: '私聊仅执行功能指令' };
+  if (isPrivate) {
+    if (chat.incidentDecision?.effectiveState === 'degraded') {
+      return { icon: '!', label: '私聊待核对旧写入' };
+    }
+    return { icon: '◉', label: '私聊正常模式' };
+  }
   const mode = chat.incidentControl?.mode || 'auto';
   if (mode === 'blocked') return { icon: '■', label: '会话已阻塞' };
   if (mode === 'continue') return { icon: '▶', label: '会话强制继续' };
@@ -369,24 +379,31 @@ function chatControlIcon(chat) {
 
 async function openChatRuntimeControl(chatKey) {
   const data = await api(`/api/chats/${chatKey.replace(':', '_')}/runtime-control`);
+  const isPrivate = chatKey.startsWith('private:');
+  const runtimeMode = data.runtimeMode || { mode: 'normal', reason: '', version: 0 };
   const control = data.control || { mode: 'auto', reason: '', version: 0 };
+  const activeMode = isPrivate ? runtimeMode.mode : control.mode;
   const overlay = modelModalShell({
     head: `会话运行控制 · ${formatChatTitle(chatKey, chatNameOf(chatKey))}`,
     body: `
       <div class="field"><label>运行模式</label>
         <select id="chat-runtime-mode">
-          <option value="auto" ${control.mode === 'auto' ? 'selected' : ''}>自动处理（推荐）</option>
-          <option value="blocked" ${control.mode === 'blocked' ? 'selected' : ''}>阻塞会话</option>
-          <option value="continue" ${control.mode === 'continue' ? 'selected' : ''}>继续处理新消息</option>
+          ${isPrivate ? `
+            <option value="normal" ${activeMode === 'normal' ? 'selected' : ''}>正常模式</option>
+            <option value="functions" ${activeMode === 'functions' ? 'selected' : ''}>仅功能模式</option>
+            <option value="blocked" ${activeMode === 'blocked' ? 'selected' : ''}>完全阻塞</option>` : `
+            <option value="auto" ${activeMode === 'auto' ? 'selected' : ''}>自动处理（推荐）</option>
+            <option value="blocked" ${activeMode === 'blocked' ? 'selected' : ''}>阻塞会话</option>
+            <option value="continue" ${activeMode === 'continue' ? 'selected' : ''}>继续处理新消息</option>`}
         </select></div>
-      <div class="field"><label>原因</label><input type="text" id="chat-runtime-reason" value="${esc(control.reason || '')}" placeholder="可选，记录人工操作原因" /></div>
+      <div class="field"><label>原因</label><input type="text" id="chat-runtime-reason" value="${esc((isPrivate ? runtimeMode.reason : control.reason) || '')}" placeholder="可选，记录人工操作原因" /></div>
       <div class="field"><label>积压消息</label>
         <select id="chat-runtime-backlog">
           <option value="keep">保留未读，暂不唤醒</option>
           <option value="recent">仅处理最近一批</option>
           <option value="discard">从下一条新消息开始</option>
         </select></div>
-      <div class="hint">当前未读 ${fmtTok(data.unread)} 条，待核对写入 ${fmtTok(data.held)} 条。继续模式不会重试未知旧写入，也不能绕过全局观察、白名单或时间控制。</div>`,
+      <div class="hint">当前未读 ${fmtTok(data.unread)} 条，待核对写入 ${fmtTok(data.held)} 条。${isPrivate ? '仅功能模式会跳过普通消息的 AI 对话和主动回复，但保留 JM、PID、搜图等功能指令。' : '继续模式不会重试未知旧写入，也不能绕过全局观察、白名单或时间控制。'}</div>`,
     foot: '<button type="button" class="btn" data-control-cancel>取消</button>'
       + '<button type="button" class="btn btn-primary" data-control-save>保存</button>'
   });
@@ -403,8 +420,8 @@ async function openChatRuntimeControl(chatKey) {
           mode,
           reason: overlay.querySelector('#chat-runtime-reason').value.trim(),
           backlogAction: overlay.querySelector('#chat-runtime-backlog').value,
-          expectedVersion: control.version,
-          confirm: mode === 'continue'
+          expectedVersion: isPrivate ? runtimeMode.version : control.version,
+          confirm: !isPrivate && mode === 'continue'
         })
       });
       closeModelModal(overlay);
@@ -490,8 +507,8 @@ function renderChatList() {
       threadLabel = '等待续接';
     }
     const incidentControl = chatControlIcon(c);
-    const showIncidentControl = c.key.startsWith('group:')
-      && state.config?.incidentPilot?.enabled === true;
+    const showIncidentControl = c.key.startsWith('private:')
+      || (c.key.startsWith('group:') && state.config?.incidentPilot?.enabled === true);
     return `
       <div class="chat-item ${c.key === state.currentChatKey ? 'selected' : ''} ${c.unread ? 'unread-row' : ''} ${isNew ? 'new-item' : ''}" data-key="${esc(c.key)}">
         <div class="chat-item-title">
@@ -602,7 +619,7 @@ function renderChatMessages() {
     </div>
     <div class="chat-toolbar">
       <button class="btn btn-small" id="chat-wake-btn">主动唤醒</button>
-      ${key.startsWith('group:') && state.config?.incidentPilot?.enabled === true
+      ${(key.startsWith('private:') || (key.startsWith('group:') && state.config?.incidentPilot?.enabled === true))
         ? `<button type="button" class="icon-btn" id="chat-runtime-control" title="更改会话运行模式" aria-label="更改会话运行模式">${chatControlIcon(meta).icon}</button>`
         : ''}
       <span class="muted chat-action-result" id="chat-wake-result" role="status"></span>
