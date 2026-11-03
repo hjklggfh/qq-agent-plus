@@ -467,3 +467,110 @@ test('JM 失败后群文件列表无法核对，不能直接换编号名重传',
   assert.equal(result.filenameRetries, 0);
   assert.equal(uploads, 1);
 });
+
+test('JM 私聊原标题因 c2c 拒收失败后，编号名只调用一次并成功，附带兼容提示', async (t) => {
+  const { filePath } = fixture(t);
+  const calls = [];
+  const result = await uploadFile({
+    chatKey: 'private:1607252807',
+    filePath,
+    name: 'JM1205856-清冷前辈小姐.pdf',
+    fallbackName: 'JM1205856.pdf',
+    fallbackOnFailure: true,
+    onebot: {
+      async call(action, params) {
+        calls.push({ action, params });
+        if (calls.length === 1) {
+          throw new Error('OneBot upload_private_file 失败: retcode=100 send c2c file message rejected: result=1 err=');
+        }
+        return { file_id: 'c2c-fallback-ok-id' };
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.scope, 'private');
+  assert.equal(result.fileId, 'c2c-fallback-ok-id');
+  assert.equal(result.attempts, 2);
+  assert.equal(result.filenameRetries, 1);
+  assert.equal(result.usedFallbackName, true);
+  assert.equal(result.fileName, 'JM1205856.pdf');
+  assert.equal(result.compatibilityNote, FILENAME_COMPATIBILITY_NOTE);
+  assert.deepEqual(calls.map((c) => c.params.name), ['JM1205856-清冷前辈小姐.pdf', 'JM1205856.pdf']);
+});
+
+test('JM 私聊原标题与编号名均失败时立即停止，保留两次错误详情', async (t) => {
+  const { filePath } = fixture(t);
+  const calls = [];
+  const result = await uploadFile({
+    chatKey: 'private:1607252807',
+    filePath,
+    name: 'JM1205856-清冷前辈小姐.pdf',
+    fallbackName: 'JM1205856.pdf',
+    fallbackOnFailure: true,
+    onebot: {
+      async call(action, params) {
+        calls.push({ action, params });
+        if (calls.length === 1) {
+          throw new Error('OneBot upload_private_file 失败: retcode=100 send c2c file message rejected: result=1 err=');
+        }
+        throw new Error('network timeout 编号名也发送失败');
+      },
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.filenameRetries, 1);
+  assert.equal(result.usedFallbackName, true);
+  assert.match(result.error, /已尝试 2 次，备用文件名重试 1 次/);
+  assert.match(result.error, /原文件名：.*send c2c file message rejected: result=1/);
+  assert.match(result.error, /编号文件名：.*network timeout 编号名也发送失败/);
+  assert.equal(calls.length, 2);
+});
+
+test('私聊未启用 fallbackOnFailure 且非文件名格式错误时，不自动用编号名重试', async (t) => {
+  const { filePath } = fixture(t);
+  const calls = [];
+  const result = await uploadFile({
+    chatKey: 'private:1607252807',
+    filePath,
+    name: 'JM1205856-清冷前辈小姐.pdf',
+    fallbackName: 'JM1205856.pdf',
+    fallbackOnFailure: false,
+    onebot: {
+      async call(action, params) {
+        calls.push({ action, params });
+        throw new Error('network timeout');
+      },
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.attempts, 1);
+  assert.equal(result.filenameRetries, 0);
+  assert.equal(calls.length, 1);
+});
+
+test('私聊遇明确文件名格式错误时，即便未显式传 fallbackOnFailure 也重试编号名', async (t) => {
+  const { filePath } = fixture(t);
+  const calls = [];
+  const result = await uploadFile({
+    chatKey: 'private:1607252807',
+    filePath,
+    name: 'JM1205856-特殊字符.pdf',
+    fallbackName: 'JM1205856.pdf',
+    onebot: {
+      async call(action, params) {
+        calls.push({ action, params });
+        if (calls.length === 1) {
+          throw new Error('invalid file name: contains illegal character');
+        }
+        return { file_id: 'format-fallback-id' };
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.filenameRetries, 1);
+  assert.equal(result.usedFallbackName, true);
+  assert.equal(result.fileName, 'JM1205856.pdf');
+  assert.equal(calls.length, 2);
+});

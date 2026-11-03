@@ -240,24 +240,78 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
     });
   }
 
-  // 私聊文件：协议端实现差异最大的一条路，失败要给出可操作的建议
-  try {
-    const res = await onebot.call('upload_private_file', {
-      user_id: Number(id),
-      file: filePath,
-      name: fileName,
-      upload_file: true,
-    }, timeoutMs);
-    const fileId = pickFileId(res);
-    if (!fileId) return { ok: false, error: '协议端返回里没有 file_id（私聊文件上传可能未完成）' };
-    return { ok: true, fileId, scope: 'private', size };
-  } catch (error) {
-    return {
-      ok: false,
-      error: `私聊文件发送失败：${error?.message ?? error}。`
-        + '部分协议端不支持私聊文件，可以改成让群友在群里发起，或改用「上传到群文件」。',
+  // 私聊文件：协议端实现差异最大的一条路，失败要给出可操作的建议；支持与群文件一致的失败改编号名兜底。
+  const startedAt = Date.now();
+  const alternate = /^JM\d+(?:\.part\d+of\d+)?\.pdf$/.test(String(fallbackName)) && fallbackName !== fileName ? fallbackName : '';
+  let currentName = fileName;
+  let attempts = 0;
+  let filenameRetries = 0;
+  let firstError = null;
+  let lastError = null;
+  const emit = (event, fields = {}) => {
+    try { log?.(`[jm-upload] ${JSON.stringify({ scope: 'private', event, attempts, filenameRetries, usedFallbackName: currentName === alternate, elapsedMs: Date.now() - startedAt, ...fields })}`); } catch { /* 日志失败不影响交付 */ }
+  };
+  const finish = (result) => {
+    const usedFallbackName = currentName === alternate;
+    const output = {
+      ...result,
+      attempts,
+      retries: 0,
+      filenameRetries,
+      usedFallbackName,
+      fileName: currentName,
+      elapsedMs: Date.now() - startedAt,
+      compatibilityNote: result.ok && usedFallbackName ? FILENAME_COMPATIBILITY_NOTE : '',
     };
+    emit('result', { ok: result.ok });
+    return output;
+  };
+
+  while (true) {
+    attempts += 1;
+    const attemptKind = attempts === 1 ? 'initial' : 'filename_fallback';
+    emit('attempt', { attemptKind });
+    const attemptStartedAt = Date.now();
+    try {
+      const res = await onebot.call('upload_private_file', {
+        user_id: Number(id),
+        file: filePath,
+        name: currentName,
+        upload_file: true,
+      }, timeoutMs);
+      const fileId = pickFileId(res);
+      if (!fileId) {
+        lastError = new Error('协议端返回里没有 file_id（私聊文件上传可能未完成）');
+        emit('attempt_failed', { durationMs: Date.now() - attemptStartedAt, code: null, retcode: null });
+        if (alternate && !filenameRetries && (fallbackOnFailure || isFilenameFormatError(lastError))) {
+          currentName = alternate;
+          filenameRetries += 1;
+          continue;
+        }
+        break;
+      }
+      return finish({ ok: true, fileId, scope: 'private', size });
+    } catch (error) {
+      firstError ??= error;
+      lastError = error;
+      const codes = uploadErrorCodes(error);
+      const safeCode = (value) => (/^-?\d+$|^(?:E[A-Z_]+|UND_ERR_[A-Z_]+)$/.test(String(value)) ? value : null);
+      emit('attempt_failed', { durationMs: Date.now() - attemptStartedAt, retcode: safeCode(codes.retcode), code: safeCode(codes.code) });
+
+      if (alternate && !filenameRetries && (fallbackOnFailure || isFilenameFormatError(error))) {
+        currentName = alternate;
+        filenameRetries += 1;
+        continue;
+      }
+      break;
+    }
   }
+
+  return finish({
+    ok: false,
+    error: `私聊文件发送失败${filenameRetries ? `（已尝试 ${attempts} 次，备用文件名重试 1 次）：原文件名：${firstError?.message ?? firstError}；编号文件名：` : '：'}${lastError?.message ?? lastError}。`
+      + '部分协议端不支持私聊文件，可以改成让群友在群里发起，或改用「上传到群文件」。',
+  });
 }
 
 /** 删除群文件（用于到期清理）。 */
