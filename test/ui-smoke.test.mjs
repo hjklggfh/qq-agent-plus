@@ -482,6 +482,71 @@ test('回忆窗口规则可独立保存；来源片段按文字展示且纠错�
   } finally { window.happyDOM?.abort?.(); }
 });
 
+test('百炼记忆增强设置在真实 DOM 显示、测试连通性与保存', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const cfg = {
+      api: {},
+      memory: {
+        bailian: {
+          enabled: false,
+          apiKey: '',
+          baseUrl: 'https://dashscope.aliyuncs.com',
+          rerankModel: 'gte-rerank',
+          embeddingModel: 'text-embedding-v3',
+          topN: 5,
+          minScore: 0.15
+        }
+      }
+    };
+    window.__bailianConfig = cfg;
+    vm.runInContext('state.config = __bailianConfig; state.settingsSection = "bailian";', ctx);
+    const container = window.document.createElement('div');
+    window.document.body.append(container);
+    container.innerHTML = vm.runInContext('renderBailianSettingsSection(__bailianConfig)', ctx);
+
+    const enabledBox = container.querySelector('#cfg-bailian-enabled');
+    const keyInput = container.querySelector('#cfg-bailian-apikey');
+    const toggleBtn = container.querySelector('#cfg-bailian-apikey-toggle');
+    const testBtn = container.querySelector('#cfg-bailian-test-btn');
+    const testResult = container.querySelector('#cfg-bailian-test-result');
+
+    assert.ok(enabledBox && keyInput && toggleBtn && testBtn && testResult, '百炼设置关键控件应存在');
+    assert.equal(enabledBox.checked, false);
+
+    const patches = [];
+    window.fetch = async (url, options = {}) => {
+      if (url === '/api/bailian/test' && options.method === 'POST') {
+        const body = JSON.parse(options.body);
+        assert.equal(body.apiKey, 'sk-bailian-manual-input');
+        return { ok: true, status: 200, json: async () => ({ ok: true, latencyMs: 88, message: '连通成功' }) };
+      }
+      if (url === '/api/config' && options.method === 'POST') {
+        patches.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({ config: cfg }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    vm.runInContext('bindBailianSection()', ctx);
+    keyInput.value = 'sk-bailian-manual-input';
+    enabledBox.checked = true;
+
+    // Test connectivity
+    testBtn.click();
+    await settle(50);
+    assert.ok(testResult.textContent.includes('测试通过'), '连通性测试应成功显示');
+
+    // Save config
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches.length, 1);
+    assert.equal(patches[0].memory.bailian.enabled, true);
+    assert.equal(patches[0].memory.bailian.apiKey, 'sk-bailian-manual-input');
+    assert.equal(patches[0].memory.bailian.rerankModel, 'gte-rerank');
+  } finally { window.happyDOM?.abort?.(); }
+});
+
 test('真实 DOM 冒烟：api() 走 fetch 桩', { skip: SKIP }, async () => {
   const { window, fetchLog } = loadPage();
   await settle();

@@ -31,6 +31,8 @@ export function classifyTransportFailure(error) {
   const message = String(error?.message ?? error);
   const causeText = String(error?.cause?.code || error?.cause?.message || '');
   const evidence = causeText || message;
+  // 协议层明确标记的未知结果优先，不能因附带的网络错误文字而再次发送。
+  if (error?.outcome === 'unknown') return { evidence, definite: false, uncertain: true };
   const definite = /ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|WebSocket is not open|WS 发送失败|socket was closed while data was being (compressed|read)/i.test(evidence);
   const uncertain = !definite
     && /timeout|timed out|ETIMEDOUT|ECONNRESET|EPIPE|socket hang up|fetch failed|network|HTTP 5\d\d|Unexpected status code: 5\d\d/i.test(evidence);

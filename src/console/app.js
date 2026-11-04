@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createRouter } from './router.js';
 import { recallPolicyKey } from '../memory/cross-chat-policy.js';
 import { installCrossChatRoutes } from '../memory/cross-chat-routes.js';
+import { rerankWithBailian } from '../memory/bailian-rag.js';
 
 import { asrApiKey, asrAvailable, asrConfigured, asrCredentialForSlot, asrCredentialResolve, asrCredentialSlot, asrCredentialSlotOf, asrCredentials, asrEndpointHost, asrKeyHost, asrKeySlots, asrKeySource, asrLocalBin, asrLocalModel, asrSecretId, asrSecretKey, ASR_PROVIDERS, conversationConfigForChat, findWhisperBinSync, getConfig, identityPilotEnabled, imageGenAvailable, imageGenKeyHosts, imageGenKeyOwnedBy, imageGenKeyResolve, incidentPilotEnabled, slangPilotEnabled, updateConfig, onTimeControlChange, pinImageGenKeyHost, DATA_DIR, ROOT } from '../core/config.js';
 import { tokenSaverEffective } from '../core/token-saver.js';
@@ -3345,6 +3346,42 @@ export function createApp({
       });
     }
   });
+  router.add('POST', '/api/bailian/test', async (req, res) => {
+    const startedAt = Date.now();
+    try {
+      const body = await readBody(req).catch(() => ({}));
+      const cfgNow = getConfig();
+      const envKey = (process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY || '').trim();
+      const apiKey = (body.apiKey && body.apiKey.trim() !== '******' ? body.apiKey.trim() : '')
+        || (cfgNow.memory?.bailian?.apiKey || '').trim()
+        || envKey;
+      if (!apiKey) {
+        return json(res, 200, { ok: false, error: '请先填写 API Key 或设置 DASHSCOPE_API_KEY' });
+      }
+      const baseUrl = (body.baseUrl && String(body.baseUrl).trim()) || cfgNow.memory?.bailian?.baseUrl || 'https://dashscope.aliyuncs.com';
+      const rerankModel = (body.rerankModel && String(body.rerankModel).trim()) || cfgNow.memory?.bailian?.rerankModel || 'gte-rerank';
+
+      const results = await rerankWithBailian({
+        query: '连通性测试',
+        documents: ['测试片段A', '测试片段B'],
+        settings: { apiKey, baseUrl, rerankModel, topN: 2, minScore: 0 },
+        timeoutMs: 10000
+      });
+      if (!results) {
+        return json(res, 200, { ok: false, error: '百炼 API 请求失败或超时，请检查 Key 与网络' });
+      }
+      const latencyMs = Date.now() - startedAt;
+      return json(res, 200, { ok: true, latencyMs, message: '百炼 API 连通成功！GTE 重排工作正常。' });
+    } catch (err) {
+      return json(res, 200, { ok: false, error: err.message || '内部错误' });
+    }
+  });
+  router.add('GET', '/api/bailian/key', async (req, res) => {
+    const cfgNow = getConfig();
+    const envKey = (process.env.DASHSCOPE_API_KEY || process.env.BAILIAN_API_KEY || '').trim();
+    const apiKey = String(cfgNow.memory?.bailian?.apiKey || envKey || '');
+    return json(res, 200, { apiKey });
+  }, { keyEndpoint: true });
   router.add('POST', '/api/test/api', async (req, res) => {
     const startedAt = Date.now();
     try {

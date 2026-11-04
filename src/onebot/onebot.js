@@ -48,6 +48,12 @@ const MEDIA_TIMEOUT_MS = 60000;
 // JSON 外壳的余量，又远高于任何常规文本调用（几十字节）。
 const HTTP_BODY_SAFE_MAX = 1536 * 1024;
 
+// 协议端收到 API 请求不代表 QQ 确认送达；明确的缺失回执提示必须保留未知状态。
+function responseFailureOutcome(body) {
+  const detail = [body.wording, body.message].filter(value => typeof value === 'string').join(' ');
+  return /\bdelivery was not confirmed\b|\bno message receipt\b/i.test(detail) ? 'unknown' : 'failed';
+}
+
 export class OneBotActionError extends Error {
   constructor(message, {
     action = '',
@@ -331,10 +337,10 @@ export class OneBotClient {
     const retcodeFailed = body.status == null && body.retcode != null && Number(body.retcode) !== 0;
     if (statusFailed || retcodeFailed) {
       throw new OneBotActionError(
-        `OneBot ${action} 失败: retcode=${body.retcode ?? body.status} ${body.wording ?? ''}`,
+        `OneBot ${action} 失败: retcode=${body.retcode ?? body.status} ${body.wording || body.message || ''}`,
         {
           action,
-          outcome: 'failed',
+          outcome: responseFailureOutcome(body),
           retcode: body.retcode ?? body.status,
           httpStatus: res.status
         }
@@ -408,8 +414,8 @@ export class OneBotClient {
       const retcodeFailed = frame.status == null && frame.retcode != null && Number(frame.retcode) !== 0;
       if (statusFailed || retcodeFailed) {
         throw new OneBotActionError(
-          `OneBot ${action} 失败: retcode=${frame.retcode ?? frame.status} ${frame.wording ?? ''}`,
-          { action, outcome: 'failed', retcode: frame.retcode ?? frame.status }
+          `OneBot ${action} 失败: retcode=${frame.retcode ?? frame.status} ${frame.wording || frame.message || ''}`,
+          { action, outcome: responseFailureOutcome(frame), retcode: frame.retcode ?? frame.status }
         );
       }
       return frame.data;

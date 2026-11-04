@@ -849,7 +849,7 @@ export function buildUserPrompt(ctx) {
   const memText = ctx.trpgNarrator ? '' : ctx.memory.formatForPrompt(ctx.chatKey, { userIds: [...relevantUserIds] });
   if (memText) parts.push(`【记忆】\n${memText}`);
   if (!ctx.trpgNarrator) {
-    const recall = recallConversations(ctx);
+    const recall = ctx.recallText !== undefined ? ctx.recallText : recallConversations(ctx);
     if (recall) parts.push(recall);
   }
 

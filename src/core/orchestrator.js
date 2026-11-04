@@ -109,7 +109,7 @@ function proactiveWindowState(raw, now) {
 import { safeSlice } from './util.js';
 import { PrivateProactive } from './private-proactive.js';
 import { canRun } from './access.js';
-import { recallAvailable } from '../memory/cross-chat-recall.js';
+import { recallAvailable, recallConversationsAsync } from '../memory/cross-chat-recall.js';
 import { recallPolicyKey } from '../memory/cross-chat-policy.js';
 import { knowledgeSettings } from '../llm/knowledge-search.js';
 import { assertTimeAllowed, isTimeActive, TimeControlError, watchTimeWindow, withTimeScope } from './time-gate.js';
@@ -1894,10 +1894,27 @@ export class Orchestrator {
       ? threadCheckpoint.state.recallKeys : [];
     session.priorRecallKeys = priorRecallKeys;
 
+    let recallText;
+    if (!trpgNarrator && recallAvailable(cfg, chatKey)) {
+      try {
+        recallText = await recallConversationsAsync({
+          chatKey,
+          triggerEntries,
+          store: this.store,
+          session,
+          priorRecallKeys,
+          signal: this.controllers.get(chatKey)?.signal
+        }, {}, cfg);
+      } catch {
+        // Fallback handled inside recallConversationsAsync
+      }
+    }
+
     // 首轮带完整上下文；生命周期后续轮只附加增量，旧消息保持字节级稳定以命中 DeepSeek 前缀缓存。
     const userPrompt = buildUserPrompt({
       chatKey, kind, chatId, chatName,
       priorRecallKeys,
+      recallText,
       triggerEntries,
       store: this.store,
       memory: this.memory,

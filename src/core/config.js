@@ -7,6 +7,7 @@
 // administrator configuration source.
 import * as legacy from './config-legacy.js';
 import { validateCrossChatPatch } from '../memory/cross-chat-policy.js';
+import { validateBailianRagPatch } from '../memory/bailian-rag.js';
 import { validateKnowledgePatch } from '../llm/knowledge-search.js';
 import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
@@ -309,6 +310,7 @@ export function updateConfig(patch) {
   const requestedAdmin = normalizedRequestedAdmin(rawPatch, current);
   const memoryPatch = rawPatch.memory?.__replace__ || rawPatch.memory;
   if (memoryPatch && Object.hasOwn(memoryPatch, 'crossChat')) validateCrossChatPatch(memoryPatch.crossChat);
+  if (memoryPatch && Object.hasOwn(memoryPatch, 'bailian')) validateBailianRagPatch(memoryPatch.bailian);
   const searchPatch = rawPatch.webSearch?.__replace__ || rawPatch.webSearch;
   if (searchPatch && Object.hasOwn(searchPatch, 'knowledge')) validateKnowledgePatch(searchPatch.knowledge);
   if (Object.hasOwn(rawPatch, 'trpg')) validateTrpgPatch(rawPatch.trpg);

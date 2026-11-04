@@ -76,6 +76,7 @@ function renderSettingsSidebar() {
     ...FEATURE_CATALOG.filter(item => !item.area && !item.section).map(item => [item.id, item.name]),
     ['haigui-tang', '海龟汤'],
     ['memory', '记忆'],
+    ['bailian', '百炼记忆增强'],
     ['experiments', '实验功能'],
     ['groupGame', '群游戏'],
     ['token-saver', '省 Token'],
@@ -89,7 +90,7 @@ function renderSettingsSidebar() {
   const sectionsByArea = {
     features: FEATURE_SECTIONS,
     games: ['haigui-tang', 'groupGame'],
-    settings: ['api', 'memory', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
+    settings: ['api', 'memory', 'bailian', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
   };
   const area = state.settingsArea || 'settings';
   const menu = allMenu.filter(([id]) => (sectionsByArea[area] || sectionsByArea.settings).includes(id));
@@ -130,7 +131,15 @@ function renderSettingsImpl() {
   }
   bindSettingsEvents(c);
   bindCrossSectionControls();
-  if (state.settingsSection === 'memory') bindRecallControls();
+  if (state.settingsSection === 'memory') {
+    bindRecallControls();
+    $('#btn-jump-bailian')?.addEventListener('click', () => {
+      state.settingsSection = 'bailian';
+      renderSettingsSidebar();
+      renderSettings();
+    });
+  }
+  if (state.settingsSection === 'bailian') bindBailianSection();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'x-search') bindXSearchSection();
@@ -213,6 +222,7 @@ function renderSettingsSection(c) {
     jm: () => renderJmSection(c),
     asr: () => renderAsrSection(c),
     memory: () => renderMemorySettingsSection(c),
+    bailian: () => renderBailianSettingsSection(c),
     experiments: () => renderExperimentalSettingsSection(c),
     groupGame: () => renderGroupGameSection(c),
     moments: () => renderDailyMomentsSection(c),
@@ -629,7 +639,144 @@ function renderMemorySettingsSection(c) {
       <div class="field"><label>回看天数</label><input id="cfg-recall-days" type="number" min="1" max="90" value="${esc(mem.crossChat?.lookbackDays ?? 30)}" /></div>
     </div>
     <div class="hint">按话题和时间线索筛选；没有匹配就不注入。最多2位说话者、2个来源窗口，不额外调用模型整理。续接上下文保留旧片段时自动去重；每轮最多追加2次检索。字符数不等于精确Token数。</div>
+    <div class="field" style="margin-top:16px;padding:12px;background:var(--bg-card,#1e293b);border:1px solid var(--border,#334155);border-radius:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <strong>阿里云百炼记忆增强 (Qwen + GTE 重排)</strong>
+          <div class="hint" style="margin:4px 0 0 0">接入百炼向量检索与重排模型，大幅提升跨对话与聊天记录回忆准确率。</div>
+        </div>
+        <button type="button" class="btn btn-small" id="btn-jump-bailian">前往配置</button>
+      </div>
+    </div>
     ${renderRecallControls(c)}`;
+}
+
+function renderBailianSettingsSection(c) {
+  const bailian = c?.memory?.bailian || {};
+  const hasKey = Boolean(bailian.hasApiKey || bailian.apiKey);
+  return `
+    <h3 id="settings-bailian">阿里云百炼记忆增强</h3>
+    <div class="hint" style="margin-bottom:12px">
+      接入阿里云百炼（DashScope）的文本向量与重排模型，实现跨会话认人、历史对话检索的高精度语义重排序（Rerank）。
+      保持原始记忆纯净无损，不产生模型总结幻觉，让机器人在群聊和私聊中准确“记起”细节与过往约定。
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="cfg-bailian-enabled" ${bailian.enabled === true ? 'checked' : ''} />
+      <label for="cfg-bailian-enabled">启用阿里云百炼记忆增强 (Qwen 语义检索 + GTE 重排)</label>
+    </div>
+    <div class="field">
+      <label>百炼 API Key (DASHSCOPE_API_KEY)</label>
+      <div style="display:flex;gap:8px">
+        <input type="password" id="cfg-bailian-apikey" style="flex:1"
+          placeholder="${hasKey ? '留空保持原有 Key (sk-...) / 也可直接填入新 Key' : '输入阿里云百炼 API Key (sk-...)'}"
+          value="${hasKey ? '******' : ''}" autocomplete="off" />
+        <button type="button" class="btn btn-small" id="cfg-bailian-apikey-toggle">显示</button>
+      </div>
+      <div class="hint">可在此直接填入并测试保存，保存后仅保存在服务器本地；或在服务器配置环境变量 <code>DASHSCOPE_API_KEY</code>。配置文件不会随 Git 上传泄露。</div>
+    </div>
+    <div class="field">
+      <label>API Base URL</label>
+      <input type="text" id="cfg-bailian-baseurl" value="${esc(bailian.baseUrl || 'https://dashscope.aliyuncs.com')}" placeholder="https://dashscope.aliyuncs.com" />
+      <div class="hint">默认官方 DashScope 地址：https://dashscope.aliyuncs.com</div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>重排模型 (Rerank Model)</label>
+        <input type="text" id="cfg-bailian-rerank-model" value="${esc(bailian.rerankModel || 'gte-rerank')}" placeholder="gte-rerank" />
+        <div class="hint">推荐 <code>gte-rerank</code>，跨对话回忆候选重排的核心打分模型。</div>
+      </div>
+      <div class="field">
+        <label>向量检索模型 (Embedding Model)</label>
+        <input type="text" id="cfg-bailian-embed-model" value="${esc(bailian.embeddingModel || 'text-embedding-v3')}" placeholder="text-embedding-v3" />
+        <div class="hint">推荐 <code>text-embedding-v3</code>，用于对话语义向量匹配。</div>
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>重排候选保留数 (topN)</label>
+        <input type="number" id="cfg-bailian-topn" min="1" max="20" value="${esc(bailian.topN ?? 5)}" />
+        <div class="hint">重排后注入 Prompt 的最高相关片段数（默认 5，范围 1–20）。</div>
+      </div>
+      <div class="field">
+        <label>最低相关度阈值 (minScore)</label>
+        <input type="number" id="cfg-bailian-minscore" min="0" max="1" step="0.05" value="${esc(bailian.minScore ?? 0.15)}" />
+        <div class="hint">相关度分数低于此阈值的片段将被滤除，避免混入无关记忆（默认 0.15，范围 0–1）。</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;margin:16px 0">
+      <button type="button" class="btn btn-primary btn-small" id="cfg-bailian-test-btn">测试 API 连通性</button>
+      <span id="cfg-bailian-test-result" class="muted" role="status"></span>
+    </div>
+  `;
+}
+
+function bindBailianSection() {
+  const toggleBtn = $('#cfg-bailian-apikey-toggle');
+  const keyInput = $('#cfg-bailian-apikey');
+  if (toggleBtn && keyInput) {
+    toggleBtn.onclick = async () => {
+      const show = toggleBtn.dataset.revealed !== '1';
+      if (show) {
+        const current = keyInput.value || '';
+        if (current && current !== '******') {
+          keyInput.type = 'text';
+          toggleBtn.textContent = '隐藏';
+          toggleBtn.dataset.revealed = '1';
+          return;
+        }
+        try {
+          const r = await api('/api/bailian/key');
+          if (r && r.apiKey) {
+            keyInput.value = r.apiKey;
+          }
+          keyInput.type = 'text';
+          toggleBtn.textContent = '隐藏';
+          toggleBtn.dataset.revealed = '1';
+        } catch {
+          keyInput.type = 'text';
+          toggleBtn.textContent = '隐藏';
+          toggleBtn.dataset.revealed = '1';
+        }
+      } else {
+        keyInput.type = 'password';
+        toggleBtn.textContent = '显示';
+        toggleBtn.dataset.revealed = '0';
+      }
+    };
+  }
+
+  const testBtn = $('#cfg-bailian-test-btn');
+  const testResult = $('#cfg-bailian-test-result');
+  if (testBtn && testResult) {
+    testBtn.onclick = async () => {
+      testBtn.disabled = true;
+      testBtn.textContent = '测试中…';
+      testResult.textContent = '';
+      testResult.className = 'muted';
+      try {
+        const apiKey = ($('#cfg-bailian-apikey')?.value || '').trim();
+        const baseUrl = ($('#cfg-bailian-baseurl')?.value || '').trim();
+        const rerankModel = ($('#cfg-bailian-rerank-model')?.value || '').trim();
+        const res = await api('/api/bailian/test', {
+          method: 'POST',
+          body: JSON.stringify({ apiKey, baseUrl, rerankModel })
+        });
+        if (res && res.ok) {
+          testResult.textContent = `✓ 测试通过 (${res.latencyMs}ms)：${res.message || '工作正常'}`;
+          testResult.className = 'status-badge-ok';
+        } else {
+          testResult.textContent = `✗ 测试失败：${res?.error || '无法连通'}`;
+          testResult.className = 'status-badge-err';
+        }
+      } catch (err) {
+        testResult.textContent = `✗ 测试出错：${err.message || '网络错误'}`;
+        testResult.className = 'status-badge-err';
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = '测试 API 连通性';
+      }
+    };
+  }
 }
 
 function renderTimeControlSection(c) {

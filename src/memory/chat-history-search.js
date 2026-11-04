@@ -5,6 +5,7 @@ import { safeSlice, sanitizeUserText } from '../core/util.js';
 import { recallParticipants, recallAvailable } from './cross-chat-recall.js';
 import { chatRecallRule, recallPolicyKey, crossChatSettings } from './cross-chat-policy.js';
 import { planRecallQuery, recallRelevance, recallSnippet } from './cross-chat-query.js';
+import { getBailianRagSettings, rerankWithBailian } from './bailian-rag.js';
 
 function dateBound(value, end = false) {
   if (value === undefined || value === '') return null;
@@ -151,8 +152,27 @@ export async function searchChatHistory(ctx, args = {}, options = {}) {
   }
   assertPolicy();
   const all = [...rows.values()].sort((a, b) => a.ts - b.ts);
-  const ranked = all.map((row, index) => ({ row, index, score: recallRelevance(row.text, plan) }))
-    .filter(hit => hit.score > 0).sort((a, b) => b.score - a.score || b.row.ts - a.row.ts).slice(0, 6);
+  let ranked = [];
+  const bailianSettings = getBailianRagSettings(cfg);
+  if (bailianSettings.enabled && all.length > 0 && query.trim()) {
+    try {
+      const rerankResults = await rerankWithBailian({
+        query,
+        documents: all.map(r => r.text),
+        settings: bailianSettings,
+        signal
+      });
+      if (Array.isArray(rerankResults) && rerankResults.length > 0) {
+        ranked = rerankResults.map(item => ({ row: all[item.index], index: item.index, score: item.score })).slice(0, 6);
+      }
+    } catch {
+      // Fallback to keyword matching
+    }
+  }
+  if (!ranked.length) {
+    ranked = all.map((row, index) => ({ row, index, score: recallRelevance(row.text, plan) }))
+      .filter(hit => hit.score > 0).sort((a, b) => b.score - a.score || b.row.ts - a.row.ts).slice(0, 6);
+  }
   const selected = []; const selectedIds = new Set();
   const result = { query, chatKey: source, crossChat: scope.cross, coverage, messages: selected,
     note: '按关键词检索原文。QQ接口为分页读取后筛选，可能使用协议端缓存；未找到不等于从未聊过。来源区分QQ接口与agent存档；跨窗口消息ID不可用于当前窗口引用。' };

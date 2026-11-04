@@ -637,6 +637,15 @@ export const DEFAULT_CONFIG = {
   // 记忆自动整理：条数超阈值且距上次超过冷却时间时，在运行结束后后台合并/去重/删过时
   memory: {
     crossChat: { enabled: false, privacy: false, maxChars: 1200, maxMessages: 4, lookbackDays: 30 },
+    bailian: {
+      enabled: false,
+      apiKey: '',
+      baseUrl: 'https://dashscope.aliyuncs.com',
+      embeddingModel: 'text-embedding-v3',
+      rerankModel: 'gte-rerank',
+      topN: 5,
+      minScore: 0.15
+    },
     consolidateEnabled: true,
     consolidateMinIntervalMs: 21600000,  // 默认 6 小时
     handoffEnabled: true,

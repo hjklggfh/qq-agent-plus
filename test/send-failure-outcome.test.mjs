@@ -16,6 +16,7 @@ process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 
 const { ChatStore } = await import('../src/core/store.js');
 const { SendQueue, classifyTransportFailure } = await import('../src/onebot/sender.js');
+const { OneBotClient } = await import('../src/onebot/onebot.js');
 const { setRuntimeConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
 
 const cfg = structuredClone(DEFAULT_CONFIG);
@@ -37,6 +38,38 @@ it('classifyTransportFailure：连不上=确定没送达，超时/重置/5xx=结
   }
   assert.equal(classifyTransportFailure(new Error('HTTP 502 Bad Gateway')).uncertain, true, '协议端 5xx 可能已转发');
   assert.equal(classifyTransportFailure(new Error('Request timeout after 15000ms')).uncertain, true);
+  const receiptUnknown = Object.assign(new Error('delivery was not confirmed: ECONNREFUSED'), { outcome: 'unknown' });
+  assert.equal(classifyTransportFailure(receiptUnknown).definite, false);
+  assert.equal(classifyTransportFailure(receiptUnknown).uncertain, true);
+});
+
+it('合并转发缺失回执：outbox 记 unknown，同一次运行不能再次发送', async (t) => {
+  const caseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-forward-receipt-'));
+  const store = new ChatStore(0, { dataDir: caseDir });
+  t.after(() => { store.close(); fs.rmSync(caseDir, { recursive: true, force: true }); });
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    return { ok: true, status: 200, json: async () => ({
+      status: 'failed', retcode: 100,
+      message: 'group message delivery was not confirmed: QQ returned no message receipt'
+    }) };
+  });
+  const bot = new OneBotClient({ httpUrl: 'http://127.0.0.1:1' });
+  // 禁言查询不属于本测试的发送请求。
+  bot.getGroupInfo = async () => ({});
+  bot.getGroupMemberInfo = async () => ({});
+  const incidents = [];
+  const sender = new SendQueue({ store, onebot: bot, onIncident: (_error, details) => incidents.push(details) });
+  const payload = { nodes: [{ type: 'node', data: { uin: '1', name: 'test', content: [{ type: 'text', data: { text: 'ordinary test message' } }] } }] };
+  const options = { runId: 'receipt-test' };
+  await assert.rejects(sender.forward('group:1', payload, options), error => error.outcome === 'unknown');
+  assert.equal(calls, 1);
+  assert.equal(outboxState(store, 'group:1'), 'unknown');
+  assert.equal(incidents.at(-1)?.outcome, 'unknown');
+  await assert.rejects(sender.forward('group:1', payload, options), /uncertain/);
+  assert.equal(calls, 1);
+  assert.equal(store.listUnknownOperations('group:1').length, 1);
 });
 
 // outbox 的落库状态（记账口径就是它）：failed = 确认没送达、可重试；unknown = 可能已投递、持有待核对。

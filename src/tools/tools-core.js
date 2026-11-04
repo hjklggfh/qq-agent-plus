@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { getConfig, imageGenAvailable, imageGenMaxPerHour } from '../core/config.js';
-import { recallConversations, recallParticipants } from '../memory/cross-chat-recall.js';
+import { recallConversationsAsync, recallParticipants } from '../memory/cross-chat-recall.js';
 import { recallPolicyKey } from '../memory/cross-chat-policy.js';
 import { searchChatHistory } from '../memory/chat-history-search.js';
 import { knowledgeSearch, knowledgeSettings } from '../llm/knowledge-search.js';
@@ -1195,7 +1195,7 @@ export function buildToolDefs() {
         if (!recallParticipants(ctx).includes(String(args.userId))) return err('只能回忆本轮实际说话者');
         if ((ctx.session.crossChatQueries || 0) >= 2) return err('本轮回忆检索已达上限，请使用已有片段');
         ctx.session.crossChatQueries = (ctx.session.crossChatQueries || 0) + 1;
-        return ok({ recall: recallConversations(ctx, args), note: '仅返回保存且可见的有限片段；没有片段时不要编造。' });
+        return ok({ recall: await recallConversationsAsync(ctx, args), note: '仅返回保存且可见的有限片段；没有片段时不要编造。' });
       }
     },
     {

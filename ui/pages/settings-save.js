@@ -132,6 +132,23 @@ async function saveConfig({ quiet = false } = {}) {
     };
   }
 
+  if (sec === 'bailian') {
+    const rawKey = (val('#cfg-bailian-apikey', '') || '').trim();
+    patch.memory = {
+      ...(c.memory || {}),
+      bailian: {
+        ...(c.memory?.bailian || {}),
+        enabled: chk('#cfg-bailian-enabled', c.memory?.bailian?.enabled === true),
+        ...(rawKey && rawKey !== '******' ? { apiKey: rawKey } : {}),
+        baseUrl: val('#cfg-bailian-baseurl', c.memory?.bailian?.baseUrl || 'https://dashscope.aliyuncs.com').trim(),
+        embeddingModel: val('#cfg-bailian-embed-model', c.memory?.bailian?.embeddingModel || 'text-embedding-v3').trim(),
+        rerankModel: val('#cfg-bailian-rerank-model', c.memory?.bailian?.rerankModel || 'gte-rerank').trim(),
+        topN: clampInt(val('#cfg-bailian-topn', c.memory?.bailian?.topN ?? 5), 1, 20, 5),
+        minScore: Math.max(0, Math.min(1, parseFloat(val('#cfg-bailian-minscore', c.memory?.bailian?.minScore ?? 0.15)) || 0.15))
+      }
+    };
+  }
+
   if (sec === 'experiments') {
     const autoFriendEnabled = chk(
       '#cfg-auto-friend-enabled',
