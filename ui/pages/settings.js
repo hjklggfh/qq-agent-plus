@@ -682,8 +682,8 @@ function renderBailianSettingsSection(c) {
     <div class="field-row">
       <div class="field">
         <label>重排模型 (Rerank Model)</label>
-        <input type="text" id="cfg-bailian-rerank-model" value="${esc(bailian.rerankModel || 'gte-rerank')}" placeholder="gte-rerank" />
-        <div class="hint">推荐 <code>gte-rerank</code>，跨对话回忆候选重排的核心打分模型。</div>
+        <input type="text" id="cfg-bailian-rerank-model" value="${esc(bailian.rerankModel || 'gte-rerank-v2')}" placeholder="gte-rerank-v2" />
+        <div class="hint">推荐 <code>gte-rerank-v2</code>（兼容 <code>gte-rerank</code> 与 <code>qwen3-rerank</code>），跨对话回忆候选重排的核心打分模型。</div>
       </div>
       <div class="field">
         <label>向量检索模型 (Embedding Model)</label>
@@ -757,9 +757,10 @@ function bindBailianSection() {
         const apiKey = ($('#cfg-bailian-apikey')?.value || '').trim();
         const baseUrl = ($('#cfg-bailian-baseurl')?.value || '').trim();
         const rerankModel = ($('#cfg-bailian-rerank-model')?.value || '').trim();
+        const embeddingModel = ($('#cfg-bailian-embed-model')?.value || '').trim();
         const res = await api('/api/bailian/test', {
           method: 'POST',
-          body: JSON.stringify({ apiKey, baseUrl, rerankModel })
+          body: JSON.stringify({ apiKey, baseUrl, rerankModel, embeddingModel })
         });
         if (res && res.ok) {
           testResult.textContent = `✓ 测试通过 (${res.latencyMs}ms)：${res.message || '工作正常'}`;

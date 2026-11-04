@@ -19,11 +19,11 @@ import { DEFAULT_CONFIG } from '../src/core/config.js';
 
 test('Bailian RAG: settings parsing and environment variable override', () => {
   assert.equal(BAILIAN_RAG_DEFAULTS.embeddingModel, 'text-embedding-v3');
-  assert.equal(BAILIAN_RAG_DEFAULTS.rerankModel, 'gte-rerank');
+  assert.equal(BAILIAN_RAG_DEFAULTS.rerankModel, 'gte-rerank-v2');
   const defaults = getBailianRagSettings({});
   assert.equal(defaults.enabled, false);
   assert.equal(defaults.apiKey, '');
-  assert.equal(defaults.rerankModel, 'gte-rerank');
+  assert.equal(defaults.rerankModel, 'gte-rerank-v2');
   assert.equal(defaults.embeddingModel, 'text-embedding-v3');
   assert.equal(defaults.topN, 5);
   assert.equal(defaults.minScore, 0.15);
@@ -108,7 +108,7 @@ test('Bailian RAG: rerankWithBailian sends correct request and filters by minSco
 
   assert.equal(calledUrl, 'https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank');
   assert.equal(calledHeaders['Authorization'], 'Bearer sk-test-rerank');
-  assert.equal(calledBody.model, 'gte-rerank');
+  assert.equal(calledBody.model, 'gte-rerank-v2');
   assert.equal(calledBody.input.query, '你喜欢游泳吗？');
   assert.deepEqual(calledBody.input.documents, docs);
 

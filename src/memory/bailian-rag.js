@@ -8,7 +8,7 @@ export const BAILIAN_RAG_DEFAULTS = Object.freeze({
   apiKey: '',
   baseUrl: 'https://dashscope.aliyuncs.com',
   embeddingModel: 'text-embedding-v3',
-  rerankModel: 'gte-rerank',
+  rerankModel: 'gte-rerank-v2',
   topN: 5,
   minScore: 0.15
 });
@@ -93,8 +93,12 @@ export function validateBailianRagPatch(value) {
  * Returns array of { index, score } sorted by relevance score descending.
  * Returns null on failure, invalid inputs or timeout to trigger graceful fallback.
  */
-export async function rerankWithBailian({ query, documents, settings, signal, timeoutMs = 8000 }) {
-  if (!settings?.apiKey || !query || !Array.isArray(documents) || !documents.length) {
+export async function rerankWithBailian({ query, documents, settings, signal, timeoutMs = 8000, throwOnError = false }) {
+  if (!settings?.apiKey) {
+    if (throwOnError) throw new Error('缺少 API Key');
+    return null;
+  }
+  if (!query || !Array.isArray(documents) || !documents.length) {
     return null;
   }
 
@@ -112,6 +116,10 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
     ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
     : AbortSignal.timeout(timeoutMs);
 
+  const rawModel = settings.rerankModel || 'gte-rerank-v2';
+  // 阿里云已将初代 gte-rerank 逐步替换下线，若传入旧标识自动对齐到当前可用模型 gte-rerank-v2
+  const modelToUse = rawModel === 'gte-rerank' ? 'gte-rerank-v2' : rawModel;
+
   try {
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -120,7 +128,7 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: settings.rerankModel || 'gte-rerank',
+        model: modelToUse,
         input: {
           query: cleanQuery,
           documents: cleanDocs
@@ -135,7 +143,18 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      log.warn?.(`Bailian rerank HTTP ${response.status}: ${safeSlice(errText, 200)}`);
+      let parsedMsg = '';
+      try {
+        const j = JSON.parse(errText);
+        parsedMsg = j.message || j.error?.message || j.code || '';
+      } catch (_err) {
+        // ignore JSON parse error
+      }
+      const detail = parsedMsg || safeSlice(errText, 200) || response.statusText;
+      log.warn?.(`Bailian rerank HTTP ${response.status}: ${detail}`);
+      if (throwOnError) {
+        throw new Error(`DashScope HTTP ${response.status}: ${detail}`);
+      }
       return null;
     }
 
@@ -143,6 +162,7 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
     const results = data?.output?.results;
     if (!Array.isArray(results)) {
       log.warn?.(`Bailian rerank returned unexpected structure: ${JSON.stringify(data).slice(0, 200)}`);
+      if (throwOnError) throw new Error(`DashScope 返回结构异常: ${JSON.stringify(data).slice(0, 200)}`);
       return null;
     }
 
@@ -156,6 +176,7 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
       .sort((a, b) => b.score - a.score);
   } catch (err) {
     log.warn?.(`Bailian rerank call failed: ${err?.message || err}`);
+    if (throwOnError) throw err;
     return null;
   }
 }
@@ -164,8 +185,12 @@ export async function rerankWithBailian({ query, documents, settings, signal, ti
  * Calls DashScope embedding API (e.g. text-embedding-v3).
  * Returns array of number[] embeddings, or null on failure.
  */
-export async function embedWithBailian({ texts, settings, signal, timeoutMs = 8000 }) {
-  if (!settings?.apiKey || !Array.isArray(texts) || !texts.length) {
+export async function embedWithBailian({ texts, settings, signal, timeoutMs = 8000, throwOnError = false }) {
+  if (!settings?.apiKey) {
+    if (throwOnError) throw new Error('缺少 API Key');
+    return null;
+  }
+  if (!Array.isArray(texts) || !texts.length) {
     return null;
   }
 
@@ -191,18 +216,33 @@ export async function embedWithBailian({ texts, settings, signal, timeoutMs = 80
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      log.warn?.(`Bailian embedding HTTP ${response.status}: ${safeSlice(errText, 200)}`);
+      let parsedMsg = '';
+      try {
+        const j = JSON.parse(errText);
+        parsedMsg = j.message || j.error?.message || j.code || '';
+      } catch (_err) {
+        // ignore JSON parse error
+      }
+      const detail = parsedMsg || safeSlice(errText, 200) || response.statusText;
+      log.warn?.(`Bailian embedding HTTP ${response.status}: ${detail}`);
+      if (throwOnError) {
+        throw new Error(`DashScope Embedding HTTP ${response.status}: ${detail}`);
+      }
       return null;
     }
 
     const data = await response.json();
-    if (!Array.isArray(data?.data)) return null;
+    if (!Array.isArray(data?.data)) {
+      if (throwOnError) throw new Error(`DashScope Embedding 返回异常: ${JSON.stringify(data).slice(0, 200)}`);
+      return null;
+    }
 
     return data.data
       .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
       .map(item => item.embedding);
   } catch (err) {
     log.warn?.(`Bailian embedding call failed: ${err?.message || err}`);
+    if (throwOnError) throw err;
     return null;
   }
 }

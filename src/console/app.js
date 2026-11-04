@@ -3359,19 +3359,20 @@ export function createApp({
         return json(res, 200, { ok: false, error: '请先填写 API Key 或设置 DASHSCOPE_API_KEY' });
       }
       const baseUrl = (body.baseUrl && String(body.baseUrl).trim()) || cfgNow.memory?.bailian?.baseUrl || 'https://dashscope.aliyuncs.com';
-      const rerankModel = (body.rerankModel && String(body.rerankModel).trim()) || cfgNow.memory?.bailian?.rerankModel || 'gte-rerank';
+      const rerankModel = (body.rerankModel && String(body.rerankModel).trim()) || cfgNow.memory?.bailian?.rerankModel || 'gte-rerank-v2';
 
       const results = await rerankWithBailian({
         query: '连通性测试',
         documents: ['测试片段A', '测试片段B'],
         settings: { apiKey, baseUrl, rerankModel, topN: 2, minScore: 0 },
-        timeoutMs: 10000
+        timeoutMs: 10000,
+        throwOnError: true
       });
-      if (!results) {
-        return json(res, 200, { ok: false, error: '百炼 API 请求失败或超时，请检查 Key 与网络' });
+      if (!results || !results.length) {
+        return json(res, 200, { ok: false, error: '百炼重排测试未返回结果' });
       }
       const latencyMs = Date.now() - startedAt;
-      return json(res, 200, { ok: true, latencyMs, message: '百炼 API 连通成功！GTE 重排工作正常。' });
+      return json(res, 200, { ok: true, latencyMs, message: `百炼 API 连通成功！模型 ${rerankModel} 工作正常。` });
     } catch (err) {
       return json(res, 200, { ok: false, error: err.message || '内部错误' });
     }
