@@ -3,11 +3,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { observeTask, scheduleTaskObservation } from '../core/task-observation.js';
 import { shanghaiDayStart, todayKey, minuteOfDayInZone } from '../core/util.js';
+import { DEFAULT_ANTIGRAVITY_QUOTA, fetchAntigravityQuota, formatQuotaLines, quotaSourceConfig, validateQuotaSource } from './antigravity-quota.js';
 
 export const DEFAULT_DAILY_REPORT_CONTENT = Object.freeze({
-  tokens: true, cost: true, status: true, uptime: true, cpu: true, memory: true, disk: true, io: true
+  tokens: true, cost: true, status: true, uptime: true, cpu: true, memory: true, disk: true, io: true,
+  // 反代额度默认关闭：不是每套部署都有 Antigravity 面板，开了却没配密码会多一行"读取失败"。
+  quota: false
 });
-export const DEFAULT_DAILY_REPORT_CONFIG = Object.freeze({ enabled: false, time: '23:00', content: DEFAULT_DAILY_REPORT_CONTENT });
+export const DEFAULT_DAILY_REPORT_CONFIG = Object.freeze({ enabled: false, time: '23:00',
+  content: DEFAULT_DAILY_REPORT_CONTENT, quota: DEFAULT_ANTIGRAVITY_QUOTA });
 
 export function validateDailyReportPatch(patch) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('每日报告设置须为对象');
@@ -22,13 +26,16 @@ export function validateDailyReportPatch(patch) {
       }
       if (!Object.values({ ...DEFAULT_DAILY_REPORT_CONTENT, ...value }).some(Boolean)) throw new Error('请至少选择一项发送内容');
     }
+    if (key === 'quota') validateQuotaSource(value);
   }
 }
 
 export function dailyReportConfig(raw = {}) {
   try { validateDailyReportPatch(raw); return { ...DEFAULT_DAILY_REPORT_CONFIG, ...raw,
-    content: { ...DEFAULT_DAILY_REPORT_CONTENT, ...raw.content } }; }
-  catch { return { ...DEFAULT_DAILY_REPORT_CONFIG }; }
+    content: { ...DEFAULT_DAILY_REPORT_CONTENT, ...raw.content },
+    quota: quotaSourceConfig(raw.quota) }; }
+  catch { return { ...DEFAULT_DAILY_REPORT_CONFIG, content: { ...DEFAULT_DAILY_REPORT_CONTENT },
+    quota: quotaSourceConfig(DEFAULT_ANTIGRAVITY_QUOTA) }; }
 }
 
 // 只读当前运行主机；Linux 使用 MemAvailable，避免把可回收缓存全算作占用。
@@ -57,7 +64,7 @@ export async function reportHostSnapshot(dataDir) {
 const gib = bytes => `${(bytes / 1073741824).toFixed(2)} GiB`;
 const money = value => `¥${(Number(value) || 0).toFixed(4)}`;
 
-export function formatDailyReport({ now, stats, host, connected, runtime, content = DEFAULT_DAILY_REPORT_CONTENT }) {
+export function formatDailyReport({ now, stats, host, connected, runtime, content = DEFAULT_DAILY_REPORT_CONTENT, quota = null }) {
   const selected = { ...DEFAULT_DAILY_REPORT_CONTENT, ...content };
   const t = stats.totals;
   const clock = new Date(now + 8 * 3600000).toISOString().slice(11, 16);
@@ -73,6 +80,11 @@ export function formatDailyReport({ now, stats, host, connected, runtime, conten
     for (const item of stats.billing?.flatItems || []) lines.push(`固定支出：${money(item.amount)}/${item.period === 'day' ? '日' : '月'}（非本日按量费用）`);
     if (t.localCalls) lines.push(`本地/不按量计费：${t.localCalls} 次`);
     lines.push('费用沿用总览今日成本口径；不含服务器租金及第三方非模型服务费用。');
+  }
+  if (selected.quota) {
+    // 额度在报告生成时向面板刷新一次；读取失败也留一行说明，不留白。
+    const quotaLines = formatQuotaLines(quota);
+    if (quotaLines.length) lines.push('', ...quotaLines);
   }
   if (['status', 'uptime', 'cpu', 'memory', 'disk', 'io'].some(key => selected[key])) lines.push('', '服务器当前状态');
   if (selected.status) lines.push(`Agent：${runtime?.paused ? '已暂停' : '运行中'} / ${runtime?.mode || '未知'}；QQ：${connected ? '已连接' : '未连接'}`);
@@ -95,16 +107,32 @@ export class DailyReportManager {
     this.error = '';
   }
   settings() { return dailyReportConfig(this.options.config().dailyReport); }
+  /** 额度读取失败不阻断报告：失败也返回结构，由 formatQuotaLines 写清原因。 */
+  async collectQuota(source, signal) {
+    const reader = this.options.fetchQuota || fetchAntigravityQuota;
+    try { return await reader(source, { signal }); }
+    catch (error) {
+      if (signal?.aborted) throw error;
+      return { ok: false, accounts: [], refreshedAt: null, error: String(error?.message || error).slice(0, 120) };
+    }
+  }
   async preview(patch = {}, now = Date.now()) {
     validateDailyReportPatch(patch);
     const settings = this.settings();
     const content = { ...settings.content, ...patch.content };
     validateDailyReportPatch({ content });
-    const [stats, host] = await Promise.all([
-      this.options.usage({ start: shanghaiDayStart(now), end: now }), this.options.host()
+    const patchQuota = patch.quota && typeof patch.quota === 'object' ? patch.quota : {};
+    const quotaSource = quotaSourceConfig({
+      baseUrl: patchQuota.baseUrl || settings.quota.baseUrl,
+      // 空密码 = 前端没有新输入，沿用已保存的那一份。
+      webPassword: patchQuota.webPassword || settings.quota.webPassword
+    });
+    const [stats, host, quota] = await Promise.all([
+      this.options.usage({ start: shanghaiDayStart(now), end: now }), this.options.host(),
+      content.quota ? this.collectQuota(quotaSource) : null
     ]);
     return { text: formatDailyReport({ now, stats, host, connected: this.options.available(),
-      runtime: this.options.config().runtime, content }), generatedAt: now };
+      runtime: this.options.config().runtime, content, quota }), generatedAt: now };
   }
   status() {
     try {
@@ -112,7 +140,11 @@ export class DailyReportManager {
     } catch (error) {
       if (error.code !== 'ENOENT') this.error = '报告状态文件不可读，请人工核查；不会自动重发。';
     }
-    return { settings: this.settings(), last: this.last, error: this.error };
+    // 面板密码不下发给浏览器：只回"有没有配"，前端据此显示占位提示。
+    const settings = this.settings();
+    const { webPassword, ...quotaRest } = settings.quota;
+    return { settings: { ...settings, quota: { ...quotaRest, hasWebPassword: Boolean(webPassword) } },
+      last: this.last, error: this.error };
   }
   start() {
     if (this.timer) return;
@@ -157,16 +189,18 @@ export class DailyReportManager {
     if (state?.day >= day) return;
     this.controller = new AbortController();
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60000)]);
-    const [stats, host] = await Promise.all([
+    const [stats, host, quota] = await Promise.all([
       this.options.usage({ start: shanghaiDayStart(now), end: now }),
-      this.options.host()
+      this.options.host(),
+      // 额度按"发报告这一刻"取：先让面板刷新，再读。
+      this.settings().content.quota ? this.collectQuota(this.settings().quota, signal) : null
     ]);
     signal.throwIfAborted();
     const current = this.options.config();
     if (!this.settings().enabled || this.settings().time !== settings.time || current.runtime?.mode !== 'active'
       || current.runtime?.paused || current.admin?.ownerUin !== owner || !this.options.available()) return;
     const text = formatDailyReport({ now, stats, host, connected: this.options.available(), runtime: current.runtime,
-      content: this.settings().content });
+      content: this.settings().content, quota });
     const save = async record => {
       const temp = `${file}.${process.pid}.tmp`;
       const handle = await fs.promises.open(temp, 'w', 0o600);

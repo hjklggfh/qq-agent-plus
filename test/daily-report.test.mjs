@@ -165,3 +165,67 @@ test('stopping during collection aborts quietly without blocking application shu
   await rejection;
   assert.equal(f.sent.length, 0);
 });
+
+const quotaOnly = { tokens: false, cost: false, status: false, uptime: false, cpu: false,
+  memory: false, disk: false, io: false, quota: true };
+const quotaFixture = {
+  ok: true,
+  refreshedAt: evening,
+  error: '',
+  accounts: [{
+    email: 'someone@gmail.com', tier: 'PRO', current: true, disabled: false,
+    groups: [{ name: 'Gemini Models', buckets: [
+      { window: '5h', remaining: 0.9891, resetAt: Date.parse('2026-11-04T05:54:15Z') },
+      { window: 'weekly', remaining: 0.978, resetAt: Date.parse('2026-11-10T14:54:15Z') }
+    ] }]
+  }]
+};
+
+test('quota section is fetched when scheduled, uses the run-time snapshot and honors selection', async t => {
+  const seen = [];
+  const f = fixture(t, { fetchQuota: async (source, options) => { seen.push({ source, options }); return quotaFixture; } });
+  f.cfg.dailyReport.content = { ...quotaOnly };
+  f.cfg.dailyReport.quota = { baseUrl: 'http://127.0.0.1:18045', webPassword: 'panel-pass' };
+  await f.manager.tick(evening);
+  assert.equal(seen.length, 1, 'scheduled report reads quota once');
+  assert.equal(seen[0].source.baseUrl, 'http://127.0.0.1:18045');
+  assert.equal(seen[0].source.webPassword, 'panel-pass');
+  const text = f.sent[0][1];
+  assert.match(text, /反代额度（10-23 23:00）/);
+  assert.match(text, /som\*\*\*@gmail\.com \[PRO\] · 当前使用/);
+  assert.match(text, /Gemini Models：5小时 剩98\.9%（11-04 13:54）｜每周 剩97\.8%（11-10 22:54）/);
+  assert.doesNotMatch(text, /服务器当前状态|Token：/);
+});
+
+test('a quota failure is reported in-line and never blocks the report', async t => {
+  const f = fixture(t, { fetchQuota: async () => { throw new Error('panel offline'); } });
+  f.cfg.dailyReport.content = { ...quotaOnly };
+  await f.manager.tick(evening);
+  assert.equal(f.sent.length, 1, 'report still sent');
+  assert.match(f.sent[0][1], /反代额度：读取失败（panel offline）/);
+});
+
+test('quota is skipped entirely when the option is off', async t => {
+  let called = 0;
+  const f = fixture(t, { fetchQuota: async () => { called++; return quotaFixture; } });
+  f.cfg.dailyReport.content = { ...quotaOnly, quota: false, tokens: true };
+  await f.manager.tick(evening);
+  assert.equal(called, 0);
+  assert.doesNotMatch(f.sent[0][1], /反代额度/);
+});
+
+test('status never echoes the panel password', async t => {
+  const f = fixture(t);
+  f.cfg.dailyReport.quota = { baseUrl: 'http://127.0.0.1:18045', webPassword: 'panel-secret' };
+  const status = f.manager.status();
+  assert.equal(status.settings.quota.hasWebPassword, true);
+  assert.equal('webPassword' in status.settings.quota, false);
+  assert.doesNotMatch(JSON.stringify(status), /panel-secret/);
+});
+
+test('quota settings are validated as part of the report patch', () => {
+  assert.throws(() => validateDailyReportPatch({ quota: { baseUrl: 'ftp://bad' } }), /http/);
+  assert.throws(() => validateDailyReportPatch({ quota: { unknown: 'x' } }), /未知/);
+  validateDailyReportPatch({ quota: { baseUrl: 'http://127.0.0.1:18045', webPassword: 'x' } });
+  assert.equal(dailyReportConfig({ enabled: true, time: '23:00' }).quota.baseUrl, 'http://127.0.0.1:18045');
+});
