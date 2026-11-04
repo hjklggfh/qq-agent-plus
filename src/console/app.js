@@ -5014,7 +5014,7 @@ function sessionsDirSignature() {
 }
 
 function collectUsageRows({ range, window }) {
-  const win = window ? { ...window, mode: 'today', label: '当日截至汇报时刻' } : resolveRange(range);
+  const win = window ? { ...window, mode: 'today', label: '最近 24 小时（截至汇报时刻）' } : resolveRange(range);
   // 命中缓存就直接返回（注意 rows 会被调用方改写字段，所以必须给副本）
   const sig = sessionsDirSignature() + '@' + String(range);
   const hit = window ? null : usageRowsCache.get(sig);

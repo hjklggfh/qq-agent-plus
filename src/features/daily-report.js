@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { observeTask, scheduleTaskObservation } from '../core/task-observation.js';
-import { shanghaiDayStart, todayKey, minuteOfDayInZone } from '../core/util.js';
+import { todayKey, minuteOfDayInZone } from '../core/util.js';
 import { DEFAULT_ANTIGRAVITY_QUOTA, fetchAntigravityQuota, formatQuotaLines, quotaSourceConfig, validateQuotaSource } from './antigravity-quota.js';
 
 export const DEFAULT_DAILY_REPORT_CONTENT = Object.freeze({
@@ -64,12 +64,23 @@ export async function reportHostSnapshot(dataDir) {
 const gib = bytes => `${(bytes / 1073741824).toFixed(2)} GiB`;
 const money = value => `¥${(Number(value) || 0).toFixed(4)}`;
 
+// 统计窗口固定为"截至发送时刻的完整 24 小时"：报告设在 23:00，覆盖的就是
+// 昨天 23:00 到今天 23:00；不是"当天零点到现在"那种越跑越短的口径。
+export const REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
+export function reportWindow(now) {
+  return { start: now - REPORT_WINDOW_MS, end: now };
+}
+
+function beijingStamp(momentMs) {
+  return new Date(momentMs + 8 * 3600000).toISOString().slice(5, 16).replace('T', ' ');
+}
+
 export function formatDailyReport({ now, stats, host, connected, runtime, content = DEFAULT_DAILY_REPORT_CONTENT, quota = null }) {
   const selected = { ...DEFAULT_DAILY_REPORT_CONTENT, ...content };
   const t = stats.totals;
-  const clock = new Date(now + 8 * 3600000).toISOString().slice(11, 16);
+  const window = reportWindow(now);
   const lines = [`每日用量与服务器报告 · ${todayKey(now)}`,
-    `统计：北京时间 00:00—${clock}（截至生成时，非完整全天）`];
+    `统计：北京时间 ${beijingStamp(window.start)} — ${beijingStamp(window.end)}（完整 24 小时）`];
   if (selected.tokens) lines.push(
     `Token：${t.totalTokens || 0}（输入 ${t.promptTokens || 0} / 输出 ${t.completionTokens || 0}）`,
     `缓存命中：${t.cachedTokens || 0}（已包含在输入中）；调用 ${t.runs || 0} 次`);
@@ -77,9 +88,9 @@ export function formatDailyReport({ now, stats, host, connected, runtime, conten
     lines.push(`按量费用：${money(t.cost)}（配置价格 ${money(t.actualCost)} / 估算 ${money(t.estimateCost)}）`);
     if (t.unpricedCalls) lines.push(`未定价：${t.unpricedCalls} 次、${t.unpricedTokens || 0} Token，未计入费用，不代表免费`);
     if (t.flatCalls) lines.push(`包月/固定计费：${t.flatCalls} 次，固定支出单列，不按天重复计费`);
-    for (const item of stats.billing?.flatItems || []) lines.push(`固定支出：${money(item.amount)}/${item.period === 'day' ? '日' : '月'}（非本日按量费用）`);
+    for (const item of stats.billing?.flatItems || []) lines.push(`固定支出：${money(item.amount)}/${item.period === 'day' ? '日' : '月'}（非本窗口按量费用）`);
     if (t.localCalls) lines.push(`本地/不按量计费：${t.localCalls} 次`);
-    lines.push('费用沿用总览今日成本口径；不含服务器租金及第三方非模型服务费用。');
+    lines.push('费用按该 24 小时窗口内的会话留档与当前价格计算；不含服务器租金及第三方非模型服务费用。');
   }
   if (selected.quota) {
     // 额度在报告生成时向面板刷新一次；读取失败也留一行说明，不留白。
@@ -128,7 +139,7 @@ export class DailyReportManager {
       webPassword: patchQuota.webPassword || settings.quota.webPassword
     });
     const [stats, host, quota] = await Promise.all([
-      this.options.usage({ start: shanghaiDayStart(now), end: now }), this.options.host(),
+      this.options.usage(reportWindow(now)), this.options.host(),
       content.quota ? this.collectQuota(quotaSource) : null
     ]);
     return { text: formatDailyReport({ now, stats, host, connected: this.options.available(),
@@ -190,7 +201,7 @@ export class DailyReportManager {
     this.controller = new AbortController();
     const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60000)]);
     const [stats, host, quota] = await Promise.all([
-      this.options.usage({ start: shanghaiDayStart(now), end: now }),
+      this.options.usage(reportWindow(now)),
       this.options.host(),
       // 额度按"发报告这一刻"取：先让面板刷新，再读。
       this.settings().content.quota ? this.collectQuota(this.settings().quota, signal) : null

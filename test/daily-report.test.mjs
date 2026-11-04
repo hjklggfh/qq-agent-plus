@@ -18,7 +18,7 @@ function fixture(t, extra = {}) {
   const cfg = { dailyReport: { enabled: true, time: '23:00' }, admin: { ownerUin: '123456' }, runtime: { mode: 'active', paused: false } };
   const sent = [];
   const manager = new DailyReportManager({ dataDir, config: () => cfg, available: () => true,
-    usage: window => { assert.equal(window.start, Date.parse('2026-10-23T00:00:00+08:00')); return stats; },
+    usage: window => { assert.equal(window.end - window.start, 86400000, '固定 24 小时窗口'); return stats; },
     host: async () => host, send: async (...args) => { sent.push(args); }, ...extra });
   return { manager, cfg, dataDir, sent };
 }
@@ -35,7 +35,7 @@ test('Shanghai scheduling, concurrent ticks, persisted reservation and restart d
   await Promise.all([f.manager.tick(evening), f.manager.tick(evening)]);
   assert.equal(f.sent.length, 1);
   assert.equal(f.sent[0][0], '123456');
-  assert.match(f.sent[0][1], /00:00—23:00/);
+  assert.match(f.sent[0][1], /统计：北京时间 10-22 23:00 — 10-23 23:00（完整 24 小时）/);
   assert.equal(f.manager.status().last.outcome, 'sent');
   const restarted = new DailyReportManager(f.manager.options);
   await restarted.tick(evening + 60000);
@@ -106,7 +106,7 @@ test('report separates cache, estimates, unpriced tokens and fixed monthly fees'
   assert.match(text, /已包含在输入中/);
   assert.match(text, /¥0.1200（配置价格 ¥0.1000 \/ 估算 ¥0.0200）/);
   assert.match(text, /未计入费用，不代表免费/);
-  assert.match(text, /¥68.0000\/月（非本日按量费用）/);
+  assert.match(text, /¥68.0000\/月（非本窗口按量费用）/);
   assert.match(text, /磁盘：采集不可用/);
   assert.match(text, /非 CPU 使用率/);
 });
@@ -150,7 +150,21 @@ test('a new Shanghai day permits one new report; clock rollback cannot replay', 
   await f.manager.tick(evening + 86400000);
   await f.manager.tick(evening);
   assert.equal(f.sent.length, 2);
-  assert.equal(windows[1].start, Date.parse('2026-10-24T00:00:00+08:00'));
+  // 第二天的窗口紧接第一天的结束：24 小时滚动，不留缝也不重叠。
+  assert.equal(windows[1].start, windows[0].end);
+  assert.equal(windows[1].end, evening + 86400000);
+});
+
+test('the statistics window is the full 24 hours ending at the report moment', async t => {
+  const seen = [];
+  const f = fixture(t, { usage: window => { seen.push(window); return stats; } });
+  const preview = await f.manager.preview({}, evening);
+  assert.equal(seen[0].end, evening);
+  assert.equal(seen[0].start, evening - 86400000);
+  assert.match(preview.text, /10-22 23:00 — 10-23 23:00（完整 24 小时）/);
+  await f.manager.tick(evening + 5 * 60000);
+  assert.equal(seen[1].end, evening + 5 * 60000, '延迟发送时窗口仍是到发送那一刻');
+  assert.equal(seen[1].start, evening + 5 * 60000 - 86400000);
 });
 
 test('stopping during collection aborts quietly without blocking application shutdown', async t => {

@@ -5,7 +5,7 @@ import { state } from '../core/state.js';
 // 第四列 = 旧配置缺这个键时的默认值（额度默认关闭，其余沿用历史行为默认开启）。
 const REPORT_CONTENT_OPTIONS = [
   ['tokens', 'Token 用量', '输入、输出、缓存命中和调用次数', true],
-  ['cost', '今日费用', '沿用总览今日成本，含估算、未定价与固定支出说明', true],
+  ['cost', '按量费用', '统计窗口内的会话留档与当前价格，含估算、未定价与固定支出说明', true],
   ['quota', '反代额度', 'Antigravity 面板的 Gemini / Claude 剩余额度，发报告时先刷新', false],
   ['status', 'Agent 与 QQ 状态', '运行模式、暂停状态和 QQ 连接', true],
   ['uptime', '运行时长', '服务器和 Agent 已运行时长', true],
@@ -20,7 +20,7 @@ function renderDailyReportSection(config) {
   const quota = s.quota || {};
   const hasPassword = quota.hasWebPassword ?? Boolean(config.dailyReport?.quota?.hasWebPassword);
   return `<h3>每晚汇报</h3>
-    <p class="hint">每天按北京时间私聊全局管理员，统计当天零点至汇报时刻。费用与总览“今日成本”使用相同口径；生成报告不额外调用模型。</p>
+    <p class="hint">每天按北京时间私聊全局管理员，统计截至发送时刻的完整 24 小时（例：23:00 发送统计昨天 23:00 到今天 23:00）。费用按同一窗口的会话留档计算；生成报告不额外调用模型。</p>
     <div class="field"><label><input id="daily-report-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用每晚汇报</label></div>
     <div class="field"><label for="daily-report-time">汇报时间（北京时间）</label><input id="daily-report-time" type="time" value="${esc(s.time || '23:00')}" required></div>
     <h3>发送内容</h3><p class="hint">勾选需要发送的项目，至少保留一项。保存后用于下一次定时汇报。</p>
