@@ -673,6 +673,34 @@ async function saveConfig({ quiet = false } = {}) {
     };
   }
 
+  if (sec === 'persona-switch') {
+    // 正文的真相源是 personaSwitch（编排器实际读的那份）；altPersona 只剩两个显示名还在被读，
+    // 所以这里只写回 botName —— 同一段 15KB 正文不在 config.json 里存两份。
+    const s = c.personaSwitch || {};
+    patch.altPersona = {
+      ...(c.altPersona || {}),
+      botName: val('#cfg-alt-botname', c.altPersona?.botName || '').trim(),
+      name: val('#cfg-alt-name', s.altName || 'Claude').trim() || 'Claude'
+    };
+    patch.personaSwitch = {
+      ...s,
+      enabled: chk('#cfg-alt-enabled', s.enabled === true),
+      altName: val('#cfg-alt-name', s.altName || 'Claude').trim() || 'Claude',
+      altModel: val('#cfg-alt-model', s.altModel || '').trim(),
+      altRoleText: val('#cfg-alt-roletext', s.altRoleText || ''),
+      altCustomRules: val('#cfg-alt-customrules', s.altCustomRules || ''),
+      altBehaviorProfile: val('#cfg-alt-profile', s.altBehaviorProfile || 'legacy') === 'grounded' ? 'grounded' : 'legacy',
+      idleMinutes: clampInt(val('#cfg-alt-idle', s.idleMinutes ?? 30), 1, 1440, 30),
+      cooldownSeconds: clampInt(val('#cfg-alt-cooldown', s.cooldownSeconds ?? 0), 0, 3600, 0),
+      callWords: parseList(val('#cfg-alt-callwords', (s.callWords || []).join(','))),
+      homeWords: parseList(val('#cfg-alt-homewords', (s.homeWords || []).join(',')))
+    };
+    // callWords/homeWords 被清空时 parseList 会给出空数组，而服务端会回落到默认词；
+    // 这里同步回落一次，免得保存后界面显示空、实际却在用默认值。
+    if (!patch.personaSwitch.callWords.length) patch.personaSwitch.callWords = ['claude', '克劳德'];
+    if (!patch.personaSwitch.homeWords.length) patch.personaSwitch.homeWords = ['gemi', '哈基米'];
+  }
+
   if (sec === 'allow') {
     patch.allow = {
       groups: parseList(val('#cfg-allowgroups', (c.allow?.groups || []).join(','))),

@@ -26,6 +26,7 @@ import {
   renderDailyMomentsSection, renderGroupGameSection, renderQzoneInteractionSection, renderRemindersSection
 } from './moments.js';
 import { renderPersonaSection } from './persona.js';
+import { bindPersonaSwitchSection, renderPersonaSwitchSection } from './persona-switch.js';
 import { loadSessions } from './sessions.js';
 import { bindCrossSectionControls, bindSettingsEvents, isSplitThinking } from './settings-bind.js';
 import { renderAsrSection } from './settings-voice.js';
@@ -81,6 +82,7 @@ function renderSettingsSidebar() {
     ['groupGame', '群游戏'],
     ['token-saver', '省 Token'],
     ['persona', '人设'],
+    ['persona-switch', '第二人设'],
     ['allow', '聊天白名单'],
     ['chat', '聊天设置'],
     ['appearance', '外观'],
@@ -90,7 +92,7 @@ function renderSettingsSidebar() {
   const sectionsByArea = {
     features: FEATURE_SECTIONS,
     games: ['haigui-tang', 'groupGame'],
-    settings: ['api', 'memory', 'bailian', 'experiments', 'token-saver', 'persona', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
+    settings: ['api', 'memory', 'bailian', 'experiments', 'token-saver', 'persona', 'persona-switch', 'allow', 'chat', 'appearance', 'desktop', 'onebot']
   };
   const area = state.settingsArea || 'settings';
   const menu = allMenu.filter(([id]) => (sectionsByArea[area] || sectionsByArea.settings).includes(id));
@@ -140,6 +142,7 @@ function renderSettingsImpl() {
     });
   }
   if (state.settingsSection === 'bailian') bindBailianSection();
+  if (state.settingsSection === 'persona-switch') bindPersonaSwitchSection();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'x-search') bindXSearchSection();
@@ -231,6 +234,7 @@ function renderSettingsSection(c) {
     'time-control': () => renderTimeControlSection(c),
     'token-saver': () => renderTokenSaverSection(c),
     persona: () => renderPersonaSection(c),
+    'persona-switch': () => renderPersonaSwitchSection(c),
     allow: () => renderAllowSection(c),
     chat: () => renderChatSection(c),
     desktop: () => renderDesktopSection(c),

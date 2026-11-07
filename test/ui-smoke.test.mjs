@@ -609,3 +609,73 @@ test('真实 DOM 冒烟：QARegistry 的 transform / after / override 真的接�
     assert.equal(typeof QARegistry.base('refreshStatus'), 'function', 'override 之后仍能取回原实现');
   } finally { window.happyDOM?.abort?.(); }
 });
+
+// 第二人设设置页：渲染 / 就绪提示 / 保存只写 personaSwitch（正文不重复存一份）。
+test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const cfg = {
+      api: {}, allow: {}, server: {}, runtime: {},
+      persona: { botName: '哈基米' },
+      altPersona: { name: 'Claude', botName: '', selfNickname: '' },
+      personaSwitch: {
+        enabled: true,
+        idleMinutes: 30,
+        cooldownSeconds: 60,
+        altName: 'Claude',
+        altModel: 'claude-sonnet-5-5-low',
+        altRoleText: '你是克劳德',
+        altCustomRules: '',
+        altBehaviorProfile: 'legacy',
+        callWords: ['claude', '克劳德'],
+        homeWords: ['gemi', '哈基米'],
+        callVerbs: ['呼叫']
+      }
+    };
+    window.__altCfg = cfg;
+    vm.runInContext('state.config = __altCfg; state.settingsSection = "persona-switch";', ctx);
+    const container = window.document.createElement('div');
+    window.document.body.append(container);
+    container.innerHTML = vm.runInContext('renderPersonaSwitchSection(__altCfg)', ctx);
+    // 真实页面里由 renderSettings 在渲染后调用它（绑定刷新/叫回，并拉一次状态）
+    vm.runInContext('bindPersonaSwitchSection()', ctx);
+
+    assert.equal(container.querySelector('#cfg-alt-model').value, 'claude-sonnet-5-5-low');
+    assert.equal(container.querySelector('#cfg-alt-roletext').value, '你是克劳德');
+    assert.equal(container.querySelector('#cfg-alt-enabled').checked, true);
+    assert.equal(container.querySelector('#cfg-alt-callwords').value, 'claude, 克劳德');
+    assert.match(container.querySelector('#alt-persona-ready').textContent, /已就绪/);
+
+    // 缺模型时提示必须跟着变（群友叫了也不会生效，得当场说清楚）
+    container.querySelector('#cfg-alt-model').value = '';
+    container.querySelector('#cfg-alt-model').dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert.match(container.querySelector('#alt-persona-ready').textContent, /还差模型/);
+
+    // 保存：只提交 personaSwitch + 展示名，正文只出现一份
+    const patches = [];
+    window.fetch = async (url, options = {}) => {
+      if (String(url).includes('/api/persona-switch')) {
+        return { ok: true, status: 200, json: async () => ({ enabled: true, altName: 'Claude', active: [] }) };
+      }
+      if (url === '/api/config' && options.method === 'POST') {
+        patches.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({ config: cfg }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    container.querySelector('#cfg-alt-model').value = 'claude-sonnet-5-5-low';
+    container.querySelector('#cfg-alt-idle').value = '45';
+    container.querySelector('#cfg-alt-callwords').value = '';
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches.length, 1, '保存应只提交一次');
+    const patch = patches[0];
+    assert.equal(patch.personaSwitch.altModel, 'claude-sonnet-5-5-low');
+    assert.equal(patch.personaSwitch.idleMinutes, 45);
+    assert.equal(patch.personaSwitch.altRoleText, '你是克劳德');
+    // 清空呼叫词会回落到默认词（服务端也会回落，界面别显示空）
+    assert.deepEqual(patch.personaSwitch.callWords, ['claude', '克劳德']);
+    assert.ok(!patch.persona?.roleText, '第二人设页不该顺手覆盖默认人设');
+    assert.equal(String(patch.altPersona.roleText ?? ''), '', '第二人设正文只存 personaSwitch 一份');
+  } finally { window.happyDOM?.abort?.(); }
+});

@@ -60,13 +60,20 @@ function renderMemoryList() {
     const sub = busy
       ? '正在整理本群记忆'
       : [
+          f.profile === 'alt' ? '第二人设记忆' : '',
           f.hasHandoff ? '有会话交接' : '',
           f.memberCount ? `${f.memberCount} 位群友 · ${f.impressionCount} 条印象` : '暂无群友印象'
         ].filter(Boolean).join(' · ');
+    // 第二人设的库与默认人设分开（data/memory-alt）：列表必须标出来，
+    // 否则同一个群看起来"印象突然清空了"，其实只是换了个库在读。
+    const altChip = f.profile === 'alt'
+      ? '<span class="chip star" style="margin-left:6px">第二人设</span>'
+      : '';
     return `
       <div class="chat-item ${key === state.currentMemoryChatKey ? 'selected' : ''}" data-key="${esc(key)}">
         <div class="chat-item-title">
           <span class="session-chat">${esc(names[key] || key)}</span>
+          ${altChip}
           ${busyHtml}
         </div>
         <div class="chat-item-sub">${esc(sub)}</div>
@@ -170,12 +177,15 @@ async function loadMemoryDetail(chatKey) {
       <div class="detail-header">
         <h2>${esc(formatChatTitle(chatKey, chatNameOf(chatKey)))} 的记忆</h2>
         <div class="sub">
-          <span>每个群友一个文件：data/memory/${esc(chatKey.replace(':', '_'))}/&lt;QQ&gt;.json</span>
+          <span>每个群友一个文件：${esc(mem.profile === 'alt' ? 'data/memory-alt' : 'data/memory')}/${esc(chatKey.replace(':', '_'))}/&lt;QQ&gt;.json</span>
           <button class="btn btn-small" id="mem-add-imp-btn">＋ 添加印象</button>
           <button class="btn btn-small" id="mem-consolidate-btn" ${busy ? 'disabled' : ''}>${busy ? '整理中…' : '整理本群记忆'}</button>
           ${consolidateStatusHtml}
         </div>
       </div>
+      ${mem.profile === 'alt'
+        ? `<div class="hint" style="margin:0 0 12px">这个会话当前在<strong>第二人设</strong>值班：下面展示、编辑与整理的都是它自己的记忆库（<code>data/memory-alt</code>），与默认人设互不可见。</div>`
+        : ''}
       ${handoffHtml}
       ${membersHtml}
       ${rows || '<div class="muted" style="padding:10px">还没有任何群友印象（可点右上角「＋ 添加印象」手动记，或点「整理本群记忆」让模型从聊天记录里提炼）。</div>'}

@@ -29,6 +29,7 @@ import { StickerManager } from '../onebot/sticker-manager.js';
 import { SendQueue } from '../onebot/sender.js';
 import { SessionRegistry, personaLabelOfPrompt } from '../core/sessions.js';
 import { Orchestrator } from '../core/orchestrator.js';
+import { activeAltChats, altPersonaReady, clearChatProfile, personaSwitchConfig } from '../core/persona-switch.js';
 import { DailyMomentsManager } from '../features/daily-moments.js';
 import { createAppBackgroundTasks } from '../core/app-background-tasks.js';
 import { FEATURE_CATALOG } from '../../ui/core/feature-catalog.js';
@@ -3249,6 +3250,41 @@ export function createApp({
     const next = [...(getConfig().customPersonas || []), entry];
     updateConfig({ customPersonas: next });
     return json(res, 200, { ok: true, templates: next });
+  });
+  // ── 双人设（按群召唤）：状态与人工叫回 ──
+  // 为什么需要它：设置页要显示"哪些群正在第二人设值班"，以及一个立即叫回默认人设的入口。
+  // 数据源直接用 persona-switch 的状态文件，不另存一份（避免控制台与运行时各说各话）。
+  router.add('GET', '/api/persona-switch', async (req, res) => {
+    const switchCfg = personaSwitchConfig(getConfig().personaSwitch);
+    const idleMs = switchCfg.idleMinutes * 60 * 1000;
+    const active = await Promise.all(activeAltChats().map(async (entry) => {
+      const [kind, id] = String(entry.chatKey || '').split(':');
+      // 群名只用于展示：拿不到就退回群号，不让 OneBot 掉线拖慢这个接口
+      const name = kind === 'group' && id ? String(await orchestrator.getChatName(id) || '') : '';
+      return {
+        chatKey: entry.chatKey,
+        name,
+        since: entry.since,
+        lastReplyAt: entry.lastReplyAt,
+        expiresAt: Number(entry.lastReplyAt || entry.since || 0) + idleMs
+      };
+    }));
+    return json(res, 200, {
+      enabled: switchCfg.enabled,
+      ready: altPersonaReady(switchCfg),
+      altName: switchCfg.altName,
+      altModel: switchCfg.altModel,
+      idleMinutes: switchCfg.idleMinutes,
+      active
+    });
+  });
+  router.add('POST', '/api/persona-switch/clear', async (req, res) => {
+    const body = await readBody(req).catch(() => ({}));
+    const chatKey = String(body.chatKey || '');
+    if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
+    const cleared = clearChatProfile(chatKey);
+    if (cleared) log(`[persona] 控制台把 ${chatKey} 叫回默认人设`);
+    return json(res, 200, { ok: true, cleared });
   });
   router.add('POST', '/api/persona/reset-handoffs', async (req, res) => {
     if (!keyEndpointAllowed(req)) return json(res, 403, { error: '请求来源不被信任，已拒绝。' });
