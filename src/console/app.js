@@ -3283,6 +3283,8 @@ export function createApp({
     const chatKey = String(body.chatKey || '');
     if (!/^(group|private):\d+$/.test(chatKey)) return json(res, 400, { ok: false, error: 'chatKey 格式错误' });
     const cleared = clearChatProfile(chatKey);
+    // 叫回之后立刻恢复群名片，别让它停在「Claude」等下一条消息
+    if (cleared) orchestrator.syncPersonaCardAfterClear?.(chatKey);
     if (cleared) log(`[persona] 控制台把 ${chatKey} 叫回默认人设`);
     return json(res, 200, { ok: true, cleared });
   });

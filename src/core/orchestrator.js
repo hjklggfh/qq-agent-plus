@@ -1467,6 +1467,23 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * 给控制台用：把某个会话叫回默认人设之后，立刻把群名片也改回去。
+   * 不这么做的话名片会停在「Claude」，直到这个群下一条消息进来才恢复。
+   */
+  syncPersonaCardAfterClear(chatKey) {
+    try {
+      const cfg = getConfig();
+      void this.#syncPersonaGroupCard(chatKey, {
+        altActive: false,
+        switchCfg: personaSwitchConfig(cfg.personaSwitch),
+        cfg
+      });
+    } catch (error) {
+      log.warn(`[persona] ${chatKey} 恢复群名片失败:`, error?.message ?? error);
+    }
+  }
+
   #commitSessionHandoff(session, { chatKey, triggerEntries }) {
     const cfg = getConfig();
     if (cfg.memory?.handoffEnabled === false || typeof this.memory?.setHandoff !== 'function') return null;
