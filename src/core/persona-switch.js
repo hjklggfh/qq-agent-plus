@@ -22,7 +22,9 @@ export const DEFAULT_PERSONA_SWITCH = Object.freeze({
   altBehaviorProfile: 'legacy',
   callWords: ['claude', '克劳德'],
   homeWords: ['gemi', '哈基米'],
-  callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来']
+  callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来'],
+  // 换人设时把群名片一起换（Claude ⇄ Gemi本咪）。默认开：名片是群友唯一能看出"现在是谁在值班"的东西。
+  renameGroupCard: true
 });
 
 const STATE_FILE = () => path.join(DATA_DIR, 'persona-state.json');
@@ -53,7 +55,8 @@ export function personaSwitchConfig(raw = {}) {
     altBehaviorProfile: src.altBehaviorProfile === 'grounded' ? 'grounded' : 'legacy',
     callWords: words(src.callWords, DEFAULT_PERSONA_SWITCH.callWords),
     homeWords: words(src.homeWords, DEFAULT_PERSONA_SWITCH.homeWords),
-    callVerbs: words(src.callVerbs, DEFAULT_PERSONA_SWITCH.callVerbs)
+    callVerbs: words(src.callVerbs, DEFAULT_PERSONA_SWITCH.callVerbs),
+    renameGroupCard: src.renameGroupCard !== false
   };
 }
 
@@ -109,7 +112,13 @@ export function matchSwitchRequest(text, { mention = false, settings } = {}) {
   return alt ? 'alt' : 'home';
 }
 
-/** 当前会话该用哪个人设。闲置超时在这里惰性判定，不需要额外定时器。 */
+/**
+ * 当前会话该用哪个人设。闲置超时在这里惰性判定，不需要额外定时器。
+ *
+ * 过期（以及下面 activate/clear 切回默认人设）时**不直接删记录**：如果这次值班期间我们改过群名片，
+ * 得留下一条 `profile:'home'` 的墓碑，把"我们改成了什么、原来叫什么"带到下一轮，
+ * 下一轮才能把名片改回去。没有名片记录时行为与以前完全一致（直接删）。
+ */
 export function resolveChatProfile(chatKey, now = Date.now(), settings = null) {
   const cfg = settings || personaSwitchConfig(getConfig().personaSwitch);
   if (!altPersonaReady(cfg)) return { profile: 'home', since: 0 };
@@ -119,11 +128,57 @@ export function resolveChatProfile(chatKey, now = Date.now(), settings = null) {
   const idle = cfg.idleMinutes * 60 * 1000;
   const last = Number(entry.lastReplyAt || entry.since || 0);
   if (!last || now - last > idle) {
-    delete state[chatKey];
+    const card = String(entry.card || '');
+    if (card) state[chatKey] = { ...homeTombstone(entry, now), card, homeCard: String(entry.homeCard || '') };
+    else delete state[chatKey];
     writeState(state);
-    return { profile: 'home', since: 0 };
+    return { profile: 'home', since: 0, expired: true };
   }
   return { profile: 'alt', since: Number(entry.since) || last };
+}
+
+/** 切回默认人设后留下的那条记录（只为了把群名片改回去）。 */
+function homeTombstone(entry, now) {
+  return {
+    profile: 'home',
+    since: 0,
+    lastReplyAt: 0,
+    lastSwitchAt: Number(entry?.lastSwitchAt) || now
+  };
+}
+
+/**
+ * 换人设时"群名片该改成什么"的纯决策（不做任何 I/O，便于单测）。
+ *
+ * @param {object} p
+ * @param {boolean} p.altActive  这一轮是不是第二人设
+ * @param {string}  p.card       我们上一次给它改成的名片（空串 = 从没改过）
+ * @param {string}  p.homeCard   切走之前它本来的名片（捕获失败时为空）
+ * @param {string}  p.altName    第二人设要用的名片
+ * @param {string}  p.homeName   不知道原名时的兜底（机器人名字）
+ * @param {boolean} p.enabled    开关
+ * @returns {null | {card: string, remember: boolean, forget: boolean}}
+ *   card 空串 = 不用设置、只清记录；remember = 成功后记下"我们改过"；forget = 成功后清记录
+ */
+export function planGroupCard({
+  altActive, card = '', homeCard = '', altName = '', homeName = '', enabled = true,
+  failedAt = 0, now = Date.now(), retryAfterMs = 10 * 60 * 1000
+} = {}) {
+  if (!enabled) return null;
+  // 刚失败过（多半是没有群名片权限）：先闭嘴十分钟，别每轮都去撞一次同样的墙
+  if (failedAt && now - Number(failedAt) < retryAfterMs) return null;
+  const current = String(card || '').trim();
+  if (altActive) {
+    const target = String(altName || '').trim();
+    if (!target || target === current) return null;
+    return { card: target, remember: true, forget: false };
+  }
+  // 没改过名片 → 绝不碰它（别人手设的名字不该被我们覆盖）
+  if (!current) return null;
+  const target = String(homeCard || homeName || '').trim();
+  // 不知道原名、也没有兜底名字：只能把记录清掉，别再反复尝试
+  if (!target || target === current) return { card: '', remember: false, forget: true };
+  return { card: target, remember: false, forget: true };
 }
 
 /** 切换当前会话的人设；受冷却时间保护，避免反复横跳。 */
@@ -141,9 +196,14 @@ export function activateChatProfile(chatKey, profile, now = Date.now(), settings
   }
   if (sinceSwitch < cfg.cooldownSeconds * 1000) return { changed: false, reason: 'cooldown' };
   if (profile === 'alt') {
+    // 换人会保留"我们改过的名片"，但不保留上一轮的时间戳（新的一段值班从现在开始）
     state[chatKey] = { profile: 'alt', since: now, lastReplyAt: now, lastSwitchAt: now };
+    const card = String(entry.card || '');
+    if (card) { state[chatKey].card = card; state[chatKey].homeCard = String(entry.homeCard || ''); }
   } else {
-    delete state[chatKey];
+    const card = String(entry.card || '');
+    if (card) state[chatKey] = { ...homeTombstone(entry, now), card, homeCard: String(entry.homeCard || '') };
+    else delete state[chatKey];
   }
   writeState(state);
   return { changed: true, profile };
@@ -160,11 +220,66 @@ export function touchAltProfile(chatKey, now = Date.now()) {
   return true;
 }
 
-/** 清掉某个会话的临时状态（停用功能、或人工复位时用）。 */
+/**
+ * 清掉某个会话的临时状态（停用功能、或人工复位时用）。
+ * 改过群名片的会话会留一条墓碑，等下一轮把名片改回去（否则名片会一直停在「Claude」）。
+ * @returns {boolean} 这次清掉的是不是"正在值班"（墓碑不算）
+ */
 export function clearChatProfile(chatKey) {
   const state = readState();
-  if (!state[chatKey]) return false;
-  delete state[chatKey];
+  const entry = state[chatKey];
+  if (!entry) return false;
+  const wasAlt = entry.profile === 'alt';
+  const card = String(entry.card || '');
+  if (card) state[chatKey] = { ...homeTombstone(entry, Date.now()), card, homeCard: String(entry.homeCard || '') };
+  else delete state[chatKey];
+  writeState(state);
+  return wasAlt;
+}
+
+/** 这个会话"我们给它改过的群名片"与原名（都没改过时为空串）。 */
+export function chatCardState(chatKey) {
+  const entry = readState()[chatKey];
+  return {
+    card: String(entry?.card || ''),
+    homeCard: String(entry?.homeCard || ''),
+    failedAt: Number(entry?.cardFailAt) || 0
+  };
+}
+
+/** 改名片失败：记下时间用于退避（别每轮都重试同一个没权限的群）。 */
+export function markChatCardFailed(chatKey, now = Date.now()) {
+  if (!chatKey) return false;
+  const state = readState();
+  const entry = state[chatKey] && typeof state[chatKey] === 'object' ? state[chatKey] : {};
+  entry.cardFailAt = Number(now) || Date.now();
+  state[chatKey] = entry;
+  writeState(state);
+  return true;
+}
+
+/** 记下"我们把群名片改成了 card、它本来是 homeCard"（改名片成功之后调用）。 */
+export function rememberChatCard(chatKey, card, homeCard = '') {
+  const text = String(card || '').trim();
+  if (!chatKey || !text) return false;
+  const state = readState();
+  const entry = state[chatKey] && typeof state[chatKey] === 'object' ? state[chatKey] : {};
+  entry.card = text;
+  entry.homeCard = String(homeCard || entry.homeCard || '').trim();
+  state[chatKey] = entry;
+  writeState(state);
+  return true;
+}
+
+/** 清掉名片记录（已经把名片改回去了）。没有别的状态就整条删掉。 */
+export function forgetChatCard(chatKey) {
+  const state = readState();
+  const entry = state[chatKey];
+  if (!entry || !entry.card) return false;
+  delete entry.card;
+  delete entry.homeCard;
+  if (entry.profile === 'alt') state[chatKey] = entry;
+  else delete state[chatKey];
   writeState(state);
   return true;
 }

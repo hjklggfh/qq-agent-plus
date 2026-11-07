@@ -53,6 +53,17 @@ function renderPersonaSwitchSection(config) {
     </div>
     <div class="hint" id="alt-persona-ready" style="margin:-4px 0 12px">${esc(readyHint(s))}</div>
 
+    <div class="checkbox-row">
+      <input type="checkbox" id="cfg-alt-rename-card" ${s.renameGroupCard !== false ? 'checked' : ''} />
+      <label for="cfg-alt-rename-card">换人设时同步改群名片</label>
+    </div>
+    <div class="hint" style="margin:-4px 0 12px">
+      切到这个群时把它自己的群名片改成第二人设的名字（<strong>${esc(s.altName || 'Claude')}</strong>），
+      交还（闲置/叫回/模型自己交还）时改回<strong>原来的名片</strong> —— 第一次切走时会先记下它当时叫什么，
+      记不到就用「机器人名字」（现在是 <strong>${esc(c.persona?.botName || '未设置')}</strong>）。
+      只影响群聊，私聊没有群名片；没有群名片管理权限时会失败并记一条日志，不影响聊天。
+    </div>
+
     <div class="field-row">
       <div class="field"><label>第二人设名字</label>
         <input type="text" id="cfg-alt-name" maxlength="40" value="${esc(s.altName || 'Claude')}" />

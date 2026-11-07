@@ -653,6 +653,8 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     assert.equal(container.querySelector('#cfg-alt-callwords').value, 'claude, 克劳德');
     assert.match(container.querySelector('#alt-persona-ready').textContent, /已就绪/);
     assert.ok(container.querySelector('#alt-model-pick'), '模型 id 旁边要有「选择模型」入口');
+    // 群名片同步：默认开，可以关
+    assert.equal(container.querySelector('#cfg-alt-rename-card').checked, true, '换人设改群名片默认开启');
 
     // 模型属于当前渠道 → 明确说"有它"
     assert.match(container.querySelector('#alt-model-hint').textContent, /当前渠道有它/);
@@ -686,11 +688,13 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     container.querySelector('#cfg-alt-model').value = 'claude-sonnet-5-5-low';
     container.querySelector('#cfg-alt-idle').value = '45';
     container.querySelector('#cfg-alt-callwords').value = '';
+    container.querySelector('#cfg-alt-rename-card').checked = false;
     await window.saveConfig({ quiet: true });
     assert.equal(patches.length, 1, '保存应只提交一次');
     const patch = patches[0];
     assert.equal(patch.personaSwitch.altModel, 'claude-sonnet-5-5-low');
     assert.equal(patch.personaSwitch.idleMinutes, 45);
+    assert.equal(patch.personaSwitch.renameGroupCard, false, '取消勾选要能存下去');
     assert.equal(patch.personaSwitch.altRoleText, '你是克劳德');
     // 清空呼叫词会回落到默认词（服务端也会回落，界面别显示空）
     assert.deepEqual(patch.personaSwitch.callWords, ['claude', '克劳德']);

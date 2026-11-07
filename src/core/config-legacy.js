@@ -371,7 +371,9 @@ export const DEFAULT_CONFIG = {
     altBehaviorProfile: 'legacy',
     callWords: ['claude', '克劳德'],
     homeWords: ['gemi', '哈基米'],
-    callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来']
+    callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来'],
+    // 换人设时同步改群名片（Claude ⇄ 原名）：群友只认群名片，不换名看不出谁在值班
+    renameGroupCard: true
   },
   // 接入白名单
   allow: { groups: [], private: [] },

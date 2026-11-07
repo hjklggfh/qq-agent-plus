@@ -118,7 +118,7 @@ import { budgetStatus } from './budget.js';
 import { readOwnerUin } from './notify-owner.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
-import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags } from './persona-switch.js';
+import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags, chatCardState, planGroupCard, rememberChatCard, forgetChatCard, markChatCardFailed } from './persona-switch.js';
 import { memoryStoreForChat } from '../memory/memory-routing.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
@@ -1420,6 +1420,53 @@ export class Orchestrator {
     return memoryStoreForChat(this.#memoryStores(), chatKey, { profile }) || this.memory;
   }
 
+  /**
+   * 换人设时改群名片（Claude ⇄ Gemi本咪）。
+   * 判定是纯函数（planGroupCard），这里只做 I/O 与记账：
+   *   - 切到第二人设：先捕获它本来的名片，再改成第二人设的名字；
+   *   - 切回默认人设 / 闲置过期 / 人为叫回：把捕获到的原名改回去（捕获失败就用机器人名字）。
+   * 失败只记 warn，不阻断对话；下一轮会再试（没改过名片的会话永远不会被碰）。
+   */
+  async #syncPersonaGroupCard(chatKey, { altActive, switchCfg, cfg }) {
+    try {
+      if (switchCfg?.renameGroupCard === false) return;
+      if (!String(chatKey || '').startsWith('group:')) return;      // 私聊没有群名片
+      const groupId = String(chatKey).split(':')[1];
+      if (!groupId || typeof this.sender?.setCard !== 'function') return;
+      const current = chatCardState(chatKey);
+      const plan = planGroupCard({
+        altActive,
+        card: current.card,
+        homeCard: current.homeCard,
+        // 第二人设的名字：群内展示名优先，其次人设名
+        altName: cfg.altPersona?.botName || cfg.altPersona?.selfNickname || switchCfg.altName,
+        // 不知道原名时的兜底：机器人名字（"Gemi本咪"这种），不是"群内展示名"
+        homeName: cfg.persona?.botName || cfg.persona?.selfNickname,
+        // 上次失败过就先等十分钟（多半是没群名片权限），别每轮都重试
+        failedAt: current.failedAt,
+        now: Date.now()
+      });
+      if (!plan) return;
+      if (!plan.card) { forgetChatCard(chatKey); return; }
+      let homeCard = current.homeCard;
+      if (plan.remember && !homeCard) {
+        // 只在第一次切走时捕获原名；读不到就退回配置里的名字
+        try {
+          const me = await this.onebot?.getGroupMemberInfo?.(groupId, this.onebot?.selfId);
+          const captured = String(me?.card || '').trim();
+          if (captured && captured !== plan.card) homeCard = captured;
+        } catch { /* 拿不到原名不影响改名片 */ }
+      }
+      await this.sender.setCard(chatKey, plan.card);
+      if (plan.remember) rememberChatCard(chatKey, plan.card, homeCard);
+      else forgetChatCard(chatKey);
+      log.info(`[persona] ${chatKey} 群名片 → ${plan.card}`);
+    } catch (error) {
+      markChatCardFailed(chatKey);
+      log.warn(`[persona] ${chatKey} 改群名片失败:`, error?.message ?? error);
+    }
+  }
+
   #commitSessionHandoff(session, { chatKey, triggerEntries }) {
     const cfg = getConfig();
     if (cfg.memory?.handoffEnabled === false || typeof this.memory?.setHandoff !== 'function') return null;
@@ -1876,6 +1923,9 @@ export class Orchestrator {
     }
     const chatProfile = resolveChatProfile(chatKey, Date.now(), switchCfg);
     const altActive = chatProfile.profile === 'alt';
+    // 人设换了，群名片也跟着换（Claude ⇄ Gemi本咪）：群友只认群名片。
+    // 这里刻意不 await —— 改名片要排队、限速、抖动 300~900ms，不该拖慢这一轮的回复。
+    void this.#syncPersonaGroupCard(chatKey, { altActive, switchCfg, cfg });
     const activePersona = altActive
       ? {
         ...cfg.persona,
@@ -2241,7 +2291,11 @@ export class Orchestrator {
           if (pSent && altActive && !personaSwitchBack) touchAltProfile(chatKey);
         } catch { /* 参数不是合法 JSON 时交给工具自己报错 */ }
       }
-      if (personaSwitchBack) activateChatProfile(chatKey, 'home');
+      if (personaSwitchBack) {
+        activateChatProfile(chatKey, 'home');
+        // 模型自己说要交还：名片当场改回去，不用等这个群里下一条消息
+        void this.#syncPersonaGroupCard(chatKey, { altActive: false, switchCfg, cfg });
+      }
       const finalToolCalls = normalizedToolCalls.length ? normalizedToolCalls : undefined;
       const providerAssistant = {
         role: 'assistant',

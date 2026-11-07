@@ -693,7 +693,9 @@ async function saveConfig({ quiet = false } = {}) {
       idleMinutes: clampInt(val('#cfg-alt-idle', s.idleMinutes ?? 30), 1, 1440, 30),
       cooldownSeconds: clampInt(val('#cfg-alt-cooldown', s.cooldownSeconds ?? 0), 0, 3600, 0),
       callWords: parseList(val('#cfg-alt-callwords', (s.callWords || []).join(','))),
-      homeWords: parseList(val('#cfg-alt-homewords', (s.homeWords || []).join(',')))
+      homeWords: parseList(val('#cfg-alt-homewords', (s.homeWords || []).join(','))),
+      // 换人设时同步改群名片（默认开；这一页没有这个控件时保持原值）
+      renameGroupCard: chk('#cfg-alt-rename-card', s.renameGroupCard !== false)
     };
     // callWords/homeWords 被清空时 parseList 会给出空数组，而服务端会回落到默认词；
     // 这里同步回落一次，免得保存后界面显示空、实际却在用默认值。
