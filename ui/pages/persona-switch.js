@@ -7,6 +7,7 @@
 // 免得同一段 15KB 的文本在 config.json 里出现两次、还不知道哪份生效。
 'use strict';
 
+import { closeModelModal, modelModalShell } from '../app.js';
 import { api } from '../core/api.js';
 import { $, esc } from '../core/dom.js';
 import { state } from '../core/state.js';
@@ -56,9 +57,12 @@ function renderPersonaSwitchSection(config) {
       <div class="field"><label>第二人设名字</label>
         <input type="text" id="cfg-alt-name" maxlength="40" value="${esc(s.altName || 'Claude')}" />
         <div class="hint">只用于控制台展示与提示词里的自称，可随时改。</div></div>
-      <div class="field"><label>模型 id</label>
-        <input type="text" id="cfg-alt-model" value="${esc(s.altModel || '')}" placeholder="例如 claude-sonnet-5-5-low" />
-        <div class="hint">必须与当前渠道里的模型名一致；换渠道不改这里。</div></div>
+      <div class="field"><label>模型</label>
+        <div style="display:flex;gap:6px;align-items:center">
+          <input type="text" id="cfg-alt-model" value="${esc(s.altModel || '')}" placeholder="点击右侧从模型目录里选" style="flex:1" />
+          <button type="button" class="btn btn-small" id="alt-model-pick">选择模型</button>
+        </div>
+        <div class="hint" id="alt-model-hint"></div></div>
       <div class="field"><label>群内展示名（可选）</label>
         <input type="text" id="cfg-alt-botname" value="${esc(alt.botName || '')}" placeholder="留空则用上面的名字" /></div>
     </div>
@@ -128,6 +132,110 @@ function renderActive(data) {
   }).join('');
 }
 
+/**
+ * 模型 id 与「当前渠道」的对照提示。
+ * 为什么需要：第二人设**只换模型名、不换渠道**（见 llm.js 的 model 参数）。
+ * 模型目录里能选的模型是"所有已添加的提供商"的并集，所以完全可能出现
+ * "在这里选了 A 家的 claude，但机器人正跑在 B 家" —— 请求会打到 B 家并以 404 失败。
+ * 这条提示就是提前把这个坑说出来，而不是等群里召唤时才炸。
+ */
+function syncAltModelHint() {
+  const box = $('#alt-model-hint');
+  if (!box) return;
+  const model = String($('#cfg-alt-model')?.value ?? '').trim();
+  if (!model) { box.innerHTML = '还没选模型：点「选择模型」从模型目录里挑一个（也可以直接粘贴 id）。'; return; }
+  const providers = Array.isArray(state.providers) ? state.providers : [];
+  if (!providers.length) {
+    box.innerHTML = `当前模型：<code>${esc(model)}</code>（模型目录还没加载，无法核对渠道）`;
+    return;
+  }
+  const currentPid = String(state.config?.api?.provider || '');
+  const current = providers.find((p) => p.id === currentPid) || null;
+  const nameOf = (p) => String(p?.displayName || p?.id || '');
+  const has = (p) => Array.isArray(p?.models) && p.models.includes(model);
+  if (current && has(current)) {
+    box.innerHTML = `<span class="chip ok">当前渠道有它</span> ${esc(nameOf(current))} · <code>${esc(model)}</code>`;
+    return;
+  }
+  const other = providers.find((p) => p.id !== currentPid && has(p));
+  if (other) {
+    box.innerHTML = `<span class="chip warn">渠道不匹配</span> 它属于「${esc(nameOf(other))}」，但第二人设不换渠道 ——
+      请求仍会打到「${esc(nameOf(current) || '当前渠道')}」，大概率 404。要么切到那个渠道，要么换一个本渠道的模型。`;
+    return;
+  }
+  box.innerHTML = `<span class="chip warn">目录里没有</span> 当前渠道的模型列表里没有 <code>${esc(model)}</code>
+    （列表可能是旧的：先到「模型 API」点一次「获取列表」再核对；确认无误也可以直接保存）。`;
+}
+
+/** 从模型目录里挑一个模型写进草稿（**不提交**：这页统一走底部「保存设置」）。 */
+function openAltModelPicker() {
+  const providers = Array.isArray(state.providers) ? state.providers : [];
+  const hint = $('#alt-model-hint');
+  if (!providers.length) {
+    if (hint) hint.textContent = '模型目录为空：请先到「模型 API」页签选服务预设或填地址，再点「获取列表」添加。';
+    return;
+  }
+  const currentModel = String($('#cfg-alt-model')?.value ?? '').trim();
+  const overlay = modelModalShell({
+    head: '选择第二人设的模型',
+    body: `
+      <div class="model-modal-left" id="mm-left"></div>
+      <div class="model-modal-right" id="mm-right"></div>`,
+    foot: `<button class="btn" id="mm-cancel">取消</button>`
+  });
+  const left = overlay.querySelector('#mm-left');
+  const right = overlay.querySelector('#mm-right');
+  // 从当前渠道开始选：第二人设不换渠道，先看对的那一列。
+  let activePid = String(state.config?.api?.provider || '') || providers[0].id;
+  if (!providers.some((p) => p.id === activePid)) activePid = providers[0].id;
+  function renderLeft() {
+    left.innerHTML = providers.map((p) =>
+      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+    left.querySelectorAll('.mm-prov').forEach((el) => {
+      el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
+    });
+  }
+  function renderRight() {
+    const p = providers.find((x) => x.id === activePid);
+    if (!p) { right.innerHTML = ''; return; }
+    const names = p.modelNames || {};
+    const isCurrentChannel = p.id === String(state.config?.api?.provider || '');
+    right.innerHTML = p.models.map((m) => `
+      <div class="mm-model" data-model="${esc(m)}">
+        <span class="mm-check">${m === currentModel ? '✓' : ''}</span>
+        <span>${esc(names[m] || m)}</span>
+        <span class="muted" style="font-size:11px">${esc(m)}</span>
+      </div>`).join('') || '<div class="muted" style="padding:10px">该提供商下没有模型</div>';
+    if (!isCurrentChannel) {
+      right.insertAdjacentHTML('afterbegin',
+        '<div class="hint" style="padding:6px 8px">这一列不是当前渠道：选中后请求仍会打到当前渠道，多半 404。</div>');
+    }
+    right.querySelectorAll('.mm-model').forEach((el) => {
+      el.addEventListener('click', () => {
+        if (!$('#cfg-alt-model')) { closeModelModal(overlay); return; }
+        $('#cfg-alt-model').value = el.dataset.model || '';
+        closeModelModal(overlay);
+        syncAltModelHint();
+        syncReadyHint();
+      });
+    });
+  }
+  renderLeft();
+  renderRight();
+  overlay.querySelector('#mm-cancel').addEventListener('click', () => closeModelModal(overlay));
+}
+
+/** 只刷新"是否就绪"那一行（改了开关/模型/正文时用，不整页重画）。 */
+function syncReadyHint() {
+  const box = $('#alt-persona-ready');
+  if (!box) return;
+  box.textContent = readyHint({
+    enabled: $('#cfg-alt-enabled')?.checked === true,
+    altModel: $('#cfg-alt-model')?.value ?? '',
+    altRoleText: $('#cfg-alt-roletext')?.value ?? ''
+  });
+}
+
 /** 拉一次"谁在值班"。页面被重画后元素就没了，回来时按 id 现查，不缓存节点。 */
 async function loadPersonaSwitchStatus() {
   const box = $('#alt-persona-active');
@@ -167,23 +275,16 @@ function bindPersonaSwitchSection() {
     if (!button) return;
     clearActive(button.dataset.clearAlt || '', button);
   });
-  // 勾选/改模型时只更新那一行提示，不整页重画 —— 重画会冲掉正在输入的正文。
-  const syncReady = () => {
-    const box = $('#alt-persona-ready');
-    if (!box) return;
-    const s = {
-      enabled: $('#cfg-alt-enabled')?.checked === true,
-      altModel: $('#cfg-alt-model')?.value ?? '',
-      altRoleText: $('#cfg-alt-roletext')?.value ?? ''
-    };
-    box.textContent = readyHint(s);
-  };
+  $('#alt-model-pick')?.addEventListener('click', () => openAltModelPicker());
+  // 勾选/改模型时只更新那两行提示，不整页重画 —— 重画会冲掉正在输入的正文。
+  const syncHints = () => { syncReadyHint(); syncAltModelHint(); };
   for (const sel of ['#cfg-alt-enabled', '#cfg-alt-model', '#cfg-alt-roletext']) {
     const node = $(sel);
     if (!node) continue;
-    node.addEventListener('input', syncReady);
-    node.addEventListener('change', syncReady);
+    node.addEventListener('input', syncHints);
+    node.addEventListener('change', syncHints);
   }
+  syncHints();
   loadPersonaSwitchStatus();
 }
 

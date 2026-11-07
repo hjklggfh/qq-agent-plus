@@ -616,7 +616,7 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
   await settle();
   try {
     const cfg = {
-      api: {}, allow: {}, server: {}, runtime: {},
+      api: { provider: 'p-relay' }, allow: {}, server: {}, runtime: {},
       persona: { botName: '哈基米' },
       altPersona: { name: 'Claude', botName: '', selfNickname: '' },
       personaSwitch: {
@@ -633,8 +633,14 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
         callVerbs: ['呼叫']
       }
     };
+    // 模型目录：第二人设只换模型名、不换渠道，这一列决定提示怎么写
+    const providers = [
+      { id: 'p-relay', displayName: '127.0.0.1', baseURL: 'http://127.0.0.1:1', models: ['gemini-3.8-flash', 'claude-sonnet-5-5-low'] },
+      { id: 'p-other', displayName: 'api.deepseek.com', baseURL: 'https://api.deepseek.com', models: ['claude-opus-5-5'] }
+    ];
     window.__altCfg = cfg;
-    vm.runInContext('state.config = __altCfg; state.settingsSection = "persona-switch";', ctx);
+    window.__altProviders = providers;
+    vm.runInContext('state.config = __altCfg; state.providers = __altProviders; state.settingsSection = "persona-switch";', ctx);
     const container = window.document.createElement('div');
     window.document.body.append(container);
     container.innerHTML = vm.runInContext('renderPersonaSwitchSection(__altCfg)', ctx);
@@ -646,6 +652,19 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     assert.equal(container.querySelector('#cfg-alt-enabled').checked, true);
     assert.equal(container.querySelector('#cfg-alt-callwords').value, 'claude, 克劳德');
     assert.match(container.querySelector('#alt-persona-ready').textContent, /已就绪/);
+    assert.ok(container.querySelector('#alt-model-pick'), '模型 id 旁边要有「选择模型」入口');
+
+    // 模型属于当前渠道 → 明确说"有它"
+    assert.match(container.querySelector('#alt-model-hint').textContent, /当前渠道有它/);
+    // 模型只存在于别的渠道 → 必须提醒"请求仍会打到当前渠道，多半 404"
+    container.querySelector('#cfg-alt-model').value = 'claude-opus-5-5';
+    container.querySelector('#cfg-alt-model').dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert.match(container.querySelector('#alt-model-hint').textContent, /渠道不匹配/);
+    assert.match(container.querySelector('#alt-model-hint').textContent, /api\.deepseek\.com/);
+    // 目录里完全没有 → 也不能假装没问题
+    container.querySelector('#cfg-alt-model').value = 'made-up-model';
+    container.querySelector('#cfg-alt-model').dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert.match(container.querySelector('#alt-model-hint').textContent, /目录里没有/);
 
     // 缺模型时提示必须跟着变（群友叫了也不会生效，得当场说清楚）
     container.querySelector('#cfg-alt-model').value = '';
