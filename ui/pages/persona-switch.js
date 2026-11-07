@@ -54,6 +54,17 @@ function renderPersonaSwitchSection(config) {
     <div class="hint" id="alt-persona-ready" style="margin:-4px 0 12px">${esc(readyHint(s))}</div>
 
     <div class="checkbox-row">
+      <input type="checkbox" id="cfg-alt-probe" ${s.probeOnSwitch !== false ? 'checked' : ''} />
+      <label for="cfg-alt-probe">召唤前先确认它可用（推荐）</label>
+    </div>
+    <div class="hint" style="margin:-4px 0 12px">
+      召唤时先用第二人设的模型打一个极小请求（<code>max_tokens=1</code>）：
+      额度用完 / 欠费 / 模型不存在就<strong>不切</strong>，由当前人设说一句"他暂时有事，我先顶着"。
+      只拦硬失败（402/401/404/额度），限流和网络抖动照常切。成功结果缓存 30 分钟、失败缓存 5 分钟，
+      所以不会每喊一次就多花一次调用。值班中途额度耗尽时会自动临时交还默认人设。
+    </div>
+
+    <div class="checkbox-row">
       <input type="checkbox" id="cfg-alt-rename-card" ${s.renameGroupCard !== false ? 'checked' : ''} />
       <label for="cfg-alt-rename-card">换人设时同步改群名片</label>
     </div>

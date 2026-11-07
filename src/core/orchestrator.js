@@ -120,6 +120,7 @@ import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } 
 import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
 import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags, chatCardState, planGroupCard, rememberChatCard, forgetChatCard, markChatCardFailed, activeAltChats, avatarState, planAvatar, markAvatarApplied, markAvatarFailed } from './persona-switch.js';
 import { memoryStoreForChat } from '../memory/memory-routing.js';
+import { probeModel, classifyUnavailable, markProbeResult } from './persona-availability.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
 import { trpgToolDefs } from '../features/trpg/tools.js';
@@ -132,6 +133,22 @@ import { createLogger, newTraceId, withTrace } from './logger.js';
 import { ttsConfigured } from '../llm/tts-openai.js';
 
 const log = createLogger('orchestrator');
+
+/**
+ * 召唤第二人设失败时，给"当前这个人设"的一句提示：告诉他那位来不了，让他顶一下。
+ * 刻意放在 user 侧（拼在提示词末尾）而不是 system 侧：system 变了会让上下文前缀
+ * 失效、线程得重开，而这里只需要影响这一轮。
+ */
+function personaUnavailableNote(switchCfg, info) {
+  const name = String(switchCfg?.altName || '').trim() || '第二人设';
+  const why = info?.reason === 'quota' ? '那边额度用完了'
+    : info?.reason === 'auth' ? '那边配置出了点问题'
+    : info?.reason === 'model' ? '那边模型现在调不通'
+    : '那边暂时用不了';
+  return `\n\n【提示】刚才有群友点名找「${name}」，但他${why}，这次没能出来。
+你就用你自己的身份说一句他暂时有事、你先顶着，然后把刚才的话题接住。
+不要冒充他说话，也不要解释额度/报错这类技术细节。`;
+}
 
 function handoffParticipantIds(triggerEntries) {
   return [...new Set((triggerEntries || [])
@@ -1493,6 +1510,26 @@ export class Orchestrator {
   }
 
   /**
+   * 第二人设站岗中途不可用（额度/鉴权/模型被下架）时：**临时交还默认人设**。
+   *
+   * 三件事：把名片与头像改回默认、把这次失败记进探针缓存（5 分钟内再召唤不会白试）、
+   * 用可重试的 PERSONA_HANDED_BACK 结束这一轮 —— 消息会重新入队，由默认人设（哈基米）
+   * 把这一轮答掉，而不是让兜底模型顶着 Claude 的壳说话。
+   *
+   * @returns {boolean} 是否真的交了还（限流/网络抖动这类软失败返回 false，交给正常重试）
+   */
+  #handBackUnavailablePersona({ chatKey, switchCfg, cfg, reason }) {
+    if (!reason) return false;
+    markProbeResult(switchCfg.altModel, { ok: false, reason });
+    const result = activateChatProfile(chatKey, 'home', Date.now(), switchCfg, { force: true });
+    log.warn(`[persona] ${chatKey} 第二人设不可用（${reason}），临时交还默认人设`
+      + `${result.changed ? '' : `（状态已复位：${result.reason || 'n/a'}）`}`);
+    void this.#syncPersonaGroupCard(chatKey, { altActive: false, switchCfg, cfg });
+    void this.#syncPersonaAvatar(switchCfg);
+    return true;
+  }
+
+  /**
    * 给控制台用：把某个会话叫回默认人设之后，立刻把群名片也改回去。
    * 不这么做的话名片会停在「Claude」，直到这个群下一条消息进来才恢复。
    */
@@ -1726,7 +1763,8 @@ export class Orchestrator {
           tools: toOpenAiTools(sendTools),
           signal,
           purpose: 'chat',
-          model: session.model || undefined
+          model: session.model || undefined,
+          noFallback: session.chatProfile === 'alt'
         });
         signal.throwIfAborted();
         addUsage(session.usage, response.usage);
@@ -1950,6 +1988,8 @@ export class Orchestrator {
     const openAiTools = toOpenAiTools(toolDefs);
     // ── 双人设：本会话用哪套人设 / 哪个模型 ──────────────────────────────
     const switchCfg = personaSwitchConfig(getConfig().personaSwitch);
+    // 本轮召唤时发现第二人设不可用（额度/鉴权/模型不存在）→ 不切，并在回复里说明一句
+    let altUnavailable = null;
     if (switchCfg.enabled) {
       // 机器人自己的名字要从待匹配文本里剔掉：@ 的文本带着群名片，
       // 而默认人设名字「Gemi本咪」里含 homeWords 的 gemi —— 不剔就永远"同时命中两边"。
@@ -1970,6 +2010,20 @@ export class Orchestrator {
             && String(entry.reply.senderId || '') === String(this.onebot.selfId));
         const want = matchSwitchRequest(bodyText, { mention, settings: switchCfg, ignore });
         if (!want) continue;
+        // 召唤第二人设前先探一次：没额度/欠费/模型不存在就不切（否则会出现
+        // "Claude 的名片 + 别人家的脑子在替他说话"）。探针结果缓存，反复喊不会反复探。
+        if (want === 'alt' && switchCfg.probeOnSwitch !== false) {
+          const probe = await probeModel({ model: switchCfg.altModel });
+          if (!probe.ok) {
+            altUnavailable = { reason: probe.reason, cached: probe.cached };
+            log.warn(`[persona] ${chatKey} 第二人设不可用（${probe.reason}${probe.cached ? '，缓存' : ''}），本轮不切换`);
+            // 已经在值班却已经不可用：当场交还，本轮按默认人设回（否则这一轮还会照旧用他）
+            if (onDutyAlt) {
+              this.#handBackUnavailablePersona({ chatKey, switchCfg, cfg, reason: probe.reason });
+            }
+            break;
+          }
+        }
         const result = activateChatProfile(chatKey, want === 'alt' ? 'alt' : 'home', Date.now(), switchCfg);
         if (result.changed) log.info(`[persona] ${chatKey} 切换`);
         break;
@@ -2106,7 +2160,8 @@ export class Orchestrator {
       lifecycleContinuation,
       session,
       trpgNarrator
-    }) + (trpgAction ? trpg.prompt(chatKey, triggerEntries) : '');
+    }) + (trpgAction ? trpg.prompt(chatKey, triggerEntries) : '')
+      + (altUnavailable ? personaUnavailableNote(switchCfg, altUnavailable) : '');
 
     session.systemPrompt = systemPrompt;
     session.userPrompt = userPrompt;
@@ -2265,14 +2320,29 @@ export class Orchestrator {
       session.inputMessages = requestAuditMessages;
       markActivity('正在思考…');
       // 网络抖动/5xx/429 会自动重试（同一轮请求，messages 不变，幂等不重复发言）
-      const response = await chatCompletionWithRetry({
-        messages,
-        tools: roundTools,
-        signal,
-        cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
-        purpose: 'chat',
-        model: activeModel
-      });
+      let response;
+      try {
+        response = await chatCompletionWithRetry({
+          messages,
+          tools: roundTools,
+          signal,
+          cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
+          purpose: 'chat',
+          model: activeModel,
+          // 第二人设值班时不许兜底：宁可这一轮交还默认人设重答，
+          // 也不要"Claude 的词配别家的脑子"。
+          noFallback: altActive
+        });
+      } catch (error) {
+        // 站岗中途额度/鉴权挂了：临时交还默认人设（哈基米顶上），本批消息回队列重答。
+        const reason = classifyUnavailable(error);
+        if (altActive && this.#handBackUnavailablePersona({ chatKey, switchCfg, cfg, reason })) {
+          const handoff = new Error(`第二人设不可用，已临时交还默认人设：${error?.message ?? error}`);
+          handoff.code = 'PERSONA_HANDED_BACK';
+          throw handoff;
+        }
+        throw error;
+      }
       signal.throwIfAborted();
       session.model = response.model || session.model;
       // 2026-10-06 复审 P3：兜底模型接管且端点真的换了渠道时，成本要记到实际渠道名下
@@ -2348,9 +2418,11 @@ export class Orchestrator {
         } catch { /* 参数不是合法 JSON 时交给工具自己报错 */ }
       }
       if (personaSwitchBack) {
-        activateChatProfile(chatKey, 'home');
+        // 交还必须 force：冷却只防"来回切着玩"，不该拦住"他下班"
+        activateChatProfile(chatKey, 'home', Date.now(), switchCfg, { force: true });
         // 模型自己说要交还：名片当场改回去，不用等这个群里下一条消息
         void this.#syncPersonaGroupCard(chatKey, { altActive: false, switchCfg, cfg });
+        void this.#syncPersonaAvatar(switchCfg);
       }
       const finalToolCalls = normalizedToolCalls.length ? normalizedToolCalls : undefined;
       const providerAssistant = {

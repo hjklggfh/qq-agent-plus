@@ -694,6 +694,8 @@ async function saveConfig({ quiet = false } = {}) {
       cooldownSeconds: clampInt(val('#cfg-alt-cooldown', s.cooldownSeconds ?? 0), 0, 3600, 0),
       callWords: parseList(val('#cfg-alt-callwords', (s.callWords || []).join(','))),
       homeWords: parseList(val('#cfg-alt-homewords', (s.homeWords || []).join(','))),
+      // 召唤前探活（默认开）：额度用完就不切
+      probeOnSwitch: chk('#cfg-alt-probe', s.probeOnSwitch !== false),
       // 换人设时同步改群名片（默认开；这一页没有这个控件时保持原值）
       renameGroupCard: chk('#cfg-alt-rename-card', s.renameGroupCard !== false),
       // 头像（账号级）：图片留空＝不换

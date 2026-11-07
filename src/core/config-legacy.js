@@ -377,7 +377,9 @@ export const DEFAULT_CONFIG = {
     // 头像也换（账号级，全局一张）：图片留空＝不动。支持本地绝对路径 / URL / base64
     switchAvatar: true,
     altAvatar: '',
-    homeAvatar: ''
+    homeAvatar: '',
+    // 召唤前先探一次第二人设的模型：没额度/欠费/模型不存在就不切，由当前人设说明一句
+    probeOnSwitch: true
   },
   // 接入白名单
   allow: { groups: [], private: [] },

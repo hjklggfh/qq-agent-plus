@@ -113,3 +113,13 @@ test('本来没在值班时再切默认人设：不算一次切换', () => {
   const result = activateChatProfile('group:nobody', 'home', T0, settings);
   assert.deepEqual(result, { changed: false, reason: 'already' });
 });
+
+// 冷却只该拦"来回切着玩"，不该拦"他下班"：模型自己输出交还标签、额度用完被交还都一样。
+test('交还可以跳过冷却', () => {
+  const cool = personaSwitchConfig({ ...settings, cooldownSeconds: 120 });
+  const chat = 'group:force-home';
+  assert.equal(activateChatProfile(chat, 'alt', T0, cool).changed, true);
+  assert.equal(activateChatProfile(chat, 'home', T0 + 30_000, cool).reason, 'cooldown');
+  assert.equal(activateChatProfile(chat, 'home', T0 + 30_000, cool, { force: true }).changed, true);
+  assert.equal(resolveChatProfile(chat, T0 + 30_000, cool).profile, 'home');
+});

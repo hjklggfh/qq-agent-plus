@@ -28,7 +28,9 @@ export const DEFAULT_PERSONA_SWITCH = Object.freeze({
   // 头像也换（账号级，所有群/私聊共用一张）。图片留空＝不做。
   switchAvatar: true,
   altAvatar: '',
-  homeAvatar: ''
+  homeAvatar: '',
+  // 召唤前先探一次第二人设的模型能不能用：额度用完就不切（否则会出现"别人顶着它的脸说话"）
+  probeOnSwitch: true
 });
 
 const STATE_FILE = () => path.join(DATA_DIR, 'persona-state.json');
@@ -64,7 +66,8 @@ export function personaSwitchConfig(raw = {}) {
     renameGroupCard: src.renameGroupCard !== false,
     switchAvatar: src.switchAvatar !== false,
     altAvatar: String(src.altAvatar || '').trim(),
-    homeAvatar: String(src.homeAvatar || '').trim()
+    homeAvatar: String(src.homeAvatar || '').trim(),
+    probeOnSwitch: src.probeOnSwitch !== false
   };
 }
 
@@ -203,8 +206,14 @@ export function planGroupCard({
   return { card: target, remember: false, forget: true };
 }
 
-/** 切换当前会话的人设；受冷却时间保护，避免反复横跳。 */
-export function activateChatProfile(chatKey, profile, now = Date.now(), settings = null) {
+/**
+ * 切换当前会话的人设；受冷却时间保护，避免反复横跳。
+ * @param {object} [options]
+ * @param {boolean} [options.force] 跳过冷却。**交还**（模型自己交还、额度用完被交还、
+ *   管理员叫回）必须用它：冷却的本意是防止"来回切着玩"，不该拦"他下班"。
+ *   以前这里对两个方向都生效，导致切过去 60 秒内模型自己输出 [SWITCH_TO_GEMINI] 会被吞掉。
+ */
+export function activateChatProfile(chatKey, profile, now = Date.now(), settings = null, { force = false } = {}) {
   const cfg = settings || personaSwitchConfig(getConfig().personaSwitch);
   if (!chatKey) return { changed: false, reason: 'no-chat' };
   if (profile === 'alt' && !altPersonaReady(cfg)) return { changed: false, reason: 'not-ready' };
@@ -216,7 +225,7 @@ export function activateChatProfile(chatKey, profile, now = Date.now(), settings
     if (profile === 'alt') { entry.lastSwitchAt = now; state[chatKey] = entry; writeState(state); }
     return { changed: false, reason: 'already' };
   }
-  if (sinceSwitch < cfg.cooldownSeconds * 1000) return { changed: false, reason: 'cooldown' };
+  if (!force && sinceSwitch < cfg.cooldownSeconds * 1000) return { changed: false, reason: 'cooldown' };
   // 本来就没有状态、又要切回默认人设：什么都不用做。
   // 以前这里会一路走到 writeState 并返回 changed:true —— 调用方据此打一条"切换"日志，
   // 看起来像切了、其实什么都没发生（2026-11-07 排查"切换不了"时就栽在这条日志上）。

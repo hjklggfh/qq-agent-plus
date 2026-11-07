@@ -658,6 +658,8 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     // 头像同步：默认开，但要填了图片地址才生效
     assert.equal(container.querySelector('#cfg-alt-switch-avatar').checked, true, '换人设改头像默认开启');
     assert.equal(container.querySelector('#cfg-alt-avatar').value, '', '没配图片时是空的');
+    // 召唤前探活：默认开
+    assert.equal(container.querySelector('#cfg-alt-probe').checked, true, '召唤前探活默认开启');
 
     // 模型属于当前渠道 → 明确说"有它"
     assert.match(container.querySelector('#alt-model-hint').textContent, /当前渠道有它/);
@@ -700,6 +702,7 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     assert.equal(patch.personaSwitch.altModel, 'claude-sonnet-5-5-low');
     assert.equal(patch.personaSwitch.idleMinutes, 45);
     assert.equal(patch.personaSwitch.renameGroupCard, false, '取消勾选要能存下去');
+    assert.equal(patch.personaSwitch.probeOnSwitch, true, '探活开关要能存下去');
     assert.equal(patch.personaSwitch.altAvatar, '/data/avatar-claude.png', '头像路径要存下去');
     assert.equal(patch.personaSwitch.homeAvatar, '/data/avatar-home.png');
     assert.equal(patch.personaSwitch.altRoleText, '你是克劳德');

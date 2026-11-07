@@ -79,6 +79,9 @@ function effectiveApi() {
  */
 export function isRetryableError(error) {
   if (error?.code === 'TIME_CONTROL_INACTIVE') return false;
+  // 第二人设不可用被交还：消息本身没问题，换默认人设重跑一遍就能答（见 orchestrator 的
+  // PERSONA_HANDED_BACK）。按可重试处理，批次会自动回到队列而不是标成 failed。
+  if (error?.code === 'PERSONA_HANDED_BACK') return true;
   const msg = String(error?.message ?? error ?? '');
 
   // 主动中止（用户/系统取消）：重试没有意义
@@ -292,6 +295,9 @@ function pickFallback(args) {
  * 带重试 + 兜底模型的对话请求。
  * 主模型彻底失败（重试耗尽 / 认证欠费类错误），或两轮都被服务商审核拦下时，
  * 自动改用 config.api.fallback 里配置的备用模型再试一次（只切一次，不递归）。
+ *
+ * `args.noFallback`：本次调用禁止兜底。第二人设用它 ——
+ * "Claude 的词配上兜底模型的脑子"比不回答更糟（人设与模型是绑定的）。
  */
 export async function chatCompletionWithRetry(args, retries = 2) {
   let response = null;
@@ -305,7 +311,7 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   const shouldFallback = primaryError
     ? isFallbackWorthy(primaryError)
     : isModerationRefusal(response);
-  const fb = shouldFallback ? pickFallback(args) : null;
+  const fb = shouldFallback && args?.noFallback !== true ? pickFallback(args) : null;
   if (!fb || args.signal?.aborted) {
     if (primaryError) throw primaryError;
     // 兜底不可用时把**本次结果**如实返回；null 只能来自内部异常路径（throw null 已被上面堵死），
