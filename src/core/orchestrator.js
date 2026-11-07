@@ -118,6 +118,7 @@ import { budgetStatus } from './budget.js';
 import { readOwnerUin } from './notify-owner.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
+import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags } from './persona-switch.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
 import { trpgToolDefs } from '../features/trpg/tools.js';
@@ -1612,7 +1613,8 @@ export class Orchestrator {
           messages: correctionMessages,
           tools: toOpenAiTools(sendTools),
           signal,
-          purpose: 'chat'
+          purpose: 'chat',
+          model: session.model || undefined
         });
         signal.throwIfAborted();
         addUsage(session.usage, response.usage);
@@ -1834,7 +1836,36 @@ export class Orchestrator {
       };
     });
     const openAiTools = toOpenAiTools(toolDefs);
+    // ── 双人设：本会话用哪套人设 / 哪个模型 ──────────────────────────────
+    const switchCfg = personaSwitchConfig(getConfig().personaSwitch);
+    if (switchCfg.enabled) {
+      for (const entry of triggerEntries || []) {
+        const bodyText = String(entry?.text || '').replace(/^\[引用[^\]]*\]/, '');
+        const mention = entry?.mentionsSelf === true
+          || Boolean(entry?.reply && this.onebot.selfId
+            && String(entry.reply.senderId || '') === String(this.onebot.selfId));
+        const want = matchSwitchRequest(bodyText, { mention, settings: switchCfg });
+        if (!want) continue;
+        const result = activateChatProfile(chatKey, want === 'alt' ? 'alt' : 'home', Date.now(), switchCfg);
+        if (result.changed) log.info(`[persona] ${chatKey} 切换`);
+        break;
+      }
+    }
+    const chatProfile = resolveChatProfile(chatKey, Date.now(), switchCfg);
+    const altActive = chatProfile.profile === 'alt';
+    const activePersona = altActive
+      ? {
+        ...cfg.persona,
+        roleText: switchCfg.altRoleText,
+        customRules: switchCfg.altCustomRules,
+        behaviorProfile: switchCfg.altBehaviorProfile,
+        botName: cfg.altPersona?.botName || switchCfg.altName || cfg.persona.botName,
+        selfNickname: cfg.altPersona?.selfNickname || ''
+      }
+      : cfg.persona;
+    const activeModel = altActive && switchCfg.altModel ? switchCfg.altModel : cfg.api.model;
     const systemPrompt = buildSystemPrompt({
+      persona: activePersona,
       // 与【此刻状态】用同一个名字（群名片优先），否则同一次请求里会出现两个"你在群里的名字"
       selfNickname,
       // 进行中的游戏：只注入公开摘要（不含词与身份）
@@ -1849,7 +1880,7 @@ export class Orchestrator {
       .update('\0')
       .update(String(cfg.api.baseUrl || ''))
       .update('\0')
-      .update(String(cfg.api.model || ''))
+      .update(String(activeModel || ''))
       .update('\0')
       .update(systemPrompt)
       .update('\0')
@@ -1946,7 +1977,8 @@ export class Orchestrator {
     session.userPrompt = userPrompt;
     session.promptChars = systemPrompt.length + userPrompt.length
       + JSON.stringify(priorProviderMessages).length;
-    session.model = cfg.api.model;
+    session.model = activeModel;
+    session.chatProfile = chatProfile.profile;
     session.conversationMode = conversationCfg.mode;
     session.lifecycleContinuation = lifecycleContinuation;
     session.threadId = thread?.threadId || null;
@@ -2103,7 +2135,8 @@ export class Orchestrator {
         tools: roundTools,
         signal,
         cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
-        purpose: 'chat'
+        purpose: 'chat',
+        model: activeModel
       });
       signal.throwIfAborted();
       session.model = response.model || session.model;
@@ -2132,7 +2165,11 @@ export class Orchestrator {
       });
 
       const msg = response.message;
-      const finalContent = typeof msg.content === 'string' ? msg.content : (msg.content ?? null);
+      let personaSwitchBack = false;
+      const altRawContent = typeof msg.content === 'string' ? msg.content : (msg.content ?? null);
+      const altStrippedContent = altRawContent == null ? null : stripSwitchTags(altRawContent);
+      if (altStrippedContent?.switchTo) personaSwitchBack = true;
+      const finalContent = altStrippedContent ? altStrippedContent.text : altRawContent;
       const reasoningContent = typeof msg.reasoning_content === 'string'
         ? msg.reasoning_content
         : null;
@@ -2154,6 +2191,28 @@ export class Orchestrator {
               : JSON.stringify(c.function?.arguments ?? {})
           }
         }));
+      // 双人设：控制标签在发给 QQ 之前剥掉；命中即交还值班权。
+      for (const pCall of normalizedToolCalls) {
+        if (pCall.function?.name !== 'send_message') continue;
+        try {
+          const pArgs = JSON.parse(pCall.function.arguments || '{}');
+          let pSent = false;
+          const pClean = (value) => {
+            const pRes = stripSwitchTags(value);
+            if (pRes.switchTo) personaSwitchBack = true;
+            return pRes.text;
+          };
+          if (typeof pArgs.messages === 'string') { pArgs.messages = pClean(pArgs.messages); pSent = true; }
+          else if (Array.isArray(pArgs.messages)) {
+            pArgs.messages = pArgs.messages.map((item) => (typeof item === 'string' ? pClean(item) : item));
+            pSent = pArgs.messages.length > 0;
+          }
+          if (typeof pArgs.text === 'string') { pArgs.text = pClean(pArgs.text); pSent = true; }
+          pCall.function.arguments = JSON.stringify(pArgs);
+          if (pSent && altActive && !personaSwitchBack) touchAltProfile(chatKey);
+        } catch { /* 参数不是合法 JSON 时交给工具自己报错 */ }
+      }
+      if (personaSwitchBack) activateChatProfile(chatKey, 'home');
       const finalToolCalls = normalizedToolCalls.length ? normalizedToolCalls : undefined;
       const providerAssistant = {
         role: 'assistant',

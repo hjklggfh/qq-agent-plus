@@ -348,6 +348,31 @@ export const DEFAULT_CONFIG = {
   },
   // 用户自定义人设库（保存在配置里，可在设置页添加/选择）
   customPersonas: [],
+  // 第二人设与按会话切换（默认关闭；开启后需同时配置 altModel 与 altRoleText）
+  altPersona: {
+    name: 'Claude',
+    model: '',
+    templateId: '',
+    roleText: '',
+    customRules: '',
+    behaviorProfile: 'legacy',
+    botName: '',
+    selfNickname: ''
+  },
+  personaSwitch: {
+    enabled: false,
+    idleMinutes: 30,
+    cooldownSeconds: 60,
+    altName: 'Claude',
+    altModel: '',
+    altTemplateId: '',
+    altRoleText: '',
+    altCustomRules: '',
+    altBehaviorProfile: 'legacy',
+    callWords: ['claude', '克劳德'],
+    homeWords: ['gemi', '哈基米'],
+    callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来']
+  },
   // 接入白名单
   allow: { groups: [], private: [] },
   deny: { groups: [], private: [] },

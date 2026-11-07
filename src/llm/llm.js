@@ -318,7 +318,7 @@ export async function chatCompletionWithRetry(args, retries = 2) {
     ? `失败（${String(primaryError?.message ?? primaryError).slice(0, 90)}）`
     : '两轮都被审核拦截';
   log.warn(`[llm] 主模型${why}，改用兜底模型 ${fb.model}`);
-  const fbResponse = await runCompletionWithRetries({ ...args, overrides: fb }, 1);
+  const fbResponse = await runCompletionWithRetries({ ...args, model: '', overrides: fb }, 1);
   // 2026-10-06 复审 P3：标记本次是否真的换了渠道（兜底端点与主渠道 host 不同）。
   // 同渠道换模型不算换渠道 —— vendor 不变；跨渠道时调用方把成本记到实际渠道名下。
   const primaryBase = String(effectiveApi().baseUrl || '');
@@ -352,7 +352,10 @@ export async function chatCompletion({
   overrides = null,
   cacheKey = '',
   maxTokens = null,
-  purpose = ''
+  purpose = '',
+  // 按次指定模型（双人设切换用）。与 overrides 的区别：overrides 会把整条渠道换掉并
+  // 关闭兜底，这里只替换模型名，渠道、密钥与兜底链路保持不变。
+  model = ''
 }) {
   assertTimeAllowed();
   const api = overrides || effectiveApi();
@@ -361,7 +364,7 @@ export async function chatCompletion({
   const thinking = thinkingFor(purpose, overrides);
   const thinkingOff = thinking.effectiveOff;
   const body = {
-    model: api.model,
+    model: String(model || api.model || '').trim(),
     messages: messages.map(({ role, content, tool_calls, tool_call_id, name, reasoning_content }) => ({
       role,
       // 请求前兜底：字符串里若有孤立代理项（只可能来自把 emoji 切两半的错误截断），
