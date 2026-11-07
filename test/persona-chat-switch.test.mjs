@@ -35,6 +35,36 @@ test('触发识别：要关键词 + 呼叫语境，闲聊提到模型名不触�
   assert.equal(matchSwitchRequest('', { settings }), null);
 });
 
+// 2026-11-07 线上故障：默认人设名字叫「Gemi本咪」，@ 的文本里带着它 → 同时命中 home(gemi) 与
+// alt(claude)，被"拿不准不切"判死，表现为怎么叫都不切换。修法：先把机器人自己的名字剔掉再匹配。
+test('触发识别：@ 文本里带着机器人名字（Gemi本咪）时仍能切到第二人设', () => {
+  const ignore = ['Gemi本咪', 'Gemini'];
+  // 不带 ignore：复现故障 —— 同时命中两边，不切
+  assert.equal(matchSwitchRequest('@Gemi本咪 让Claude出来逛逛', { mention: true, settings }), null);
+  assert.equal(matchSwitchRequest('@Gemi本咪 呼叫克劳德', { mention: true, settings }), null);
+  // 带 ignore：只剩 alt
+  assert.equal(matchSwitchRequest('@Gemi本咪 让Claude出来逛逛', { mention: true, settings, ignore }), 'alt');
+  assert.equal(matchSwitchRequest('@Gemi本咪 呼叫克劳德', { mention: true, settings, ignore }), 'alt');
+  assert.equal(matchSwitchRequest('@Gemi本咪 切换Claude模式', { mention: true, settings, ignore }), 'alt');
+  // 只有 @、没提任何人设 → 不切（以前会被误判成切 home）
+  assert.equal(matchSwitchRequest('@Gemi本咪 在吗', { mention: true, settings, ignore }), null);
+  assert.equal(matchSwitchRequest('@Gemi本咪', { mention: true, settings, ignore }), null);
+  // 叫回默认人设的词没被误伤
+  assert.equal(matchSwitchRequest('@Gemi本咪 叫哈基米回来', { mention: true, settings, ignore }), 'home');
+  // 两边都真提到（不是自己的名字）时仍然不切
+  assert.equal(matchSwitchRequest('@Gemi本咪 叫克劳德还是叫哈基米', { mention: true, settings, ignore }), null);
+});
+
+// 对称的坑：第二人设值班时群名片就是「Claude」，@ 的文本里带着它 → 同时命中两边。
+// 值班期间把第二人设的名字也剔掉，才能用 @ 叫回默认人设。
+test('触发识别：第二人设值班时 @Claude 叫回默认人设也能生效', () => {
+  const onDutyIgnore = ['Gemi本咪', 'Gemini', 'Claude'];
+  assert.equal(matchSwitchRequest('@Claude 叫哈基米回来', { mention: true, settings, ignore: onDutyIgnore }), 'home');
+  assert.equal(matchSwitchRequest('@Claude 回来吧', { mention: true, settings, ignore: onDutyIgnore }), null, '没提任何人设 → 不切');
+  // 值班期间再叫一次自己：剔掉名字后还剩「呼叫克劳德」→ 仍然是 alt（刷新计时）
+  assert.equal(matchSwitchRequest('@Claude 呼叫克劳德', { mention: true, settings, ignore: onDutyIgnore }), 'alt');
+});
+
 test('控制标签会被剥离，普通文本原样返回', () => {
   assert.deepEqual(stripSwitchTags('这里交还给猫。[SWITCH_TO_GEMINI]'), { text: '这里交还给猫。', switchTo: 'home' });
   assert.deepEqual(stripSwitchTags('  [switch_to_gemini]  '), { text: '', switchTo: 'home' });
@@ -76,4 +106,10 @@ test('冷却时间内的反复切换被拒绝', () => {
   assert.equal(activateChatProfile(chat, 'home', T0 + 30_000, cool).reason, 'cooldown');
   assert.equal(activateChatProfile(chat, 'home', T0 + 121_000, cool).changed, true);
   assert.equal(resolveChatProfile(chat, T0 + 121_000, cool).profile, 'home');
+});
+
+// 线上日志里那条"切换"曾误导排查：本来就没在值班、又切 home，也会 changed:true。
+test('本来没在值班时再切默认人设：不算一次切换', () => {
+  const result = activateChatProfile('group:nobody', 'home', T0, settings);
+  assert.deepEqual(result, { changed: false, reason: 'already' });
 });

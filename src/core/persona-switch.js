@@ -98,11 +98,25 @@ function prune(state, now) {
  * 识别"叫某人出来"的请求。返回 'alt'（切第二人设）/ 'home'（切回默认）/ null。
  * 只匹配关键词还不够：群里正常讨论模型名很常见，所以要求同时有 @（mention）
  * 或者明确的呼叫动词，否则不动。
+ *
+ * `ignore`：匹配前先剔掉的文本（机器人自己的名字）。
+ * 为什么必须有：@ 的文本里带着群名片，而这台机器的默认人设名字就叫「**Gemi**本咪」——
+ * 于是 `@Gemi本咪 呼叫克劳德` 同时命中 home(gemi) 与 alt(claude)，被"拿不准不切"规则判死，
+ * 表现为"怎么叫都不切换"（2026-11-07 线上实测）。剔掉自己的名字后只剩 alt，才判得对。
  */
-export function matchSwitchRequest(text, { mention = false, settings } = {}) {
+export function matchSwitchRequest(text, { mention = false, settings, ignore = [] } = {}) {
   const cfg = settings || personaSwitchConfig(getConfig().personaSwitch);
-  const body = String(text || '').toLowerCase();
-  if (!body) return null;
+  const selfNames = (Array.isArray(ignore) ? ignore : [])
+    .map((name) => String(name ?? '').trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);   // 长的先剔：「Gemi本咪」要先于「Gemi」
+  let body = String(text || '');
+  for (const name of selfNames) {
+    body = body.split(name).join('');
+    body = body.split(name.toLowerCase()).join('');
+  }
+  body = body.toLowerCase();
+  if (!body.trim()) return null;
   const hit = (list) => list.some((word) => body.includes(word));
   const verb = cfg.callVerbs.some((word) => body.includes(word));
   const alt = hit(cfg.callWords);
@@ -195,6 +209,10 @@ export function activateChatProfile(chatKey, profile, now = Date.now(), settings
     return { changed: false, reason: 'already' };
   }
   if (sinceSwitch < cfg.cooldownSeconds * 1000) return { changed: false, reason: 'cooldown' };
+  // 本来就没有状态、又要切回默认人设：什么都不用做。
+  // 以前这里会一路走到 writeState 并返回 changed:true —— 调用方据此打一条"切换"日志，
+  // 看起来像切了、其实什么都没发生（2026-11-07 排查"切换不了"时就栽在这条日志上）。
+  if (profile === 'home' && !state[chatKey]) return { changed: false, reason: 'already' };
   if (profile === 'alt') {
     // 换人会保留"我们改过的名片"，但不保留上一轮的时间戳（新的一段值班从现在开始）
     state[chatKey] = { profile: 'alt', since: now, lastReplyAt: now, lastSwitchAt: now };

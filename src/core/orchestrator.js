@@ -1926,12 +1926,24 @@ export class Orchestrator {
     // ── 双人设：本会话用哪套人设 / 哪个模型 ──────────────────────────────
     const switchCfg = personaSwitchConfig(getConfig().personaSwitch);
     if (switchCfg.enabled) {
+      // 机器人自己的名字要从待匹配文本里剔掉：@ 的文本带着群名片，
+      // 而默认人设名字「Gemi本咪」里含 homeWords 的 gemi —— 不剔就永远"同时命中两边"。
+      const selfNames = [selfNickname, cfg.persona?.selfNickname, cfg.persona?.botName, this.onebot?.selfNickname]
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+      // 反过来也成立：第二人设值班时群里 @ 的是「Claude」，`@Claude 叫哈基米回来` 会两边命中。
+      // 所以"正在值班"时把它的名字也剔掉（这时它@ 的是自己的名片，不是召唤词）。
+      const altNames = [cfg.altPersona?.botName, cfg.altPersona?.selfNickname, switchCfg.altName]
+        .map((name) => String(name || '').trim())
+        .filter(Boolean);
+      const onDutyAlt = resolveChatProfile(chatKey, Date.now(), switchCfg).profile === 'alt';
+      const ignore = onDutyAlt ? [...selfNames, ...altNames] : selfNames;
       for (const entry of triggerEntries || []) {
         const bodyText = String(entry?.text || '').replace(/^\[引用[^\]]*\]/, '');
         const mention = entry?.mentionsSelf === true
           || Boolean(entry?.reply && this.onebot.selfId
             && String(entry.reply.senderId || '') === String(this.onebot.selfId));
-        const want = matchSwitchRequest(bodyText, { mention, settings: switchCfg });
+        const want = matchSwitchRequest(bodyText, { mention, settings: switchCfg, ignore });
         if (!want) continue;
         const result = activateChatProfile(chatKey, want === 'alt' ? 'alt' : 'home', Date.now(), switchCfg);
         if (result.changed) log.info(`[persona] ${chatKey} 切换`);
