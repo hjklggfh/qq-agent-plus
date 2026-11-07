@@ -64,6 +64,23 @@ function renderPersonaSwitchSection(config) {
       只影响群聊，私聊没有群名片；没有群名片管理权限时会失败并记一条日志，不影响聊天。
     </div>
 
+    <div class="checkbox-row">
+      <input type="checkbox" id="cfg-alt-switch-avatar" ${s.switchAvatar !== false ? 'checked' : ''} />
+      <label for="cfg-alt-switch-avatar">换人设时同步改头像</label>
+    </div>
+    <div class="hint" style="margin:-4px 0 12px">
+      头像是<strong>账号级</strong>的（所有群和私聊共用一张），所以做不到"这个群 Claude、那个群 Gemi"：
+      规则是<strong>只要有任意会话在第二人设值班，就换成第二人设的头像；全部交还后换回默认那张</strong>。
+      图片留空就不换。填宿主机上的<strong>绝对路径</strong>或 <strong>URL</strong>（也接受 base64），例如
+      <code>/mnt/data/qq-agent/data/avatar-claude.png</code>。
+    </div>
+    <div class="field-row">
+      <div class="field"><label>第二人设头像</label>
+        <input type="text" id="cfg-alt-avatar" value="${esc(s.altAvatar || '')}" placeholder="/mnt/data/qq-agent/data/avatar-claude.png" /></div>
+      <div class="field"><label>默认人设头像</label>
+        <input type="text" id="cfg-alt-avatar-home" value="${esc(s.homeAvatar || '')}" placeholder="/mnt/data/qq-agent/data/avatar-home.png" /></div>
+    </div>
+
     <div class="field-row">
       <div class="field"><label>第二人设名字</label>
         <input type="text" id="cfg-alt-name" maxlength="40" value="${esc(s.altName || 'Claude')}" />

@@ -118,7 +118,7 @@ import { budgetStatus } from './budget.js';
 import { readOwnerUin } from './notify-owner.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
-import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags, chatCardState, planGroupCard, rememberChatCard, forgetChatCard, markChatCardFailed } from './persona-switch.js';
+import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags, chatCardState, planGroupCard, rememberChatCard, forgetChatCard, markChatCardFailed, activeAltChats, avatarState, planAvatar, markAvatarApplied, markAvatarFailed } from './persona-switch.js';
 import { memoryStoreForChat } from '../memory/memory-routing.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
@@ -1468,6 +1468,31 @@ export class Orchestrator {
   }
 
   /**
+   * 换人设时改账号头像。
+   * 头像是**账号级**的（所有群 + 私聊共用一张），所以规则只能是"有任意会话在值班就用第二人设的脸，
+   * 全部交还就换回默认那张" —— 做不到按群各一张。没配图片时整条路直接返回，零额外开销。
+   */
+  async #syncPersonaAvatar(switchCfg) {
+    try {
+      if (switchCfg?.switchAvatar === false) return;
+      if (!switchCfg?.altAvatar && !switchCfg?.homeAvatar) return;
+      const plan = planAvatar({
+        anyDuty: activeAltChats().length > 0,
+        state: avatarState(),
+        altAvatar: switchCfg.altAvatar,
+        homeAvatar: switchCfg.homeAvatar
+      });
+      if (!plan) return;
+      await this.onebot.setSelfAvatar(plan.file);
+      markAvatarApplied(plan.mode);
+      log.info(`[persona] 头像 → ${plan.mode === 'alt' ? switchCfg.altName || '第二人设' : '默认人设'}`);
+    } catch (error) {
+      markAvatarFailed();
+      log.warn('[persona] 改头像失败:', error?.message ?? error);
+    }
+  }
+
+  /**
    * 给控制台用：把某个会话叫回默认人设之后，立刻把群名片也改回去。
    * 不这么做的话名片会停在「Claude」，直到这个群下一条消息进来才恢复。
    */
@@ -1955,6 +1980,8 @@ export class Orchestrator {
     // 人设换了，群名片也跟着换（Claude ⇄ Gemi本咪）：群友只认群名片。
     // 这里刻意不 await —— 改名片要排队、限速、抖动 300~900ms，不该拖慢这一轮的回复。
     void this.#syncPersonaGroupCard(chatKey, { altActive, switchCfg, cfg });
+    // 头像同理，但它是账号级的：按"全局有没有会话在值班"跟随，配了图片才真正执行
+    void this.#syncPersonaAvatar(switchCfg);
     const activePersona = altActive
       ? {
         ...cfg.persona,

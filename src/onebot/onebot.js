@@ -647,6 +647,17 @@ export class OneBotClient {
       { group_id: Number(groupId), user_id: Number(userId), card: String(card ?? '') },
       TEXT_TIMEOUT_MS, signal);
   }
+
+  /**
+   * 改账号头像（SnowLuma / NapCat 的扩展动作 set_qq_avatar，不是 OneBot 11 标准动作）。
+   * file 支持宿主机的本地路径、URL 或 base64 —— 传什么由调用方决定，这里只校验非空。
+   * 头像是**账号级**的：改一次，所有群和私聊都变。
+   */
+  async setSelfAvatar(file, signal) {
+    const target = String(file ?? '').trim();
+    if (!target) throw new Error('头像文件不能为空');
+    return this.call('set_qq_avatar', { file: target }, MEDIA_TIMEOUT_MS, signal);
+  }
 }
 
 // ── 入站事件 → 文本（移植自原版 segmentsToText） ─────────────────────────

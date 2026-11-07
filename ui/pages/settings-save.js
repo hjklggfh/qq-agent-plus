@@ -695,7 +695,11 @@ async function saveConfig({ quiet = false } = {}) {
       callWords: parseList(val('#cfg-alt-callwords', (s.callWords || []).join(','))),
       homeWords: parseList(val('#cfg-alt-homewords', (s.homeWords || []).join(','))),
       // 换人设时同步改群名片（默认开；这一页没有这个控件时保持原值）
-      renameGroupCard: chk('#cfg-alt-rename-card', s.renameGroupCard !== false)
+      renameGroupCard: chk('#cfg-alt-rename-card', s.renameGroupCard !== false),
+      // 头像（账号级）：图片留空＝不换
+      switchAvatar: chk('#cfg-alt-switch-avatar', s.switchAvatar !== false),
+      altAvatar: val('#cfg-alt-avatar', s.altAvatar || '').trim(),
+      homeAvatar: val('#cfg-alt-avatar-home', s.homeAvatar || '').trim()
     };
     // callWords/homeWords 被清空时 parseList 会给出空数组，而服务端会回落到默认词；
     // 这里同步回落一次，免得保存后界面显示空、实际却在用默认值。

@@ -24,10 +24,15 @@ export const DEFAULT_PERSONA_SWITCH = Object.freeze({
   homeWords: ['gemi', '哈基米'],
   callVerbs: ['呼叫', '叫', '喊', '出来', '换', '值班', '接管', '救命', '在吗', '来'],
   // 换人设时把群名片一起换（Claude ⇄ Gemi本咪）。默认开：名片是群友唯一能看出"现在是谁在值班"的东西。
-  renameGroupCard: true
+  renameGroupCard: true,
+  // 头像也换（账号级，所有群/私聊共用一张）。图片留空＝不做。
+  switchAvatar: true,
+  altAvatar: '',
+  homeAvatar: ''
 });
 
 const STATE_FILE = () => path.join(DATA_DIR, 'persona-state.json');
+const AVATAR_STATE_FILE = () => path.join(DATA_DIR, 'persona-avatar.json');
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 /** 合并配置里的开关（缺字段用默认值，类型不对也回退默认）。 */
@@ -56,7 +61,10 @@ export function personaSwitchConfig(raw = {}) {
     callWords: words(src.callWords, DEFAULT_PERSONA_SWITCH.callWords),
     homeWords: words(src.homeWords, DEFAULT_PERSONA_SWITCH.homeWords),
     callVerbs: words(src.callVerbs, DEFAULT_PERSONA_SWITCH.callVerbs),
-    renameGroupCard: src.renameGroupCard !== false
+    renameGroupCard: src.renameGroupCard !== false,
+    switchAvatar: src.switchAvatar !== false,
+    altAvatar: String(src.altAvatar || '').trim(),
+    homeAvatar: String(src.homeAvatar || '').trim()
   };
 }
 
@@ -302,8 +310,67 @@ export function forgetChatCard(chatKey) {
   return true;
 }
 
-/** 当前所有处于第二人设的会话（控制台展示用）。 */
-export function activeAltChats(now = Date.now()) {
+// ── 头像（账号级，全局只有一张）─────────────────────────────────────────
+// 为什么单独一个状态文件：它跟"哪个群在值班"无关，只跟"全局现在该露哪张脸"有关；
+// 混进 persona-state.json 会被按会话的 prune / 墓碑逻辑带偏。
+
+/** 头像当前记录：{ mode: 'alt'|'home'|'', at: 上次成功时间, failAt: 上次失败时间 }。 */
+export function avatarState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(AVATAR_STATE_FILE(), 'utf8'));
+    return {
+      mode: String(raw?.mode || ''),
+      at: Number(raw?.at) || 0,
+      failAt: Number(raw?.failAt) || 0
+    };
+  } catch { return { mode: '', at: 0, failAt: 0 }; }
+}
+
+function writeAvatarState(value) {
+  const file = AVATAR_STATE_FILE();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(value), { encoding: 'utf8', mode: 0o600 });
+    fs.renameSync(tmp, file);
+    fs.chmodSync(file, 0o600);
+  } catch { /* 记不住就下次再设一遍，不影响聊天 */ }
+}
+
+/** 头像已切换成功。 */
+export function markAvatarApplied(mode, now = Date.now()) {
+  writeAvatarState({ mode: String(mode || ''), at: Number(now) || Date.now(), failAt: 0 });
+}
+
+/** 头像切换失败（多半是图片路径不对）：记失败时间，退避期间不再重试。 */
+export function markAvatarFailed(now = Date.now()) {
+  const prev = avatarState();
+  writeAvatarState({ mode: prev.mode, at: prev.at, failAt: Number(now) || Date.now() });
+}
+
+/**
+ * 头像该不该换的纯决策（不做 I/O）。
+ *
+ * 规则：**有任意会话在第二人设值班 → 用第二人设的头像；全部交还 → 换回默认头像**。
+ * 头像是账号级的，没法"这个群 Claude、那个群 Gemi"——所以只能按全局值班状态跟随。
+ *
+ * @returns {null | {mode: 'alt'|'home', file: string}}
+ */
+export function planAvatar({
+  anyDuty = false, state = {}, altAvatar = '', homeAvatar = '', enabled = true,
+  now = Date.now(), minGapMs = 20000, backoffMs = 10 * 60 * 1000
+} = {}) {
+  if (!enabled) return null;
+  const mode = anyDuty ? 'alt' : 'home';
+  const file = String((anyDuty ? altAvatar : homeAvatar) || '').trim();
+  if (!file) return null;                                  // 没配图就不动，也不写状态
+  if (String(state?.mode || '') === mode) return null;     // 已经是这副脸
+  if (Number(state?.failAt) && now - Number(state.failAt) < backoffMs) return null;
+  if (Number(state?.at) && now - Number(state.at) < minGapMs) return null;
+  return { mode, file };
+}
+
+/** 当前所有处于第二人设的会话（控制台展示用）。 */export function activeAltChats(now = Date.now()) {
   const cfg = personaSwitchConfig(getConfig().personaSwitch);
   const idle = cfg.idleMinutes * 60 * 1000;
   const state = readState();
