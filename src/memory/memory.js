@@ -6,12 +6,20 @@ import '../pilots/relationship-runtime-integration.js';
 import { impressionVisible, memoryVisibilityOf } from '../core/memory-visibility.js';
 
 export class MemoryStore extends BaseMemoryStore {
-  constructor(...args) {
-    super(...args);
+  /**
+   * @param {object} [options]
+   * @param {string} [options.root]  记忆根目录；缺省 DATA_DIR/memory（主实例，行为不变）
+   * @param {boolean} [options.bind] 是否把这个实例登记为 IdentityStore 的全局记忆来源。
+   *   只有主实例该绑：第二人设实例绑上去会把身份/好友评估读到的记忆整片换成它。
+   * @param {boolean} [options.migrate] 是否在构造时立即跑旧记忆迁移。
+   *   第二人设库是空白起步、没有旧数据，跳过它＝功能关闭时启动完全不碰这块磁盘。
+   */
+  constructor({ root = '', bind = true, migrate = true } = {}) {
+    super({ root });
     // 启动时立即完成旧人物记忆迁移，确保 IdentityStore 随后的 rebuild
     // 看不到旧 group_*/<QQ>.json，从而不再维护第二份 legacy_memory_refs 内容。
-    this.people.listSourceChats();
-    bindGlobalMemoryStore(this);
+    if (migrate !== false) this.people.listSourceChats();
+    if (bind !== false) bindGlobalMemoryStore(this);
   }
 
   /** 全局人物列表：不再按 chatKey 过滤。 */
@@ -63,6 +71,7 @@ export class MemoryStore extends BaseMemoryStore {
       && person.sourceChatKeys.includes(source);
     if (destructive) {
       backupPersonBeforeConsolidation(person, {
+        root: this.root,
         sourceChatKey: source,
         at: Date.now()
       });
@@ -77,6 +86,7 @@ export class MemoryStore extends BaseMemoryStore {
   replaceMemberForConsolidation(chatKey, userId, name, contents, options = {}) {
     const person = this.getMember('', userId);
     backupPersonBeforeConsolidation(person, {
+      root: this.root,
       sourceChatKey: chatKey,
       at: Date.now()
     });

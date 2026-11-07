@@ -7,11 +7,13 @@ import { GlobalPersonMemoryStore } from './global-person-memory-store.js';
 import { memoryVisibilityOf, visibleImpressions } from '../core/memory-visibility.js';
 import { recallPolicyFingerprint } from './cross-chat-policy.js';
 
-const MEMORY_DIR = path.join(DATA_DIR, 'memory');
+// 记忆根目录：默认 DATA_DIR/memory（主实例，历史行为逐字不变）。
+// 第二人设实例传入自己的 root（DATA_DIR/memory-alt），会话交接与整理计时也跟着分开。
+const DEFAULT_MEMORY_ROOT = path.join(DATA_DIR, 'memory');
 const chatDirName = (chatKey) => String(chatKey).replace(/[^a-z0-9_]/gi, '_');
-const chatDir = (chatKey) => path.join(MEMORY_DIR, chatDirName(chatKey));
-const metaFile = (chatKey) => path.join(chatDir(chatKey), '_meta.json');
-const handoffFile = (chatKey) => path.join(chatDir(chatKey), '_handoff.json');
+const chatDirAt = (root, chatKey) => path.join(root, chatDirName(chatKey));
+const metaFileAt = (root, chatKey) => path.join(chatDirAt(root, chatKey), '_meta.json');
+const handoffFileAt = (root, chatKey) => path.join(chatDirAt(root, chatKey), '_handoff.json');
 const clean = (v, n = 1000) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 function list(value, maxItems = 8, maxChars = 240) {
   const out = []; const seen = new Set();
@@ -40,24 +42,32 @@ function legacyStateText(value) {
   if (value && typeof value === 'object') return clean(value.summary || value.content || value.text || '');
   return '';
 }
-function migrateLegacyHandoff(chatKey, old) {
-  if (fs.existsSync(handoffFile(chatKey))) return;
+function migrateLegacyHandoff(root, chatKey, old) {
+  if (fs.existsSync(handoffFileAt(root, chatKey))) return;
   const topic = legacyStateText(old?.activeTopic); const pending = legacyStateText(old?.pendingThought);
   if (!topic && !pending) return;
   const now = Date.now();
-  writeJson(handoffFile(chatKey), {
+  writeJson(handoffFileAt(root, chatKey), {
     version: 1, topic, summary: pending || topic, hypotheses: [], evidence: [], facts: [], decisions: [], rejectedDirections: [], openQuestions: [], nextStep: pending,
     participantIds: [], lastReply: '', sourceSessionId: 'legacy-migration', updatedAt: now, expiresAt: now + 86400000
   });
 }
 
 export class MemoryStore {
-  constructor() { this.people = new GlobalPersonMemoryStore({ onLegacyState: migrateLegacyHandoff }); }
+  constructor({ root = '' } = {}) {
+    this.root = path.resolve(root ? String(root) : DEFAULT_MEMORY_ROOT);
+    // onLegacyState 要闭包到本实例的 root：每个实例的旧交接迁移只写自己的目录。
+    const rootForMigration = this.root;
+    this.people = new GlobalPersonMemoryStore({
+      root: this.root,
+      onLegacyState: (chatKey, old) => migrateLegacyHandoff(rootForMigration, chatKey, old)
+    });
+  }
   listChats() {
     const out = new Set(this.people.listSourceChats());
     try {
-      for (const name of fs.readdirSync(MEMORY_DIR)) {
-        const full = path.join(MEMORY_DIR, name); if (!fs.statSync(full).isDirectory()) continue;
+      for (const name of fs.readdirSync(this.root)) {
+        const full = path.join(this.root, name); if (!fs.statSync(full).isDirectory()) continue;
         const m = /^(group|private)_(\d+)$/.exec(name); if (m) out.add(`${m[1]}:${m[2]}`);
       }
     } catch { /* 有意忽略：成员目录读不了＝视为无交接来源，不阻断列表返回 */ }
@@ -65,12 +75,12 @@ export class MemoryStore {
   }
   getHandoff(chatKey) {
     this.people.listSourceChats();
-    const raw = readJson(handoffFile(chatKey)); if (!raw) return null;
+    const raw = readJson(handoffFileAt(this.root, chatKey)); if (!raw) return null;
     const cfg = getConfig();
     const restricted = Object.keys(cfg.memory?.crossChat?.chats || {}).length > 0 || cfg.memory?.crossChat?.excludedMessages?.length > 0;
     if (raw.recallPolicyFingerprint ? raw.recallPolicyFingerprint !== recallPolicyFingerprint(cfg) : restricted) return null;
     const expiresAt = Number(raw.expiresAt) || 0;
-    if (expiresAt && expiresAt <= Date.now()) { try { fs.rmSync(handoffFile(chatKey), { force: true }); } catch { /* 有意忽略：过期交接删失败＝文件残留，下次读取时重试 */ } return null; }
+    if (expiresAt && expiresAt <= Date.now()) { try { fs.rmSync(handoffFileAt(this.root, chatKey), { force: true }); } catch { /* 有意忽略：过期交接删失败＝文件残留，下次读取时重试 */ } return null; }
     return {
       version: 1, recallPolicyFingerprint: raw.recallPolicyFingerprint || '', topic: clean(raw.topic, 200), summary: clean(raw.summary, 1200), hypotheses: list(raw.hypotheses, 6, 300), evidence: list(raw.evidence, 8, 300),
       facts: list(raw.facts, 8), decisions: list(raw.decisions, 6), rejectedDirections: list(raw.rejectedDirections, 6), openQuestions: list(raw.openQuestions, 6),
@@ -92,9 +102,9 @@ export class MemoryStore {
     };
     const meaningful = handoff.topic || handoff.summary || handoff.hypotheses.length || handoff.evidence.length || handoff.facts.length || handoff.decisions.length || handoff.rejectedDirections.length || handoff.openQuestions.length || handoff.nextStep || handoff.lastReply;
     if (!meaningful) return prev.version ? prev : null;
-    writeJson(handoffFile(chatKey), handoff); return handoff;
+    writeJson(handoffFileAt(this.root, chatKey), handoff); return handoff;
   }
-  clearHandoff(chatKey) { try { fs.rmSync(handoffFile(chatKey), { force: true }); } catch { /* 有意忽略：删失败＝文件残留，下次同 chatKey 写入时覆盖 */ } }
+  clearHandoff(chatKey) { try { fs.rmSync(handoffFileAt(this.root, chatKey), { force: true }); } catch { /* 有意忽略：删失败＝文件残留，下次同 chatKey 写入时覆盖 */ } }
   formatHandoffForPrompt(chatKey) {
     if (getConfig().memory?.handoffEnabled === false) return '';
     const h = this.getHandoff(chatKey); if (!h) return '';
@@ -172,14 +182,14 @@ export class MemoryStore {
     if (!uid && !target && !content) {
       const any = this.members(chatKey).length > 0;
       this.people.clearSource(chatKey);
-      writeJson(metaFile(chatKey), { lastConsolidatedAt: Date.now() });
+      writeJson(metaFileAt(this.root, chatKey), { lastConsolidatedAt: Date.now() });
       return any;
     }
     // 只按内容删时限定在本会话的人身上：同一句话在别的群也记过的话，不该被一起删掉
     return this.people.remove({ ...options, sourceChatKey: (!uid && !target) ? chatKey : '' });
   }
   /** 整份清空某个会话的记忆（印象 + 会话交接 + 整理计时）。注意：memory_remove 的"删印象"不走这里。 */
-  clear(chatKey) { this.people.clearSource(chatKey); this.clearHandoff(chatKey); writeJson(metaFile(chatKey), { lastConsolidatedAt: Date.now() }); }
+  clear(chatKey) { this.people.clearSource(chatKey); this.clearHandoff(chatKey); writeJson(metaFileAt(this.root, chatKey), { lastConsolidatedAt: Date.now() }); }
   formatForPrompt(chatKey, { userIds = null } = {}) {
     const cfg = getConfig();
     const notes = cfg.memberNotes || {};
@@ -230,12 +240,12 @@ export class MemoryStore {
     return out.join('\n');
   }
   consolidationState(chatKey) {
-    const members = this.people.members(chatKey); const meta = readJson(metaFile(chatKey), {}) || {};
+    const members = this.people.members(chatKey); const meta = readJson(metaFileAt(this.root, chatKey), {}) || {};
     return { lastConsolidatedAt: Math.max(Number(meta.lastConsolidatedAt) || 0, ...members.map((m) => m.lastConsolidatedAt || 0)), counts: { memberImpression: members.reduce((n, m) => n + m.impressions.length, 0) }, members: members.map((m) => ({ userId: m.userId, name: m.name || m.userId, count: m.impressions.length, lastConsolidatedAt: m.lastConsolidatedAt || 0 })) };
   }
   markConsolidated(chatKey, at = Date.now(), userIds = []) {
-    const when = Number(at) || Date.now(); fs.mkdirSync(chatDir(chatKey), { recursive: true });
-    writeJson(metaFile(chatKey), { ...(readJson(metaFile(chatKey), {}) || {}), lastConsolidatedAt: when }); this.people.markConsolidated(userIds, when);
+    const when = Number(at) || Date.now(); fs.mkdirSync(chatDirAt(this.root, chatKey), { recursive: true });
+    writeJson(metaFileAt(this.root, chatKey), { ...(readJson(metaFileAt(this.root, chatKey), {}) || {}), lastConsolidatedAt: when }); this.people.markConsolidated(userIds, when);
   }
   replaceConsolidated(chatKey, next) {
     const groups = new Map();

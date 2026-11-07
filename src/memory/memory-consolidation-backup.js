@@ -3,8 +3,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR } from '../core/config.js';
 
-const MEMORY_BACKUP_ROOT = path.join(DATA_DIR, 'memory', 'backups');
-const BACKUP_ROOT = path.join(MEMORY_BACKUP_ROOT, 'consolidation');
+// 记忆根目录由调用方给出：主实例用 DATA_DIR/memory（缺省），第二人设实例用
+// DATA_DIR/memory-alt —— 快照也必须跟着各自的根目录走，否则两套记忆的备份会混在一个目录里。
+const DEFAULT_MEMORY_ROOT = path.join(DATA_DIR, 'memory');
 const chatDirName = (chatKey) => String(chatKey || '').replace(/[^a-z0-9_]/gi, '_');
 
 function writeJsonAtomic(file, value) {
@@ -31,12 +32,14 @@ const KEEP_PER_PERSON = 20;
 export function backupPersonBeforeConsolidation(person, {
   sourceChatKey = '',
   at = Date.now(),
-  reason = 'consolidation'
+  reason = 'consolidation',
+  root = ''
 } = {}) {
   const userId = String(person?.userId || '').trim();
   const name = String(person?.name || '').trim();
   const impressions = Array.isArray(person?.impressions) ? person.impressions : [];
   if (!impressions.length) return null;
+  const memoryRoot = path.resolve(root ? String(root) : DEFAULT_MEMORY_ROOT);
   // 快照目录键与 global-person-memory-store.js 的 memberFileName 同源：
   // 全数字 id（任意位数）→ 裸数字；非数字 id → u_<净化 id>（CJK 换 _，不截断）；
   // name-only 成员 → _n_<净化名字>（保留 CJK，截 40，空则 unknown）。
@@ -51,7 +54,8 @@ export function backupPersonBeforeConsolidation(person, {
 
   const when = Number(at) || Date.now();
   const snapshot = structuredClone(person);
-  const dir = path.join(BACKUP_ROOT, key);
+  const backupRoot = path.join(memoryRoot, 'backups');
+  const dir = path.join(backupRoot, 'consolidation', key);
   const file = path.join(dir, `${when}-${crypto.randomUUID()}.json`);
   writeJsonAtomic(file, {
     version: 1,
@@ -63,7 +67,7 @@ export function backupPersonBeforeConsolidation(person, {
 
   const chatDir = chatDirName(sourceChatKey);
   if (/^(group|private)_\d+$/.test(chatDir)) {
-    writeJsonAtomic(path.join(MEMORY_BACKUP_ROOT, chatDir, `${key}.json`), snapshot);
+    writeJsonAtomic(path.join(backupRoot, chatDir, `${key}.json`), snapshot);
   }
   // 只增不删会一直占盘：每人只保留最近 KEEP_PER_PERSON 份（文件名前缀是时间戳）
   try {

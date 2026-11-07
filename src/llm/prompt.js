@@ -811,9 +811,14 @@ export function buildUserPrompt(ctx) {
   // 不加说明的话模型会照着自己上一条的口气继续说（实测换卡 26 小时后仍在用旧卡的口癖）。
   const personaChangedAt = Number(getConfig().persona?.changedAt) || 0;
   const personaFreshlyChanged = personaChangedAt > 0 && (now - personaChangedAt) < 24 * 60 * 60 * 1000;
+  // 按会话换人设（双人设）：personaSwitchedAt = 这个会话切到第二人设的时刻。
+  // 与"管理员换了角色卡"同一个道理 —— 上面的历史是另一个人设说的，口癖、自称不作数。
+  // 只有编排器在第二人设生效时才传这个值，默认人设下一直是 0，提示词逐字不变。
+  const personaSwitchedAt = Number(ctx.personaSwitchedAt) || 0;
+  const profileFreshlySwitched = personaSwitchedAt > 0 && (now - personaSwitchedAt) < 24 * 60 * 60 * 1000;
   const staleNote = ctx.trpgNarrator
     ? '（当前使用跑团裁判／旁白口吻；旧聊天记录中的情绪、口癖和亲昵称呼不作为本轮风格依据。）'
-    : personaFreshlyChanged
+    : personaFreshlyChanged || profileFreshlySwitched
     ? '（注意：【角色设定】刚换过 —— 下面是换卡之前的旧记录，里面的口癖、自称、称呼都不一定还适用，一切以当前卡为准。）'
     : '';
   // 过去状态

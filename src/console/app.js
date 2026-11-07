@@ -24,6 +24,7 @@ import { OneBotClient, segmentsToText, extractMediaFromSegments, expandForwardNo
 import { readForwardMessages } from '../onebot/forward-reader.js';
 import { ChatStore } from '../core/store.js';
 import { MemoryStore } from '../memory/memory.js';
+import { ALT_MEMORY_ROOT, memoryStoreForChat } from '../memory/memory-routing.js';
 import { StickerManager } from '../onebot/sticker-manager.js';
 import { SendQueue } from '../onebot/sender.js';
 import { SessionRegistry, personaLabelOfPrompt } from '../core/sessions.js';
@@ -548,6 +549,13 @@ export function createApp({
   };
   const canRunFunctions = (chatKey) => canRun(chatKey) && chatRuntimeMode(chatKey) !== 'blocked';
   const memory = new MemoryStore();
+  // 第二人设的记忆库：自己的目录、空白起步。bind:false 必须保留 ——
+  // 它一旦登记成 IdentityStore 的全局记忆来源，身份/好友评估读到的记忆会整体换成这一份；
+  // migrate:false 让它惰性建目录：双人设没开时，启动过程不碰这块磁盘。
+  const memoryAlt = new MemoryStore({ root: ALT_MEMORY_ROOT, bind: false, migrate: false });
+  // 控制台侧的记忆路由：按会话当前人设档取实例，保证"页面上看到的"就是"模型真正读到的那一份"。
+  const memoryForChat = (chatKey) => memoryStoreForChat({ main: memory, alt: memoryAlt }, chatKey) || memory;
+  const memoryProfileOf = (chatKey) => (memoryForChat(chatKey) === memoryAlt ? 'alt' : 'home');
   const sessions = new SessionRegistry(cfg.store?.keepSessionFiles ?? 0);   // 0 = 不限
   let incidentPilot = null;
   let incidentPilotError = '';
@@ -641,6 +649,7 @@ export function createApp({
   const orchestrator = new Orchestrator({
     store,
     memory,
+    memoryAlt,
     stickers,
     sender,
     sessions,
@@ -2575,12 +2584,21 @@ export function createApp({
   });
 
   router.add('GET', '/api/memory-files', async (req, res) => {
-    const files = memory.listChats().map((chatKey) => {
-      const members = memory.members(chatKey);
-      const handoff = memory.getHandoff(chatKey);
+    // 记忆按人设档分库：列表要并上第二人设的库 —— 否则正在值班的群会显示成"零印象"，
+    // 而模型其实读得到东西。同一个 chatKey 只出现一次，取它当前生效那一份的数字。
+    const chatKeys = new Set([
+      ...(memory.listChats?.() || []),
+      ...(memoryAlt.listChats?.() || [])
+    ]);
+    const files = [...chatKeys].map((chatKey) => {
+      const store = memoryForChat(chatKey);
+      const members = store.members(chatKey);
+      const handoff = store.getHandoff(chatKey);
       const impressionCount = members.reduce((n, m) => n + m.impressions.length, 0);
       return {
         chatKey,
+        // home = 默认人设的记忆，alt = 第二人设的记忆（前端据此标注）
+        profile: store === memoryAlt ? 'alt' : 'home',
         impressionCount,
         memberCount: members.length,
         hasHandoff: Boolean(handoff),
@@ -2599,7 +2617,7 @@ export function createApp({
       const key = `group:${String(gid)}`;
       if (!seen.has(key)) {
         files.push({
-          chatKey: key, impressionCount: 0, memberCount: 0,
+          chatKey: key, profile: memoryProfileOf(key), impressionCount: 0, memberCount: 0,
           hasHandoff: false, handoffExpiresAt: 0, updatedAt: 0, consolidating: false
         });
       }
@@ -2608,7 +2626,7 @@ export function createApp({
       const key = `private:${String(uid)}`;
       if (!seen.has(key)) {
         files.push({
-          chatKey: key, impressionCount: 0, memberCount: 0,
+          chatKey: key, profile: memoryProfileOf(key), impressionCount: 0, memberCount: 0,
           hasHandoff: false, handoffExpiresAt: 0, updatedAt: 0, consolidating: false
         });
       }
@@ -2656,17 +2674,21 @@ export function createApp({
 
   router.add('GET', /^\/api\/memory-files\/(group|private)_(\d+)$/, async (req, res, params) => {
     const chatKey = `${params[1]}:${params[2]}`;
+    // 同一个 chatKey 的读写都走它当前的人设档：在第二人设值班的群里点"整理"，
+    // 整理的必须是第二人设那份，否则控制台改的和模型读的就不是一回事。
+    const store = memoryForChat(chatKey);
     return json(res, 200, {
-      ...memory.query(chatKey),
-      members: memory.members(chatKey),
-      handoff: memory.getHandoff(chatKey)
+      profile: store === memoryAlt ? 'alt' : 'home',
+      ...store.query(chatKey),
+      members: store.members(chatKey),
+      handoff: store.getHandoff(chatKey)
     });
   });
   router.add('PUT', /^\/api\/memory-files\/(group|private)_(\d+)\/handoff$/, async (req, res, params) => {
     const chatKey = `${params[1]}:${params[2]}`;
     const body = await readBody(req).catch(() => ({}));
     try {
-      const handoff = memory.setHandoff(chatKey, body, { sourceSessionId: 'console' });
+      const handoff = memoryForChat(chatKey).setHandoff(chatKey, body, { sourceSessionId: 'console' });
       emit('memory-update', { chatKey, phase: handoff ? 'handoff-update' : 'handoff-clear' });
       return json(res, 200, { ok: true, handoff });
     } catch (error) {
@@ -2675,7 +2697,7 @@ export function createApp({
   });
   router.add('DELETE', /^\/api\/memory-files\/(group|private)_(\d+)\/handoff$/, async (req, res, params) => {
     const chatKey = `${params[1]}:${params[2]}`;
-    memory.clearHandoff(chatKey);
+    memoryForChat(chatKey).clearHandoff(chatKey);
     emit('memory-update', { chatKey, phase: 'handoff-clear' });
     return json(res, 200, { ok: true });
   });
@@ -2683,15 +2705,18 @@ export function createApp({
     // 破坏性操作统一 confirm 门槛（与全站口径一致）：global 版跨所有会话删除。
     const body = await readBody(req).catch(() => ({}));
     if (body?.confirm !== true) return json(res, 409, { ok: false, error: '删除全部人物记忆需要 body.confirm === true' });
+    // 两个库都删：人物记忆页是把各会话的记忆合并展示的，两个库的同一个人会显示成一条；
+    // 只删主库会让"删除全部人物记忆"留下第二人设那份副本，用户以为删干净了其实没有。
     const removed = memory.removeMember('', params[1]);
+    const removedAlt = memoryAlt.removeMember('', params[1]);
     emit('memory-update', { chatKey: '' });
-    return json(res, 200, { ok: true, removed });
+    return json(res, 200, { ok: true, removed: removed || removedAlt, removedProfile: { home: removed, alt: removedAlt } });
   });
   router.add('PUT', /^\/api\/memory-files\/(group|private)_(\d+)\/members\/(\d+)$/, async (req, res, params) => {
     const chatKey = `${params[1]}:${params[2]}`;
     const body = await readBody(req).catch(() => ({}));
     try {
-      const member = memory.editMemberImpression(chatKey, {
+      const member = memoryForChat(chatKey).editMemberImpression(chatKey, {
         userId: params[3],
         name: String(body.name ?? ''),
         note: body.note ?? '',
@@ -2708,7 +2733,7 @@ export function createApp({
     const body = await readBody(req).catch(() => ({}));
     if (body?.confirm !== true) return json(res, 409, { ok: false, error: '删除成员印象需要 body.confirm === true' });
     const chatKey = `${params[1]}:${params[2]}`;
-    memory.removeMember(chatKey, params[3]);
+    memoryForChat(chatKey).removeMember(chatKey, params[3]);
     emit('memory-update', { chatKey });
     return json(res, 200, { ok: true });
   });
@@ -3233,10 +3258,16 @@ export function createApp({
       return json(res, 409, { error: '清空交接是破坏性操作：请带 confirm=true 再调用（控制台按钮已带）' });
     }
     // 范围要含"只有交接、还没有聊天记录"的会话（记忆目录里可能有 group_*/private_*）
-    const chats = [...new Set([...store.listChats(), ...(memory.listChats?.() || [])])];
+    // 两个记忆库都要清：换人设后旧人设写下的交接对哪一套都是过期的。
+    const chats = [...new Set([
+      ...store.listChats(),
+      ...(memory.listChats?.() || []),
+      ...(memoryAlt.listChats?.() || [])
+    ])];
     let closed = 0;
     for (const chatKey of chats) {
       try { memory.clearHandoff(chatKey); } catch { /* 单个会话失败不阻断其余 */ }
+      try { memoryAlt.clearHandoff(chatKey); } catch { /* 单个会话失败不阻断其余 */ }
       try { if (store.closeConversationThread(chatKey, 'persona-changed')) closed += 1; } catch { /* 没有线程就跳过 */ }
     }
     // 在途运行会在结束时把"它那一轮"的交接写回来（那一轮用的是换卡前的提示词）：
@@ -4734,6 +4765,9 @@ export function createApp({
     onebot,
     store,
     memory,
+    // 第二人设的独立记忆库（见 memory-routing.js）。暴露出来是为了让装配关系可断言：
+    // 忘了把它传给 orchestrator 时，测试会当场红，而不是等线上出现"读这个写那个"。
+    memoryAlt,
     stickers,
     sender,
     sessions,

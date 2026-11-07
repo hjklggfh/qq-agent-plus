@@ -3,10 +3,9 @@ import path from 'node:path';
 import { DATA_DIR, getConfig } from '../core/config.js';
 import { backupPersonBeforeConsolidation } from './memory-consolidation-backup.js';
 
-const MEMORY_DIR = path.join(DATA_DIR, 'memory');
-const PEOPLE_DIR = path.join(MEMORY_DIR, 'people');
-const MIGRATION_MARKER = path.join(MEMORY_DIR, '_global_people_v1.json');
-const MIGRATION_BACKUP_DIR = path.join(MEMORY_DIR, 'backups', 'global-people-v1');
+// 记忆根目录：默认 DATA_DIR/memory（主实例，历史行为逐字不变）；
+// 第二人设实例传入自己的 root（如 DATA_DIR/memory-alt），两套记忆的文件系统上彻底分开。
+const DEFAULT_MEMORY_ROOT = path.join(DATA_DIR, 'memory');
 
 const clean = (v, n = 300) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
 const validChat = (v) => /^(group|private):\d+$/.test(String(v || ''));
@@ -21,7 +20,6 @@ const memberFileName = (userId, name = '') => {
   return `_n_${safe || 'unknown'}.json`;
 };
 const memberKey = (userId, name = '') => String(userId || '').trim() || `_n_${memberFileName('', name)}`;
-const globalMemberFile = (userId, name = '') => path.join(PEOPLE_DIR, memberFileName(userId, name));
 
 function readJson(file, fallback = null) {
   try {
@@ -110,10 +108,10 @@ function mergeMember(target, incoming) {
   target.updatedAt = Math.max(target.updatedAt || 0, incoming.updatedAt || 0);
   target.lastConsolidatedAt = Math.max(target.lastConsolidatedAt || 0, incoming.lastConsolidatedAt || 0);
 }
-function archive(src, rel) {
+function archive(src, dir, rel) {
   try {
     if (!fs.existsSync(src)) return;
-    const dst = path.join(MIGRATION_BACKUP_DIR, rel);
+    const dst = path.join(dir, rel);
     fs.mkdirSync(path.dirname(dst), { recursive: true });
     if (fs.existsSync(dst)) fs.rmSync(dst, { force: true });
     fs.renameSync(src, dst);
@@ -121,21 +119,29 @@ function archive(src, rel) {
 }
 
 export class GlobalPersonMemoryStore {
-  constructor({ onLegacyState = null } = {}) {
+  constructor({ onLegacyState = null, root = '' } = {}) {
+    // 目录全部按实例算，不再用模块级常量：第二个实例（第二人设）必须落在自己的 root 下。
+    this.root = path.resolve(root ? String(root) : DEFAULT_MEMORY_ROOT);
+    this.peopleDir = path.join(this.root, 'people');
+    this.migrationMarker = path.join(this.root, '_global_people_v1.json');
+    this.migrationBackupDir = path.join(this.root, 'backups', 'global-people-v1');
     this.people = null;
     this.onLegacyState = typeof onLegacyState === 'function' ? onLegacyState : null;
+  }
+  #memberFile(userId, name = '') {
+    return path.join(this.peopleDir, memberFileName(userId, name));
   }
   #persist(member) {
     member.version = 2;
     member.sourceChatKeys = sourceKeys([...member.sourceChatKeys, ...member.impressions.flatMap((x) => x.sourceChatKeys || [])]);
-    writeJson(globalMemberFile(member.userId, member.name), member);
+    writeJson(this.#memberFile(member.userId, member.name), member);
   }
   #load() {
     const map = new Map();
     try {
-      for (const file of fs.readdirSync(PEOPLE_DIR)) {
+      for (const file of fs.readdirSync(this.peopleDir)) {
         if (!file.endsWith('.json')) continue;
-        const raw = readJson(path.join(PEOPLE_DIR, file));
+        const raw = readJson(path.join(this.peopleDir, file));
         if (!raw) continue;
         const member = normalizeMember(raw, raw.userId, raw.name);
         map.set(memberKey(member.userId, member.name), member);
@@ -169,13 +175,13 @@ export class GlobalPersonMemoryStore {
   #ensure() {
     if (this.people) return this.people;
     const map = this.#load();
-    const marker = readJson(MIGRATION_MARKER);
+    const marker = readJson(this.migrationMarker);
     if (!marker?.completed) {
       const archives = [];
       let names = [];
-      try { names = fs.readdirSync(MEMORY_DIR); } catch { names = []; }
+      try { names = fs.readdirSync(this.root); } catch { names = []; }
       for (const name of names) {
-        const full = path.join(MEMORY_DIR, name);
+        const full = path.join(this.root, name);
         let stat; try { stat = fs.statSync(full); } catch { continue; }
         if (stat.isFile()) {
           const m = /^(group|private)_(\d+)\.json$/.exec(name);
@@ -199,8 +205,8 @@ export class GlobalPersonMemoryStore {
         }
       }
       for (const member of map.values()) this.#persist(member);
-      writeJson(MIGRATION_MARKER, { version: 1, completed: true, migratedAt: Date.now(), people: map.size });
-      for (const [src, rel] of archives) archive(src, rel);
+      writeJson(this.migrationMarker, { version: 1, completed: true, migratedAt: Date.now(), people: map.size });
+      for (const [src, rel] of archives) archive(src, this.migrationBackupDir, rel);
     }
     this.people = map;
     return map;
@@ -337,8 +343,8 @@ export class GlobalPersonMemoryStore {
       // 先把合并结果落盘、删旧文件前再拍一份快照：原来 rm 在前、#persist 在循环外，
       // 落盘一旦失败（磁盘满/权限），已删掉的旧印象就静默消失且无快照可回滚。
       this.#persist(member);
-      try { backupPersonBeforeConsolidation(candidate, { sourceChatKey: '', at: Date.now(), reason: 'merge-absorb' }); } catch { /* 备份失败不阻断 */ }
-      try { fs.rmSync(globalMemberFile(candidate.userId, candidate.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
+      try { backupPersonBeforeConsolidation(candidate, { root: this.root, sourceChatKey: '', at: Date.now(), reason: 'merge-absorb' }); } catch { /* 备份失败不阻断 */ }
+      try { fs.rmSync(this.#memberFile(candidate.userId, candidate.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
       map.delete(key);
     }
     this.#persist(member); map.set(uid, member);
@@ -349,8 +355,8 @@ export class GlobalPersonMemoryStore {
     const map = this.#ensure(); const member = map.get(uid);
     if (!member) return false;
     // 破坏性删除前留一份快照（与整理前快照同一套目录，可回滚）
-    try { backupPersonBeforeConsolidation(member, { sourceChatKey: '', at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ }
-    map.delete(uid); try { fs.rmSync(globalMemberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
+    try { backupPersonBeforeConsolidation(member, { root: this.root, sourceChatKey: '', at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ }
+    map.delete(uid); try { fs.rmSync(this.#memberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
     return true;
   }
   remove({ userId = '', target = '', content = '', sourceChatKey = '' } = {}) {
@@ -382,9 +388,9 @@ export class GlobalPersonMemoryStore {
       // 只要真删掉了东西就留快照，不限于"整条被删空"：这个人还有别的来源时，
       // 被摘掉的那几条同样再也回不来 —— 而控制台文案承诺的是"服务端会留可回滚快照"。
       // before 是动手前的克隆；它本来就是空列表时，备份函数自己会返回 null 不落盘。
-      if (removed) { try { backupPersonBeforeConsolidation(before, { sourceChatKey: scope, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
+      if (removed) { try { backupPersonBeforeConsolidation(before, { root: this.root, sourceChatKey: scope, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
       if (!member.impressions.length) {
-        map.delete(key); try { fs.rmSync(globalMemberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
+        map.delete(key); try { fs.rmSync(this.#memberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
       } else { member.updatedAt = Date.now(); this.#persist(member); }
       if (uid || name) break;
     }
@@ -407,9 +413,9 @@ export class GlobalPersonMemoryStore {
       member.sourceChatKeys = sourceKeys(member.impressions.flatMap((x) => x.sourceChatKeys));
       member.updatedAt = Date.now();
       // 同上：这个人还有别的来源时也要留快照 —— 被摘掉的那几条一样回不来
-      if (touched) { try { backupPersonBeforeConsolidation(before, { sourceChatKey: source, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
+      if (touched) { try { backupPersonBeforeConsolidation(before, { root: this.root, sourceChatKey: source, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
       if (!member.impressions.length) {
-        map.delete(key); try { fs.rmSync(globalMemberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
+        map.delete(key); try { fs.rmSync(this.#memberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
       } else this.#persist(member);
     }
   }
@@ -432,10 +438,10 @@ export class GlobalPersonMemoryStore {
     member.sourceChatKeys = sourceKeys(member.impressions.flatMap((x) => x.sourceChatKeys));
     member.updatedAt = Date.now();
     // 有东西被摘掉就留快照（不只是整条删空）：这个人还有别的来源时，删掉的同样回不来
-    if (touched) { try { backupPersonBeforeConsolidation(before, { sourceChatKey: source, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
+    if (touched) { try { backupPersonBeforeConsolidation(before, { root: this.root, sourceChatKey: source, at: Date.now(), reason: 'manual-delete' }); } catch { /* 备份失败不阻断 */ } }
     if (!member.impressions.length) {
       map.delete(uid);
-      try { fs.rmSync(globalMemberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
+      try { fs.rmSync(this.#memberFile(member.userId, member.name), { force: true }); } catch { /* 有意忽略：删残留文件失败仅造成文件残留，数据已先留快照可回滚 */ }
     } else this.#persist(member);
     return touched;
   }

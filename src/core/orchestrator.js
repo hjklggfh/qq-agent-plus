@@ -119,6 +119,7 @@ import { readOwnerUin } from './notify-owner.js';
 import { ZONE_OFFSET_MS, minuteOfDayInZone, randInt, createEventBus, todayKey } from './util.js';
 import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '../llm/prompt.js';
 import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags } from './persona-switch.js';
+import { memoryStoreForChat } from '../memory/memory-routing.js';
 import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
 import { trpgToolDefs } from '../features/trpg/tools.js';
@@ -390,6 +391,7 @@ export class Orchestrator {
   constructor({
     store,
     memory,
+    memoryAlt = null,
     stickers,
     sender,
     sessions,
@@ -404,6 +406,8 @@ export class Orchestrator {
   }) {
     this.store = store;
     this.memory = memory;
+    // 第二人设的独立记忆库；没开双人设时保持 null，所有记忆操作都退回 this.memory。
+    this.memoryAlt = memoryAlt || null;
     this.stickers = stickers;
     this.sender = sender;
     this.sessions = sessions;
@@ -1399,14 +1403,33 @@ export class Orchestrator {
     this.#maybeConsolidateMemory(chatKey);
   }
 
+  // ── 双人设记忆路由 ──
+  // 记忆不再是一份：第二人设有自己的库（空白起步）。
+  // 提示词注入、memory_* 工具、会话交接、自动整理、控制台记忆页都必须从这里取实例，
+  // 漏一处就会出现"读的是这个、写的是那个"。
+  #memoryStores() {
+    return { main: this.memory, alt: this.memoryAlt };
+  }
+
+  /**
+   * 取某个会话该用的记忆实例。
+   * profile 已知（每轮已经算过）时直接传，避免重复读状态文件；
+   * 功能关闭 / 会话在默认人设 / 没有第二实例 → 主实例，与升级前逐字一致。
+   */
+  #memoryFor(chatKey, profile = null) {
+    return memoryStoreForChat(this.#memoryStores(), chatKey, { profile }) || this.memory;
+  }
+
   #commitSessionHandoff(session, { chatKey, triggerEntries }) {
     const cfg = getConfig();
     if (cfg.memory?.handoffEnabled === false || typeof this.memory?.setHandoff !== 'function') return null;
+    // 交接也属于记忆：第二人设读写的必须是它自己那份，否则它一上来就"记得"默认人设做过什么。
+    const memory = this.#memoryFor(chatKey, session?.chatProfile || null);
 
     let draft = session.handoffDraft;
     if (!draft && session.sent.length > 0) {
-      const previous = typeof this.memory.getHandoff === 'function'
-        ? this.memory.getHandoff(chatKey)
+      const previous = typeof memory.getHandoff === 'function'
+        ? memory.getHandoff(chatKey)
         : null;
       const incoming = (triggerEntries || [])
         .slice(-4)
@@ -1428,7 +1451,7 @@ export class Orchestrator {
     if (!draft) return null;
 
     try {
-      const handoff = this.memory.setHandoff(chatKey, draft, {
+      const handoff = memory.setHandoff(chatKey, draft, {
         sourceSessionId: session.id,
         participantIds: handoffParticipantIds(triggerEntries),
         lastReply: lastSentText(session)
@@ -1941,6 +1964,9 @@ export class Orchestrator {
       }
     }
 
+    // 记忆实例按本会话的人设档选：第二人设只读自己的库（提示词注入 + 交接注入都在这里定下来）。
+    const memory = this.#memoryFor(chatKey, chatProfile.profile);
+
     // 首轮带完整上下文；生命周期后续轮只附加增量，旧消息保持字节级稳定以命中 DeepSeek 前缀缓存。
     const userPrompt = buildUserPrompt({
       chatKey, kind, chatId, chatName,
@@ -1948,7 +1974,7 @@ export class Orchestrator {
       recallText,
       triggerEntries,
       store: this.store,
-      memory: this.memory,
+      memory,
       stickerEntries,
       slangContext,
       incidentContext,
@@ -1956,6 +1982,9 @@ export class Orchestrator {
       // 点名标签的文本兜底要用它认「@QQ号」与 CQ 码形态（存档里的 mentionsSelf 才是主判据）。
       // 取值与上面的档位判定保持一致，否则两处会对同一条消息给出不同判断。
       selfId: cfg.onebot?.selfId || this.onebot.selfId || '',
+      // 刚切到第二人设时提醒模型"上面的历史是另一个人设说的"（复用 persona-switch 的 since，
+      // 不另造时间戳）；默认人设下恒为 0，提示词与升级前逐字一致。
+      personaSwitchedAt: altActive ? chatProfile.since : 0,
       selfLastMessageAt,
       lastMessageAt,
       recentCount,
@@ -2047,7 +2076,7 @@ export class Orchestrator {
       behaviorProfile: trpgNarrator ? 'grounded' : cfg.persona.behaviorProfile || 'legacy',
       onebot: this.onebot,
       store: this.store,
-      memory: this.memory,
+      memory,
       identityPilot,
       stickers: this.stickers,
       sender: this.sender,
@@ -2738,7 +2767,9 @@ export class Orchestrator {
       if (this.paused || this.aborted) return;
       if (!cfg.api?.model || !cfg.api?.baseUrl) return;   // 没选模型就不整理
       if (this.consolidating.has(chatKey)) return;
-      const st = this.memory.consolidationState(chatKey);
+      // 整理哪个库由这个会话当前的人设档决定：第二人设的群印象只从它自己的库里长出来。
+      const memory = this.#memoryFor(chatKey);
+      const st = memory.consolidationState(chatKey);
       // 阈值可配置：config.memory.consolidateMinImpressions（默认取类常量）
       // 注意：这里原先误写成裸标识符 T，运行时会抛 ReferenceError 导致自动整理彻底失效。
       const minImpressions = Math.max(1,
@@ -2790,13 +2821,15 @@ export class Orchestrator {
   async #consolidateMemoryForChat(chatKey, { userIds = null, force = false } = {}) {
     const cfg = getConfig();
     if (!cfg.api?.model || !cfg.api?.baseUrl) throw new Error('模型未配置，无法整理记忆');
+    // 整个整理过程只认一个库：中途人设变了也不会把一半印象写进另一个库。
+    const memory = this.#memoryFor(chatKey);
     const notes = cfg.memberNotes || {};
     const only = Array.isArray(userIds) && userIds.length
       ? new Set(userIds.map((u) => String(u ?? '').trim()).filter(Boolean))
       : null;
 
     const stats = this.#scanChatActivity(chatKey);
-    const existing = this.memory.members(chatKey);
+    const existing = memory.members(chatKey);
 
     // ── 选出要整理的人 ──
     const targets = [];
@@ -2808,7 +2841,7 @@ export class Orchestrator {
       for (const uid of only) {
         const found = existing.find((m) => String(m.userId || '') === uid);
         if (found) {
-          const resolved = this.#resolveIdentity(chatKey, found, stats, notes);
+          const resolved = this.#resolveIdentity(chatKey, found, stats, notes, memory);
           targets.push({ ...resolved, isNew: false });
           continue;
         }
@@ -2832,7 +2865,7 @@ export class Orchestrator {
       // 必须并成一条再送给模型 —— 分开整理的话，后写回的那条会把前一条的并集结果覆盖掉。
       const targetByUid = new Map();
       for (const mem of existing) {
-        const resolved = this.#resolveIdentity(chatKey, mem, stats, notes);
+        const resolved = this.#resolveIdentity(chatKey, mem, stats, notes, memory);
         const uid = String(resolved.userId || '');
         if (uid) knownUserIds.add(uid);
         if (this.#shouldSkip(resolved, force)) {
@@ -2883,7 +2916,7 @@ export class Orchestrator {
 
     if (!targets.length) {
       // 没对象也要记一次时间戳，否则零印象的会话每次运行都会重扫一遍聊天记录
-      try { this.memory.markConsolidated?.(chatKey); } catch { /* 锦上添花 */ }
+      try { memory.markConsolidated?.(chatKey); } catch { /* 锦上添花 */ }
       return {
         ok: true,
         note: `没有可整理的群友${skippedNote || (only ? '（未指定有效群友）' : '（该群还没有任何群友印象，且聊天记录里没有发言足够多的活跃成员）')}`,
@@ -2904,7 +2937,7 @@ export class Orchestrator {
       assertTimeAllowed();
       const before = mem.impressions.map((e) => e.content);
       try {
-        const next = await this.#consolidateOneMember(chatKey, mem, { force, stats });
+        const next = await this.#consolidateOneMember(chatKey, mem, { force, stats, memory });
         if (!next) { failed.push({ userId: mem.userId, name: mem.name, reason: '模型返回无法解析' }); continue; }
         const after = next.impressions.map((e) => e.content);
         const isChanged = after.length !== before.length || after.some((c, i) => c !== before[i]);
@@ -2926,7 +2959,7 @@ export class Orchestrator {
     const note = this.#buildConsolidateNote({
       total: targets.length, changed, failed, skipped, only, discoveredCount
     });
-    this.#markConsolidated(chatKey, targets.map((t) => t.userId).filter(Boolean));
+    this.#markConsolidated(chatKey, targets.map((t) => t.userId).filter(Boolean), memory);
     return { ok: true, note, changed, results, skipped, failed };
   }
 
@@ -2955,7 +2988,7 @@ export class Orchestrator {
   }
 
   /** 确定一个记忆条目的 QQ 号（必要时反查名字并回写记忆文件）。 */
-  #resolveIdentity(chatKey, mem, stats, notes) {
+  #resolveIdentity(chatKey, mem, stats, notes, memory) {
     const own = String(mem.userId || '').trim();
     let userId = own;
     let impressions = mem.impressions || [];
@@ -2978,10 +3011,10 @@ export class Orchestrator {
           try {
             // 合并写入，不能整份替换：这个人名下可能已经有印象（他也在这个群里说过话），
             // replace 会拿这条遗留记录的内容把人家原有的印象全部覆盖掉。
-            this.memory.adoptImpressions(chatKey, userId, mem.name, impressions);
+            memory.adoptImpressions(chatKey, userId, mem.name, impressions);
             // 送模型整理的必须是**合并后**的全量印象：否则模型看不到本人原有的印象，
             // 写回时（replace 是整份替换）那些印象会连同这次整理一起消失。
-            const merged = this.memory.getMember(chatKey, userId);
+            const merged = memory.getMember(chatKey, userId);
             if (merged?.impressions?.length) impressions = merged.impressions;
           } catch { /* 回写失败不阻塞整理 */ }
         }
@@ -3029,10 +3062,10 @@ export class Orchestrator {
   }
 
   /** 记录整理时间，供冷却判断使用。 */
-  #markConsolidated(chatKey, userIds) {
+  #markConsolidated(chatKey, userIds, memory) {
     const now = Date.now();
     try {
-      this.memory.markConsolidated(chatKey, now, userIds);
+      memory.markConsolidated(chatKey, now, userIds);
     } catch (error) {
       log.warn('[memory] 记录整理时间失败:', error?.message ?? error);
     }
@@ -3048,7 +3081,9 @@ export class Orchestrator {
    * 新建模式是本功能的关键补充：实测有群友聊了 200+ 条却零印象，
    * 而模型日常几乎不主动调 memory_append —— 没有这个入口就永远补不上。
    */
-  async #consolidateOneMember(chatKey, mem, { force = false, stats = null } = {}) {
+  async #consolidateOneMember(chatKey, mem, { force = false, stats = null, memory = null } = {}) {
+    // 写回必须落在整理开始时选定的那个库上（memory 由 #consolidateMemoryForChat 传来）
+    const store = memory || this.memory;
     const existing = mem.impressions || [];
     const isNew = !!mem.isNew || (!existing.length && !!force);
 
@@ -3092,7 +3127,7 @@ export class Orchestrator {
     // 写回前重读一次当前值，把「快照里没有、现在有」的条目并回去；模型对已有条目的
     // 增删改照旧生效（那正是整理要做的事），只补它看不见的那部分。
     const snapshotTexts = new Set(existing.map((e) => String(e?.content ?? '').trim()));
-    const currentRow = (this.memory.members(chatKey) || [])
+    const currentRow = (store.members(chatKey) || [])
       .find((m) => String(m?.userId || '') === String(mem.userId || ''));
     const appendedDuring = (currentRow?.impressions || [])
       .map((e) => String(e?.content ?? '').trim())
@@ -3114,7 +3149,7 @@ export class Orchestrator {
       log.info(`[memory] 整理 ${chatKey}/${mem.userId}：并回整理期间新增的 ${mergedCount} 条印象`);
     }
 
-    return this.memory.replaceMember(chatKey, mem.userId, mem.name, merged);
+    return store.replaceMember(chatKey, mem.userId, mem.name, merged);
   }
 
   /** 整理模式：合并/删减已有印象。 */
