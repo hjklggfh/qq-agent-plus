@@ -92,7 +92,8 @@ export async function probeModel({ model, now = Date.now(), call = defaultProbeC
     if (hit) return { ok: hit.ok, reason: hit.reason, cached: true };
   }
   try {
-    await call(name);
+    const probeCall = call;
+    await probeCall(name);
     markProbeResult(name, { ok: true, now });
     return { ok: true, reason: '', cached: false };
   } catch (error) {
