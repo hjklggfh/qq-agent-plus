@@ -46,6 +46,7 @@ export function formatSearchReply(reports, limit = 3) {
         lines.push(`来源网站：${new URL(url).hostname}（请核对是否原创）`);
       }
       if (report.platform === 'trace' && Number.isFinite(row.similarity)) {
+        if (row.isAdult === true) lines.push('分类：NSFW（成人条目）');
         const stamp = (n) => `${Math.floor(n / 60)}:${String(Math.floor(n % 60)).padStart(2, '0')}`;
         lines.push(`第${cleanTitle(row.episode ?? '未知')}集 · 相似度 ${(row.similarity * 100).toFixed(1)}%${Number.isFinite(row.from) && Number.isFinite(row.to) ? ` · ${stamp(row.from)}—${stamp(row.to)}（对应片源）` : ''}`);
       }

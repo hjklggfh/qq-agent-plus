@@ -88,6 +88,48 @@ test('trace 过滤低相似度及无效动画ID，同一集不同片源去重', 
   assert.equal(results[0].image, row.image);
 });
 
+test('trace 按最高相似度去重后再截断，不能把次优候选当成首选', () => {
+  const correct = { anilist: { id: 14075, title: { native: '絶園のテンペスト' } }, episode: 8, similarity: 0.961, from: 187, to: 191, image: 'https://api.trace.moe/correct.jpg' };
+  const wrong = { anilist: { id: 2402, title: { native: 'あしたのジョー' } }, episode: 64, similarity: 0.902, from: 106, to: 108 };
+  const input = [wrong, { ...correct, similarity: 0.91, image: 'https://api.trace.moe/weaker.jpg' }, correct, null, { ...wrong, similarity: NaN }];
+  const results = parseTrace({ result: input }, 1);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].title, '絶園のテンペスト');
+  assert.equal(results[0].image, correct.image);
+  assert.equal(results[0].similarity, 0.961);
+  assert.equal(input[0], wrong, '不改写平台原始结果顺序');
+});
+
+test('trace 同时检索原图和去黑边图，成人条目照常返回并保留分类', async () => {
+  let calls = 0;
+  const adult = { anilist: { id: 99939, title: { english: 'Adult test entry' }, isAdult: true }, episode: 1, similarity: 0.98, image: 'https://api.trace.moe/adult.jpg' };
+  const report = await searchProvider('trace', { buffer: png, type: 'image/png' }, {
+    limit: 1,
+    fetchImpl: async (url, options) => {
+      calls += 1;
+      assert.equal(url.origin, 'https://api.trace.moe');
+      assert.equal(url.searchParams.get('cutBorders'), '2');
+      assert.ok(url.searchParams.has('anilistInfo'));
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(Buffer.from(await options.body.get('image').arrayBuffer()), png);
+      return Response.json({ error: '', result: [adult] });
+    }
+  });
+  assert.equal(calls, 1, '双路搜索只提交一次 API 请求');
+  assert.equal(report.status, 'ok');
+  assert.equal(report.results[0].isAdult, true);
+  assert.equal(report.results[0].title, 'Adult test entry');
+  assert.match(formatSearchReply([report]), /NSFW（成人条目）/);
+  assert.match(formatSearchReply([report]), /98\.0%/);
+});
+
+test('trace 缺少动画元数据仍保留有效 ID，无效结果不抛错', () => {
+  assert.deepEqual(parseTrace({ result: null }), []);
+  const result = parseTrace({ result: [{ anilist: 14075, episode: 8, similarity: 0.961 }] });
+  assert.equal(result[0].title, 'AniList 14075');
+  assert.equal(result[0].url, 'https://anilist.co/anime/14075');
+});
+
 test('Google 来源结果排除站内导航、重复与非法协议', () => {
   const results = googleResultRows([{ title: 'Google', url: 'https://accounts.google.com/' }, { title: '原网页', url: 'https://www.google.com/url?q=https%3A%2F%2Fa.test%2Fpage' }, { title: '重复', url: 'https://a.test/page' }, { title: '坏链接', url: 'javascript:alert(1)' }]);
   assert.equal(results.length, 1);
@@ -434,6 +476,23 @@ test('真实中转 HTTP：鉴权、方法、图片嗅探、平台及大小验证
   assert.equal((await response.json()).platform, 'yandex');
   assert.equal(calls.length, 1);
   assert.equal(calls[0][1].type, 'image/png');
+});
+
+test('trace 成人条目经中转和合并卡片保留标题、分类与匹配帧', async (t) => {
+  const adult = { title: '成人动画测试条目', url: 'https://anilist.co/anime/99939', image: 'https://api.trace.moe/frame.jpg', isAdult: true, similarity: 0.98, episode: 1 };
+  const server = createImageSearchRelay({ token: 'x'.repeat(40), search: async () => ({ platform: 'trace', status: 'ok', results: [adult] }), download: async () => ({ buffer: png }) });
+  const base = await listen(t, server);
+  const response = await fetch(`${base}/v1/search`, { method: 'POST', headers: { authorization: `Bearer ${'x'.repeat(40)}`, 'x-search-platform': 'trace' }, body: png });
+  const report = await response.json();
+  assert.equal(report.results[0].isAdult, true);
+  assert.ok(report.results[0].imageKey);
+  const nodes = await searchResultNodes([report], { limit: 3, relayUrl: base, relayToken: 'x'.repeat(40) }, {
+    signal: new AbortController().signal, fetch, selfId: '123'
+  });
+  const content = nodes[1].data.content;
+  assert.match(content[0].data.text, /成人动画测试条目/);
+  assert.match(content[0].data.text, /NSFW/);
+  assert.equal(content.some((part) => part.type === 'image'), true);
 });
 
 test('中转仅允许单个任务，同时请求返回429', async (t) => {

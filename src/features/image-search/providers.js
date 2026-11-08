@@ -30,15 +30,19 @@ export function parseYandex(body, limit = 3) {
 export function parseTrace(data, limit = 3, minSimilarity = 0.9) {
   const seen = new Set();
   const results = [];
-  for (const row of data.result || []) {
-    if (!Number.isFinite(row.similarity) || row.similarity < minSimilarity || row.similarity > 1) continue;
+  // 先按最高相似度排序再去重/截断，不能让同集的较差片源抢占名额。
+  // isAdult 是分类元数据，不是检索过滤条件；保留成人条目参与同样的排序。
+  const rows = (Array.isArray(data?.result) ? data.result : [])
+    .filter((row) => row && Number.isFinite(row.similarity) && row.similarity >= minSimilarity && row.similarity <= 1)
+    .sort((a, b) => b.similarity - a.similarity);
+  for (const row of rows) {
     const anime = row.anilist;
     const id = typeof anime === 'object' ? anime?.id : anime;
     if (!Number.isInteger(id) || id < 1) continue;
     const key = `${id}:${row.episode}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    results.push({ title: cleanTitle(anime?.title?.chinese || anime?.title?.native || anime?.title?.romaji || row.filename), url: `https://anilist.co/anime/${id}`, image: publicLink(row.image), episode: row.episode, similarity: row.similarity, from: row.from, to: row.to, version: cleanTitle(row.filename) });
+    results.push({ title: cleanTitle(anime?.title?.chinese || anime?.title?.native || anime?.title?.romaji || anime?.title?.english || row.filename) || `AniList ${id}`, url: `https://anilist.co/anime/${id}`, image: publicLink(row.image), episode: row.episode, similarity: row.similarity, from: row.from, to: row.to, version: cleanTitle(row.filename), isAdult: anime?.isAdult === true });
     if (results.length >= limit) break;
   }
   return results;
@@ -81,7 +85,8 @@ export async function searchProvider(platform, image, options = {}) {
     const form = new FormData();
     form.set(platform === 'trace' ? 'image' : 'upfile', new Blob([image.buffer], { type: image.type }), 'search-image');
     if (platform === 'trace') {
-      const data = JSON.parse(await providerRequest('https://api.trace.moe/search?anilistInfo', { method: 'POST', body: form, signal }, options.fetchImpl));
+      // 同时搜索原图与去黑边图，由 trace 合并候选；带黑边截图只搜原图会严重偏离。
+      const data = JSON.parse(await providerRequest('https://api.trace.moe/search?anilistInfo&cutBorders=2', { method: 'POST', body: form, signal }, options.fetchImpl));
       if (data.error) throw new Error('动画搜索未完成');
       results = parseTrace(data, limit, options.traceMinSimilarity ?? 0.9);
     } else if (platform === 'yandex') {
