@@ -14,9 +14,10 @@ function renderImageSearchSection(config) {
     <div class="field">${Object.entries(SEARCH_LABELS).map(([key, label]) => `<label><input id="image-search-platform-${key}" type="checkbox" ${(s.platforms?.[key] ?? key !== 'serpapi') ? 'checked' : ''}> ${label}</label>`).join(' ')}<div class="hint">“找鸡”和“搜图”需要开启 SerpApi；其他平台只在指定“搜图 Google / Yandex / trace.moe / 全部”时使用。Key 只配置在东京中转环境文件中。</div></div>
     <div class="field"><label>允许使用的群号（每行一个，空名单表示所有群均不允许）</label><textarea id="image-search-groups" rows="3">${esc((s.allowedGroups || []).join('\n'))}</textarea></div>
     <div class="field"><label><input id="image-search-private" type="checkbox" ${s.allowPrivate ? 'checked' : ''}> 允许私聊搜图（仍受宿主私聊白名单限制）</label></div>
-    <div class="field"><label><input id="image-search-images" type="checkbox" ${s.sendImages ? 'checked' : ''}> “搜图”返回匹配图片及来源链接（合并转发，最多3张）</label><div class="hint">“找鸡”始终只发普通文字。搜图优先匹配图原文件，失败时尝试缩略图并标明；图片总计最多8MB。</div></div>
+    <div class="field"><label><input id="image-search-images" type="checkbox" ${s.sendImages ? 'checked' : ''}> “搜图”返回匹配图片及来源链接（合并转发，最多${esc(s.maxAttachedImages ?? 6)}张）</label><div class="hint">“找鸡”始终只发普通文字。搜图优先匹配图原文件，失败时尝试缩略图并标明；图片总计最多8MB、附图阶段最多35秒，超出的结果只给来源链接。</div></div>
     <div class="field-row"><div class="field"><label>每个平台超时（秒）</label><input id="image-search-timeout" type="number" min="10" max="90" value="${esc(s.timeoutSeconds ?? 45)}"></div>
-    <div class="field"><label>每个平台最多返回</label><input id="image-search-limit" type="number" min="1" max="5" value="${esc(s.limit ?? 3)}"></div>
+    <div class="field"><label>每个平台最多返回</label><input id="image-search-limit" type="number" min="1" max="10" value="${esc(s.limit ?? 3)}"></div>
+    <div class="field"><label>“搜图”最多附图（张）</label><input id="image-search-max-images" type="number" min="1" max="9" value="${esc(s.maxAttachedImages ?? 6)}"></div>
     <div class="field"><label>同会话冷却（秒）</label><input id="image-search-cooldown" type="number" min="0" max="3600" value="${esc(s.cooldownSeconds ?? 15)}"></div>
     <div class="field"><label>动画最低相似度（0.8—1）</label><input id="image-search-similarity" type="number" min="0.8" max="1" step="0.01" value="${esc(s.traceMinSimilarity ?? 0.9)}"></div></div>
     <p class="hint">搜图会把选中的图片提交给实际查询的平台。“搜图 全部”查询全部已开启的平台。找鸡的名字和账号只是来源线索；搜索页或资料页不能当作原帖。</p>
@@ -35,6 +36,7 @@ async function saveImageSearchSettings() {
     platforms: Object.fromEntries(Object.keys(SEARCH_LABELS).map((key) => [key, $(`#image-search-platform-${key}`).checked])),
     timeoutSeconds: Number($('#image-search-timeout').value),
     limit: Number($('#image-search-limit').value),
+    maxAttachedImages: Number($('#image-search-max-images').value),
     cooldownSeconds: Number($('#image-search-cooldown').value),
     traceMinSimilarity: Number($('#image-search-similarity').value)
   };

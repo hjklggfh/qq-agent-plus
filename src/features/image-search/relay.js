@@ -4,7 +4,7 @@ import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { imageType } from '../../core/image-type.js';
-import { IMAGE_SEARCH_PLATFORMS } from './config.js';
+import { IMAGE_SEARCH_LIMIT_MAX, IMAGE_SEARCH_PLATFORMS } from './config.js';
 import { MAX_IMAGE_BYTES, publicLink } from './common.js';
 import { searchProvider } from './providers.js';
 import { safeFetchPublicBinary } from '../../llm/safe-fetch.js';
@@ -21,6 +21,8 @@ export function createImageSearchRelay(options = {}) {
   const provider = options.search || searchProvider;
   const download = options.download || safeFetchPublicBinary;
   // 仅接受最近搜索结果的短期凭证，不能作为任意 URL 下载代理。
+  // 容量须装下“搜图 全部”一轮的全部凭证（平台数 × 条数上限 × 原图/缩略图），否则先查的平台凭证会被挤掉。
+  const maxImageKeys = IMAGE_SEARCH_PLATFORMS.length * IMAGE_SEARCH_LIMIT_MAX * 2;
   const images = new Map();
   let googleBlockedUntil = 0;
   let busy = false;
@@ -79,11 +81,11 @@ export function createImageSearchRelay(options = {}) {
       }
       const report = await provider(platform, { buffer, type }, {
         signal: controller.signal, timeoutSeconds: seconds, chromePath: options.chromePath, serpApiKey: options.serpApiKey,
-        limit: Math.min(5, Math.max(1, Math.floor(Number(req.headers['x-search-limit']) || 3))),
+        limit: Math.min(IMAGE_SEARCH_LIMIT_MAX, Math.max(1, Math.floor(Number(req.headers['x-search-limit']) || 3))),
         traceMinSimilarity: Math.min(1, Math.max(0.8, Number(req.headers['x-trace-min-similarity']) || 0.9))
       });
       if (platform === 'google' && report.status === 'blocked') googleBlockedUntil = Date.now() + 10 * 60 * 1000;
-      for (const row of (report.results || []).slice(0, 20)) {
+      for (const row of (report.results || []).slice(0, IMAGE_SEARCH_LIMIT_MAX)) {
         for (const field of ['image', 'thumbnail']) {
           const url = publicLink(row[field]);
           if (!url) continue;
@@ -92,7 +94,7 @@ export function createImageSearchRelay(options = {}) {
           row[`${field}Key`] = key;
         }
       }
-      while (images.size > 60) images.delete(images.keys().next().value);
+      while (images.size > maxImageKeys) images.delete(images.keys().next().value);
       respond(res, 200, report);
     } catch {
       if (imageRequest) respond(res, 422, { error: '匹配图片暂时无法下载' });

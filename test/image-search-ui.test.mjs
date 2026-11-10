@@ -3,6 +3,7 @@ import test from 'node:test';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { toClassicScript } from './helpers/ui-module-source.mjs';
+import { IMAGE_SEARCH_ATTACH_MAX, IMAGE_SEARCH_LIMIT_MAX } from '../src/features/image-search/config.js';
 
 let WindowClass;
 try { ({ Window: WindowClass } = await import('happy-dom')); }
@@ -38,6 +39,11 @@ test('搜图独立设置渲染默认关闭和四个平台，群名单语义明�
   assert.match(doc.body.textContent, /空名单表示所有群均不允许/);
   assert.equal(doc.querySelector('#image-search-token').type, 'password');
   assert.equal(doc.querySelector('#image-search-token').value, '');
+  assert.equal(doc.querySelector('#image-search-limit').max, String(IMAGE_SEARCH_LIMIT_MAX));
+  assert.equal(doc.querySelector('#image-search-max-images').max, String(IMAGE_SEARCH_ATTACH_MAX));
+  assert.equal(doc.querySelector('#image-search-max-images').value, '6');
+  assert.match(doc.body.textContent, /合并转发，最多6张/);
+  assert.doesNotMatch(doc.body.textContent, /最多3张/);
 });
 
 test('搜图保存仅发自己的补丁，留空保留令牌、显式清除才发空值', { skip }, async (t) => {
@@ -48,6 +54,8 @@ test('搜图保存仅发自己的补丁，留空保留令牌、显式清除才�
   const patch = JSON.parse(calls[0].options.body);
   assert.equal(Object.hasOwn(patch, 'relayToken'), false);
   assert.equal(patch.sendImages, true);
+  assert.equal(patch.maxAttachedImages, 6);
+  assert.equal(patch.limit, 3);
   assert.deepEqual(patch.allowedGroups, ['100001', '100002']);
   assert.equal(Object.hasOwn(patch, 'api'), false);
   assert.equal(calls[0].url, '/api/image-search/settings');

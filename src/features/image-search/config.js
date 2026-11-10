@@ -1,9 +1,13 @@
 export const IMAGE_SEARCH_PLATFORMS = Object.freeze(['google', 'serpapi', 'yandex', 'trace']);
+// 每个平台单次最多返回的候选条数上限（控制台 / 中转 x-search-limit 共用）。
+export const IMAGE_SEARCH_LIMIT_MAX = 10;
+// 合并转发卡片单次最多附图张数上限；另受 MAX_IMAGE_BYTES 总量与附图阶段超时约束。
+export const IMAGE_SEARCH_ATTACH_MAX = 9;
 export const DEFAULT_IMAGE_SEARCH_CONFIG = Object.freeze({
   enabled: false, relayUrl: '', relayToken: '', defaultPlatform: 'google',
   platforms: Object.freeze({ google: true, serpapi: false, yandex: true, trace: true }),
   fallback: true, sendImages: false, allowPrivate: false, allowedGroups: Object.freeze([]),
-  timeoutSeconds: 45, limit: 3, cooldownSeconds: 15, traceMinSimilarity: 0.9
+  timeoutSeconds: 45, limit: 3, maxAttachedImages: 6, cooldownSeconds: 15, traceMinSimilarity: 0.9
 });
 
 export function validateRelayUrl(value) {
@@ -35,7 +39,7 @@ export function validateImageSearchPatch(raw) {
     || Object.entries(raw.platforms).some(([key, value]) => !IMAGE_SEARCH_PLATFORMS.includes(key) || typeof value !== 'boolean'))) throw new Error('搜图平台开关无效');
   if (Object.hasOwn(raw, 'allowedGroups') && (!Array.isArray(raw.allowedGroups) || raw.allowedGroups.length > 500
     || raw.allowedGroups.some((id) => typeof id !== 'string' || !/^\d{5,15}$/.test(id)))) throw new Error('搜图群白名单须为最多500项群号文本数组');
-  for (const [key, min, max] of [['timeoutSeconds', 10, 90], ['limit', 1, 5], ['cooldownSeconds', 0, 3600], ['traceMinSimilarity', 0.8, 1]]) {
+  for (const [key, min, max] of [['timeoutSeconds', 10, 90], ['limit', 1, IMAGE_SEARCH_LIMIT_MAX], ['maxAttachedImages', 1, IMAGE_SEARCH_ATTACH_MAX], ['cooldownSeconds', 0, 3600], ['traceMinSimilarity', 0.8, 1]]) {
     if (Object.hasOwn(raw, key) && (!Number.isFinite(raw[key]) || raw[key] < min || raw[key] > max || (key !== 'traceMinSimilarity' && !Number.isInteger(raw[key])))) throw new Error(`搜图设置 ${key} 必须在 ${min}—${max} 之间`);
   }
 }

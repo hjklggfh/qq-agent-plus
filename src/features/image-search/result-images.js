@@ -1,5 +1,6 @@
 import { MAX_IMAGE_BYTES, boundedBody, formatSearchReply, publicLink } from './common.js';
 import { imageType } from '../../core/image-type.js';
+import { DEFAULT_IMAGE_SEARCH_CONFIG, IMAGE_SEARCH_ATTACH_MAX } from './config.js';
 
 // 图片只在内存中组装；历史与 outbox 元数据均不保存图片或 base64。
 export async function searchResultNodes(reports, settings, options) {
@@ -9,7 +10,8 @@ export async function searchResultNodes(reports, settings, options) {
   } });
   const text = (value) => ({ type: 'text', data: { text: value } });
   const failures = reports.filter((r) => r.status !== 'ok');
-  const nodes = [node([text(`${formatSearchReply(failures, settings.limit)}\n最多附3张匹配图片；匹配图原文件不保证是作者发布的最高分辨率版本。`)])];
+  const maxImages = Math.min(IMAGE_SEARCH_ATTACH_MAX, Math.max(1, Math.floor(Number(settings.maxAttachedImages) || DEFAULT_IMAGE_SEARCH_CONFIG.maxAttachedImages)));
+  const nodes = [node([text(`${formatSearchReply(failures, settings.limit)}\n最多附${maxImages}张匹配图片；匹配图原文件不保证是作者发布的最高分辨率版本。`)])];
   let attempts = 0, remaining = MAX_IMAGE_BYTES;
   for (const report of reports) {
     if (report.status !== 'ok') continue;
@@ -17,7 +19,7 @@ export async function searchResultNodes(reports, settings, options) {
       if (!publicLink(row.url)) continue;
       const content = [text(formatSearchReply([{ ...report, results: [row] }], 1))];
       let attached = false;
-      if (attempts < 3 && remaining > 0 && !signal.aborted) {
+      if (attempts < maxImages && remaining > 0 && !signal.aborted) {
         attempts++;
         for (const field of ['image', 'thumbnail']) {
           const key = row[`${field}Key`];

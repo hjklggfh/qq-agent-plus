@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { imageSearchConfig, validateImageSearchPatch, validateRelayUrl } from '../src/features/image-search/config.js';
+import { IMAGE_SEARCH_ATTACH_MAX, IMAGE_SEARCH_LIMIT_MAX, imageSearchConfig, validateImageSearchPatch, validateRelayUrl } from '../src/features/image-search/config.js';
 import { imageSearchCommand, searchSegments } from '../src/features/image-search/command.js';
 import { boundedBody, formatFindReply, formatSearchReply } from '../src/features/image-search/common.js';
 import { parseYandex, parseTrace, searchProvider, providerRequest } from '../src/features/image-search/providers.js';
@@ -44,8 +44,12 @@ test('搜图默认关闭、独立配置且不共享可变平台表', () => {
 });
 
 test('搜图配置验证拒绝错误开关、白名单、阈值及未知字段', () => {
-  for (const patch of [{ enabled: 'yes' }, { limit: 9 }, { timeoutSeconds: 3 }, { cooldownSeconds: 1.2 }, { traceMinSimilarity: 0.3 }, { platforms: { other: true } }, { platforms: [] }, { allowedGroups: ['*'] }, { relayToken: 'a\nb' }, { unknown: 1 }]) assert.throws(() => validateImageSearchPatch(patch));
+  for (const patch of [{ enabled: 'yes' }, { limit: 0 }, { limit: IMAGE_SEARCH_LIMIT_MAX + 1 }, { limit: 2.5 }, { maxAttachedImages: 0 }, { maxAttachedImages: IMAGE_SEARCH_ATTACH_MAX + 1 }, { maxAttachedImages: 1.5 }, { maxAttachedImages: '6' }, { timeoutSeconds: 3 }, { cooldownSeconds: 1.2 }, { traceMinSimilarity: 0.3 }, { platforms: { other: true } }, { platforms: [] }, { allowedGroups: ['*'] }, { relayToken: 'a\nb' }, { unknown: 1 }]) assert.throws(() => validateImageSearchPatch(patch));
   validateImageSearchPatch({ enabled: false, traceMinSimilarity: 0.95, platforms: { trace: false } });
+  validateImageSearchPatch({ limit: IMAGE_SEARCH_LIMIT_MAX, maxAttachedImages: IMAGE_SEARCH_ATTACH_MAX });
+  assert.equal(IMAGE_SEARCH_LIMIT_MAX, 10);
+  assert.equal(IMAGE_SEARCH_ATTACH_MAX, 9);
+  assert.equal(imageSearchConfig({}).maxAttachedImages, 6);
 });
 
 test('搜图中转只允许本机 HTTP 或无凭据 HTTPS 根地址', () => {
@@ -547,14 +551,15 @@ test('中转图片下载始终拒绝内网、凭据及本机，不受宿主图�
   }
 });
 
-test('合并卡片原图失败回退缩略图，链接逐图对应且最多3张', async () => {
+test('合并卡片原图失败回退缩略图，链接逐图对应且受附图上限约束', async () => {
   const reports = [{ ...okReport('yandex'), results: Array.from({ length: 4 }, (_, i) => ({ title: `图${i}`, url: `https://a.test/${i}`, imageKey: `${i}0000000-0000-0000-0000-000000000000`, thumbnailKey: `${i}0000000-0000-0000-0000-000000000001` })) }];
   let requests = 0;
-  const nodes = await searchResultNodes(reports, imageSearchConfig({ limit: 4 }), { signal: new AbortController().signal, selfId: '123456', fetch: async (_url, options) => {
+  const nodes = await searchResultNodes(reports, imageSearchConfig({ limit: 4, maxAttachedImages: 3 }), { signal: new AbortController().signal, selfId: '123456', fetch: async (_url, options) => {
     requests++;
     return JSON.parse(options.body).key.endsWith('1') ? new Response(png) : new Response('denied', { status: 403 });
   } });
   assert.equal(nodes.length, 5);
+  assert.match(nodes[0].data.content[0].data.text, /最多附3张匹配图片/);
   assert.equal(requests, 6);
   for (let i = 0; i < 3; i++) {
     assert.match(nodes[i + 1].data.content[0].data.text, new RegExp(`https://a.test/${i}`));
@@ -562,6 +567,49 @@ test('合并卡片原图失败回退缩略图，链接逐图对应且最多3张'
     assert.equal(nodes[i + 1].data.content[2].data.file, `base64://${png.toString('base64')}`);
   }
   assert.match(nodes[4].data.content[1].data.text, /未附图/);
+});
+
+test('默认附图上限为6张，超出部分只给来源链接；多平台合计计数', async () => {
+  const rows = (platform, n, offset) => Array.from({ length: n }, (_, i) => ({ title: `图${offset + i}`, url: `https://a.test/${offset + i}`, imageKey: `${String(offset + i).padStart(8, '0')}-0000-0000-0000-000000000000` }));
+  const reports = [{ ...okReport('yandex'), results: rows('yandex', 5, 0) }, { ...okReport('trace'), results: rows('trace', 5, 5) }];
+  let requests = 0;
+  const nodes = await searchResultNodes(reports, imageSearchConfig({ limit: 5 }), { signal: new AbortController().signal, selfId: '1', fetch: async () => { requests++; return new Response(png); } });
+  assert.match(nodes[0].data.content[0].data.text, /最多附6张匹配图片/);
+  assert.equal(nodes.length, 11);
+  assert.equal(requests, 6);
+  const attached = nodes.slice(1).map((n) => n.data.content.some((part) => part.type === 'image'));
+  assert.deepEqual(attached, [true, true, true, true, true, true, false, false, false, false]);
+  assert.match(nodes[7].data.content.at(-1).data.text, /未附图/);
+});
+
+test('附图总量用尽后停止下载，即使未达张数上限', async () => {
+  const report = { ...okReport('yandex'), results: Array.from({ length: 4 }, (_, i) => ({ title: `图${i}`, url: `https://a.test/${i}`, imageKey: `${i}0000000-0000-0000-0000-000000000000` })) };
+  const big = Buffer.concat([png, Buffer.alloc(4 * 1024 * 1024 - png.length)]);
+  const budgets = [];
+  const nodes = await searchResultNodes([report], imageSearchConfig({ limit: 4, maxAttachedImages: 9 }), { signal: new AbortController().signal, selfId: '1', fetch: async (_url, options) => {
+    budgets.push(Number(options.headers['x-image-max-bytes']));
+    return new Response(big);
+  } });
+  assert.deepEqual(budgets, [8 * 1024 * 1024, 4 * 1024 * 1024]);
+  assert.deepEqual(nodes.slice(1).map((n) => n.data.content.some((part) => part.type === 'image')), [true, true, false, false]);
+});
+
+test('中转按配置上限截断 x-search-limit，凭证容量覆盖全部平台的结果', async (t) => {
+  const limits = [];
+  const server = createImageSearchRelay({ token: 'x'.repeat(40), search: async (platform, _image, options) => {
+    limits.push(options.limit);
+    return { platform, status: 'ok', results: Array.from({ length: options.limit }, (_, i) => ({ title: 't', url: `https://${platform}.test/${i}`, image: `https://${platform}.test/${i}.png`, thumbnail: `https://${platform}.test/${i}s.png` })) };
+  }, download: async () => ({ buffer: png }) });
+  const base = await listen(t, server);
+  const headers = (platform, limit) => ({ authorization: `Bearer ${'x'.repeat(40)}`, 'x-search-platform': platform, 'x-search-limit': String(limit) });
+  const reports = [];
+  for (const platform of ['google', 'serpapi', 'yandex', 'trace']) {
+    reports.push(await (await fetch(`${base}/v1/search`, { method: 'POST', headers: headers(platform, 50), body: png })).json());
+  }
+  assert.deepEqual(limits, [10, 10, 10, 10]);
+  const first = await fetch(`${base}/v1/image`, { method: 'POST', headers: headers('google', 1), body: JSON.stringify({ key: reports[0].results[0].imageKey }) });
+  assert.equal(first.status, 200);
+  await first.arrayBuffer();
 });
 
 test('附图阶段拒绝超限和非图片响应，取消时不返回待发卡片', async () => {
