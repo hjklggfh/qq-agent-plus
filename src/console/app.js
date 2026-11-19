@@ -1330,7 +1330,8 @@ export function createApp({
           session: null,
           send: async (messages) => sender.sendTextBatch(chatKey, messages, {
             runId: `jm-direct-${stored.id}`,
-            preserveCode: false
+            preserveCode: false,
+            bypassTimeControl: true
           })
         }, {
           text: jmCommandText,

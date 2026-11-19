@@ -37,7 +37,7 @@ import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js'
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
 import { searchCardNodes, deliverSearchCard } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
-import { BOOKSHELF_RE, UPDATE_RE, HELP_RE, parseRankCommand } from './direct-command.js';
+import { classifyJmDirectCommand, isSilentWhenChatDenied } from './direct-command.js';
 import { createRankService, normalizeRankKind, normalizeRankCategory, rankDisplayInfo } from './rankings.js';
 import { modelServiceOfBaseUrl, resolveThinkingPatch } from '../../core/provider-presets.js';
 
@@ -71,18 +71,6 @@ const activeTasks = new Map(); // albumId -> task
 const activeByChat = new Map(); // chatKey -> albumId（每个会话同时只跑一本）
 const callerLog = new Map(); // sessionId/chatKey -> { candidates, at }
 const pendingHint = new Map(); // sessionId/chatKey -> { id, who, at }
-
-// 「JM书架」指令命中标记：sessionId/chatKey -> { who, at }
-const pendingBookshelf = new Map();
-// 「今日JM / JM日榜 / JM周榜 / JM热门 / JM同人日榜」榜单指令命中标记
-const pendingRank = new Map();
-// 「jm / JM指令」帮助菜单命中标记
-const pendingHelp = new Map();
-// 「更新JM」指令命中标记：sessionId/chatKey -> { who, at }
-const pendingUpdate = new Map();
-// 「开启JM/关闭JM」群开关指令命中标记：sessionId/chatKey -> { action, who, at }
-const pendingGroupCmd = new Map();
-const controlRequests = new Map(); // session/chat -> { action, id, who, at }
 const firstSubmitters = new Map(); // `${chatKey}:${albumId}` -> { id, name, at }
 
 // 2026-10-06：原来是一张手写的 152 字对照表，实测漏得很厉害 ——
@@ -322,13 +310,6 @@ async function ensureTranslatedTitles(items) {
   }
 }
 
-function parseControl(text) {
-  const raw = String(text || '').replace(/@\S+\s*/g, '').trim();
-  const m = raw.match(/^(暂停下载|继续下载|删除\s*JM)\s*[-_:#：]?\s*(?:JM)?(\d{2,9})$/i);
-  if (!m) return null;
-  return { action: m[1].startsWith('暂停') ? 'pause' : m[1].startsWith('继续') ? 'resume' : 'delete', id: engine.normalizeAlbumId(m[2]) };
-}
-
 function isPaused(task) { return task?.control?.paused === true; }
 async function waitIfPaused(task) {
   if (!task?.control) return;
@@ -442,9 +423,15 @@ async function performControl({ action, albumId, onebot, chatKey }) {
 }
 
 
+const DAILY_COLLECT_INTERVAL_MS = 12 * 3600 * 1000;
+const DAILY_COLLECT_RETRY_COOLDOWN_MS = 15 * 60 * 1000;
 let taskHistory = []; // 最近的任务记录（持久化）
 let historyLoaded = false;
 let cleanupTimer = null;
+let dailyCollectTimer = null;
+let dailyStartupCollectTimer = null;
+let dailyCollectInFlight = null;
+let lastDailyCollectAttemptAt = 0;
 let workerCache = { at: 0, result: null };
 
 // ───────────────────────── 配置 ─────────────────────────
@@ -1382,6 +1369,69 @@ async function sendText(sender, onebot, chatKey, text) {
   }
 }
 
+/**
+ * 直通指令专用发信：当无模型会话（ctx.session === null）时，优先走直通 send/onebot，
+ * 脱离 DeepSeek 错峰静音限制，确保主动触发的指令即时给出明确响应。
+ */
+async function sendDirectToolText(ctx, chatKey, text) {
+  if (!chatKey || !text) return false;
+  if (!ctx?.session && typeof ctx?.send === 'function') {
+    try {
+      await ctx.send([String(text)]);
+      return true;
+    } catch (error) {
+      warn(`直通文本发送失败，尝试备用通道：${error?.message ?? error}`);
+    }
+  }
+  const [kind, id] = String(chatKey).split(':');
+  if (!ctx?.session && ctx?.onebot?.sendSegments && kind && id) {
+    try {
+      await ctx.onebot.sendSegments(kind, id, [{ type: 'text', data: { text: String(text) } }]);
+      return true;
+    } catch (error) {
+      warn(`直通 onebot 发送失败：${error?.message ?? error}`);
+    }
+  }
+  return sendText(ctx?.sender, ctx?.onebot, chatKey, text);
+}
+
+function dailyUpdatesSettings() {
+  return { ...cfg(), downloadDir: downloadRoot(), fetchImpl: createSafeFetch() };
+}
+
+function hasTodayDailyUpdatesState() {
+  try {
+    const file = path.join(downloadRoot(), 'daily_updates.json');
+    if (!fs.existsSync(file)) return false;
+    const st = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const today = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+    return st?.date === today && Boolean(st?.lastRun);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDailyUpdatesCollected({ force = false } = {}) {
+  if (!api || cfg().enabled === false) return null;
+  if (!force && hasTodayDailyUpdatesState()) return null;
+  if (dailyCollectInFlight) return dailyCollectInFlight;
+  lastDailyCollectAttemptAt = Date.now();
+  dailyCollectInFlight = collectDaily({
+    pages: 3,
+    quiet: true,
+    settingsOverride: dailyUpdatesSettings(),
+  }).then((res) => {
+    log(`[daily_updates] 站点新上架采集完成：新增 ${res?.added ?? 0}，今日累计 ${res?.total ?? 0}`);
+    return res;
+  }).catch((error) => {
+    warn(`[daily_updates] 站点新上架采集失败：${error?.message ?? error}`);
+    return null;
+  }).finally(() => {
+    dailyCollectInFlight = null;
+  });
+  return dailyCollectInFlight;
+}
+
 // ───────────────────────── 群文件到期删除 ─────────────────────────
 
 const uploadedGroupFiles = new Map(); // `${groupId}:${fileId}` -> { name, at, onebot }
@@ -1754,8 +1804,8 @@ export function setup(injected) {
         if (!albumId) return { content: 'album_id 必须是纯数字 ID（如 123456）。', isError: true };
         const chatKey = String(ctx?.chatKey || '');
         const text = await performControl({ action, albumId, onebot: ctx?.onebot ?? null, chatKey });
-        // 结果直接发到当前会话（跟 today_list 一样自己发，避免模型复述丢消息）
-        const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, text);
+        // 结果直接发到当前会话（直通不走 DeepSeek 错峰限制）
+        const sent = await sendDirectToolText(ctx, chatKey, text);
         return {
           content: sent
             ? `结果已直接发到群里（${text}）。你**不要**再复述这条结果，也不要重复调用本工具。`
@@ -1794,7 +1844,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
       const [kind, chatId] = chatKey.split(':');
       const st = loadGroupState();
       const reply = async (text) => {
-        const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, text);
+        const sent = await sendDirectToolText(ctx, chatKey, text);
         return {
           content: sent
             ? `结果已直接发到会话（${text}）。你**不要**再复述，也不要重复调用本工具。`
@@ -1917,7 +1967,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
               : `· ${when} JM${h.id} 失败（${h.stage}）：${h.error || '未知原因'}`);
           }
         }
-        return { content: lines.join('\n') };
+        return { content: lines.join('\n'), directReply: true };
       } catch (error) {
         warn(`查询任务状态失败：${error?.message ?? error}`);
         return { content: `查询失败：${error?.message ?? error}`, isError: true };
@@ -1953,7 +2003,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
           try {
             const items = await buildTodayItems(root);
             if (!items.length) {
-              const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, emptyText);
+              const sent = await sendDirectToolText(ctx, chatKey, emptyText);
               return { content: sent ? '已把「本地还没有漫画」发到群里。你不要再复述，也不要重复调用本工具。' : emptyText };
             }
             const payload = {
@@ -1985,7 +2035,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         // 兜底：文字版（原实现）
         const built = fs.existsSync(root) ? await buildTodayList(root) : { text: '', count: 0 };
         const fallback = built.text || emptyText;
-        const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, fallback);
+        const sent = await sendDirectToolText(ctx, chatKey, fallback);
         return {
           content: sent
             ? 'JM书架列表已经直接发给群友了（工具自己发的）。你**不要**再复述一遍列表，'
@@ -2093,16 +2143,12 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         + '📚 本地书架与站点更新\n'
         + '• JM书架（本地JM）— 查看本地已下载书架\n'
         + '• 更新JM — 查看站点今日新上架\n\n'
-        + '⚙️ 任务控制与群开关\n'
+        + '⚙️ 任务控制、查询与群开关\n'
+        + '• JM进度 / JM收藏 / JM空间 — 查当前下载进度、本地收藏与磁盘/群文件配额\n'
         + '• 暂停下载 <ID> / 继续下载 <ID> / 删除JM <ID> — 控制下载或清理本地缓存\n'
         + '• 开启JM / 关闭JM / JM群列表 / JM所有群开放 — 群功能开关（群主或机主）';
-      const [msgKind, targetId] = chatKey.split(':');
-      if (ctx?.onebot?.sendSegments && msgKind && targetId) {
-        await ctx.onebot.sendSegments(msgKind, targetId, [{ type: 'text', data: { text: helpText } }]);
-        return { content: 'JM 指令菜单已直接发到会话，你不要再复述或重复调用。' };
-      }
-      const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, helpText);
-      return { content: sent ? 'JM 指令菜单已直接发到会话，你不要再复述。' : helpText };
+      const sent = await sendDirectToolText(ctx, chatKey, helpText);
+      return { content: sent ? 'JM 指令菜单已直接发到会话，你不要再复述或重复调用。' : helpText };
     },
   });
 
@@ -2115,21 +2161,33 @@ const JM_CONTROL_OWNER_ID = '2118530760';
     description:
       '列出禁漫今天新更新（新上架/新章节）的漫画清单，做成一张信息图发到会话'
       + '（封面网格卡片：编号+ID+标题+类型+标签，一张图看完）。'
-      + '数据由采集器每 30 分钟自动抓取，无需联网等待。'
+      + '数据由采集器每 12 小时自动抓取（缺数据时自动现场兜底采集）。'
       + '当群友说「更新JM」「JM更新」「更新列表」「今日更新」「今天有什么更新」「日更」时使用。无参数。'
       + '内容由工具直接发到会话，返回后你不要再复述、不要重复调用。',
     parameters: { type: 'object', properties: {} },
     async execute(ctx) {
-      // daily_updates_selfsend：与 today_list 相同的理由 —— config.api.maxRounds = 1，
-      // 工具必须自己把成品发出去，不能指望模型再转述一轮。
+      // daily_updates_selfsend：与 bookshelf 相同的理由 —— 工具必须自己把成品发出去
       const chatKey = String(ctx?.chatKey || '');
       try {
         const denied = gateChat(chatKey);
         if (denied) return { content: denied, isError: true };
-        const payload = await loadDigestItems({ simplify: toSimplified, translate: ensureTranslatedTitles });
+        const settingsOverride = dailyUpdatesSettings();
+        let payload = await loadDigestItems({
+          simplify: toSimplified,
+          translate: ensureTranslatedTitles,
+          settingsOverride,
+        });
+        if (!payload.items.length && Date.now() - lastDailyCollectAttemptAt > DAILY_COLLECT_RETRY_COOLDOWN_MS) {
+          await ensureDailyUpdatesCollected({ force: true });
+          payload = await loadDigestItems({
+            simplify: toSimplified,
+            translate: ensureTranslatedTitles,
+            settingsOverride,
+          });
+        }
         if (!payload.items.length) {
-          const text = '今天还没有采集到禁漫更新（每 30 分钟自动抓一次，先等等再看）。';
-          const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, text);
+          const text = '今天还没有采集到禁漫更新（每 12 小时自动抓一次，刚刚现场拉取暂无新更新）。';
+          const sent = await sendDirectToolText(ctx, chatKey, text);
           return {
             content: sent
               ? '已把「今天暂无更新」发到群里。你**不要**再复述，也不要重复调用本工具。'
@@ -2144,11 +2202,10 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             footnote: `共 ${payload.items.length} 本（站点当日新上架/新章节）`,
             items: payload.items,
           };
-          const currentCfg = cfg();
           const imagePath = await renderDigestImage({
             payload: full,
-            settings: { ...currentCfg, downloadDir: downloadRoot() },
-            pythonPath: currentCfg.pythonPath,
+            settings: settingsOverride,
+            pythonPath: settingsOverride.pythonPath,
           });
           const sent = await sendDigestImage({ onebot: ctx?.onebot, chatKey, payload: full, imagePath });
           if (sent === true) {
@@ -2161,7 +2218,11 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         } catch (imgErr) {
           // 兜底：信息图渲染/发送失败 → 降级文字清单 + 封面
           warn(`信息图路径失败，降级文字版：${imgErr?.message ?? imgErr}`);
-          const digest = await buildDigestFromState({ simplify: toSimplified, translate: ensureTranslatedTitles });
+          const digest = await buildDigestFromState({
+            simplify: toSimplified,
+            translate: ensureTranslatedTitles,
+            settingsOverride,
+          });
           const sent = await sendDigest({ onebot: ctx?.onebot, chatKey, digest });
           if (sent === true) {
             return {
@@ -2169,8 +2230,11 @@ const JM_CONTROL_OWNER_ID = '2118530760';
                 + '你**不要**再复述清单内容，也不要重复调用本工具。',
             };
           }
+          const fallbackSent = await sendDirectToolText(ctx, chatKey, digest.text);
           return {
-            content: `清单发送失败。把下面的清单文本原样发给群友：\n${digest.text}`,
+            content: fallbackSent
+              ? '每日更新文字清单已发到群里。你不要再复述。'
+              : `清单发送失败。把下面的清单文本原样发给群友：\n${digest.text}`,
           };
         }
       } catch (error) {
@@ -2194,9 +2258,9 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         const denied = gateChat(String(ctx?.chatKey || ''));
         if (denied) return { content: denied, isError: true };
         const root = downloadRoot();
-        if (!fs.existsSync(root)) return { content: `本地还没有任何漫画（目录 ${root} 还不存在）。` };
+        if (!fs.existsSync(root)) return { content: `本地还没有任何漫画（目录 ${root} 还不存在）。`, directReply: true };
         const entries = await scanLibrary(root);
-        if (!entries.length) return { content: '本地收藏是空的。群友把漫画 ID 发给我就能下。' };
+        if (!entries.length) return { content: '本地收藏是空的。群友把漫画 ID 发给我就能下。', directReply: true };
         entries.sort((a, b) => b.mtime - a.mtime);
         const lines = entries.slice(0, 30).map((e) => {
           const when = new Date(e.mtime).toISOString().slice(0, 16).replace('T', ' ');
@@ -2204,6 +2268,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         });
         return {
           content: `本地收藏共 ${entries.length} 本（列出最近 ${Math.min(30, entries.length)} 本）：\n${lines.join('\n')}\n\n目录：${root}`,
+          directReply: true,
         };
       } catch (error) {
         warn(`读取本地收藏失败：${error?.message ?? error}`);
@@ -2249,7 +2314,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             ? `本群群文件：${q.fileCount}/${q.limitCount} 个，已用 ${humanSize(q.usedSpace)} / ${humanSize(q.totalSpace)}`
             : `本群群文件配额查询失败：${q.error}`);
         }
-        return { content: lines.join('\n') };
+        return { content: lines.join('\n'), directReply: true };
       } catch (error) {
         warn(`存储自检失败：${error?.message ?? error}`);
         return { content: `自检失败：${error?.message ?? error}`, isError: true };
@@ -2263,16 +2328,26 @@ const JM_CONTROL_OWNER_ID = '2118530760';
 
 export function activate() {
   if (cleanupTimer) clearInterval(cleanupTimer);
+  if (dailyCollectTimer) clearInterval(dailyCollectTimer);
+  if (dailyStartupCollectTimer) clearTimeout(dailyStartupCollectTimer);
   cleanupTimer = setInterval(() => {
     void cleanupLocal();
     void cleanupGroupFiles();
   }, 6 * 3600 * 1000);
-  // 启动时先跑一次，别等 6 小时
+  dailyCollectTimer = setInterval(() => {
+    void ensureDailyUpdatesCollected({ force: true });
+  }, DAILY_COLLECT_INTERVAL_MS);
+  dailyCollectTimer.unref?.();
+  // 启动时先做本地清理，并检查当天更新是否尚未采集
   const startupCleanup = setTimeout(() => {
     void cleanupLocal();
   }, 20000);
   startupCleanup.unref?.();
-  log('已启动：定时清理与任务队列就绪');
+  dailyStartupCollectTimer = setTimeout(() => {
+    void ensureDailyUpdatesCollected({ force: false });
+  }, 15000);
+  dailyStartupCollectTimer.unref?.();
+  log('已启动：定时清理、12小时站点更新采集与任务队列就绪');
 }
 
 export function deactivate() {
@@ -2280,12 +2355,20 @@ export function deactivate() {
     clearInterval(cleanupTimer);
     cleanupTimer = null;
   }
-  log('已停用：定时清理已停止（正在进行的下载任务不会被中断）');
+  if (dailyCollectTimer) {
+    clearInterval(dailyCollectTimer);
+    dailyCollectTimer = null;
+  }
+  if (dailyStartupCollectTimer) {
+    clearTimeout(dailyStartupCollectTimer);
+    dailyStartupCollectTimer = null;
+  }
+  log('已停用：定时清理与采集已停止（正在进行的下载任务不会被中断）');
 }
 
 /**
- * 宿主直接消息入口。明确的 JM 指令在这里执行，避免先唤醒模型再依赖提示词猜测。
- * 返回 true 表示消息已被 JM 消费，调用方应停止后续普通聊天流程。
+ * 宿主直接消息入口兜底：处理非直通白名单里的模糊下载提示（如「@机器人 123456」），
+ * 明确的直通指令统一由 direct-command.js 分类并在 index.js 直接剥离执行，不经过 DeepSeek。
  */
 export async function handleMessage(ctx = {}, message = {}) {
   if (cfg().enabled === false || typeof ctx.runTool !== 'function') return false;
@@ -2303,88 +2386,19 @@ export async function handleMessage(ctx = {}, message = {}) {
   await hooks['before-context'](local);
   const invoke = async (name, args) => {
     const result = await ctx.runTool(name, args);
-    if (result?.isError && result.content && typeof ctx.send === 'function') {
+    if ((result?.isError || result?.notify || result?.directReply) && result.content && typeof ctx.send === 'function') {
       await ctx.send([String(result.content)]);
     }
     return result;
   };
-  // 直接入口优先处理固定指令；仍先执行 before-context，供权限校验记录调用者。
-  const normalized = text.replace(/\s+/g, ' ');
-  const updateDirect = UPDATE_RE.test(normalized)
-    || /^(?:(?:今日|今天|本日)\s*)?(?:更新|日更|新更)\s*(?:JM|禁漫)?$/iu.test(normalized);
-  if (updateDirect && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('daily_updates'), {});
-    return true;
-  }
-  const rankDirect = parseRankCommand(normalized);
-  if (rankDirect && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('rank'), rankDirect);
-    return true;
-  }
-  if (HELP_RE.test(normalized) && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('help'), {});
-    return true;
-  }
-  if (BOOKSHELF_RE.test(normalized) && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('bookshelf'), {});
-    return true;
-  }
-  const controlMatch = parseControl(normalized);
-  if (controlMatch && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('control'), { action: controlMatch.action, album_id: controlMatch.id });
-    return true;
-  }
-  const groupAction = /^(?:开启|打开|开通|开放)\s*(?:JM|禁漫)$/i.test(normalized) ? 'on'
-    : /^(?:关闭|停用)\s*(?:JM|禁漫)$/i.test(normalized) ? 'off'
-      : /^(?:JM|禁漫)\s*(?:群列表|列表|名单)$/i.test(normalized) ? 'list'
-        : /^(?:JM|禁漫)\s*(?:所有群开放|全开)$/i.test(normalized) ? 'all' : '';
-  if (groupAction) {
-    await invoke(toolId('group_toggle'), { action: groupAction });
-    return true;
-  }
-  const explicit = normalized.match(/(?:^|[^0-9a-zA-Z])(?:jm)[\s\-_:：#]*(\d{2,9})(?!\d)|\/(?:album|photo)\/(\d{2,9})(?!\d)/i);
-  if (explicit && isChatAllowed(String(ctx.chatKey || ''))) {
-    await invoke(toolId('download_album'), { album_id: explicit[1] || explicit[2] });
+  const direct = classifyJmDirectCommand(text.replace(/\s+/g, ' '));
+  if (direct?.tool) {
+    const chatKey = String(ctx.chatKey || '');
+    if (isSilentWhenChatDenied(direct.tool) && !isChatAllowed(chatKey)) return false;
+    await invoke(direct.tool, direct.args);
     return true;
   }
   const key = callerKey(local);
-  const take = (map) => {
-    const hit = map.get(key);
-    if (hit && Date.now() - hit.at < 120000) { map.delete(key); return hit; }
-    return null;
-  };
-  const group = take(pendingGroupCmd);
-  if (group) {
-    await invoke(toolId('group_toggle'), { action: group.action });
-    return true;
-  }
-  const control = take(controlRequests);
-  if (control) {
-    await invoke(toolId('control'), { action: control.action, album_id: control.id });
-    return true;
-  }
-  const rank = take(pendingRank);
-  if (rank) {
-    await invoke(toolId('rank'), {
-      kind: rank.kind,
-      category: rank.category || 'all',
-      force: rank.force,
-      ...(rank.topN ? { topN: rank.topN } : {}),
-    });
-    return true;
-  }
-  if (take(pendingHelp)) {
-    await invoke(toolId('help'), {});
-    return true;
-  }
-  if (take(pendingBookshelf)) {
-    await invoke(toolId('bookshelf'), {});
-    return true;
-  }
-  if (take(pendingUpdate)) {
-    await invoke(toolId('daily_updates'), {});
-    return true;
-  }
   const hint = pendingHint.get(key);
   if (hint?.explicitDownload) {
     pendingHint.delete(key);
@@ -2397,6 +2411,10 @@ export async function handleMessage(ctx = {}, message = {}) {
 export function dispose() {
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = null;
+  if (dailyCollectTimer) clearInterval(dailyCollectTimer);
+  dailyCollectTimer = null;
+  if (dailyStartupCollectTimer) clearTimeout(dailyStartupCollectTimer);
+  dailyStartupCollectTimer = null;
   activeTasks.clear();
   activeByChat.clear();
   callerLog.clear();
@@ -2734,126 +2752,6 @@ export const hooks = {
       const entries = Array.isArray(ctx.triggerEntries)
         ? ctx.triggerEntries.filter((entry) => entry?.eventKind !== 'file-attachment') : [];
 
-      // ── 「开启JM / 关闭JM / JM群列表 / JM所有群开放」群开关指令 ─────────────
-      // 由 group_toggle 工具执行（权限校验在工具里做：群主或机主）。
-      // 注意：这条必须放在最前面 —— 未开启的群里也要能发「开启JM」来开通。
-      const GROUP_ON_RE = /^(?:开启|打开|开通)\s*(?:JM|jm|Jm|禁漫)$/;
-      const GROUP_OFF_RE = /^(?:关闭|停用)\s*(?:JM|jm|Jm|禁漫)$/;
-      const GROUP_LIST_RE = /^(?:JM|jm|Jm|禁漫)群(?:列表|名单)$/;
-      const GROUP_ALL_RE = /^(?:JM|jm|Jm|禁漫)所有群(?:开放|全开)?$/;
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const raw = String(e.text || '').replace(/@\S+\s*/g, '').trim();
-        if (!GROUP_ON_RE.test(raw) && !GROUP_OFF_RE.test(raw) && !GROUP_LIST_RE.test(raw) && !GROUP_ALL_RE.test(raw)) continue;
-        const action = GROUP_ON_RE.test(raw) ? 'on'
-          : GROUP_OFF_RE.test(raw) ? 'off'
-            : GROUP_LIST_RE.test(raw) ? 'list' : 'all';
-        const who = String(e.senderName || e.senderId || '群友');
-        pendingGroupCmd.set(callerKey(ctx), { action, who, at: Date.now() });
-        const actionText = action === 'on' ? '开启JM' : action === 'off' ? '关闭JM' : action === 'list' ? 'JM群列表' : 'JM所有群开放';
-        e.text = `${actionText}（${who} 触发的固定指令）：请立刻调用工具 ${toolId('group_toggle')}，action 填 "${action}"。`
-          + '工具会自己把结果发到会话，你**不要**再复述、不要补充、不要重复调用。';
-        log(`JM 群开关指令命中：${actionText}（来自 ${who}）`);
-        return;
-      }
-
-      const chatAllowed = isChatAllowed(String(ctx.chatKey || ''));
-
-      // ── 「暂停下载 / 继续下载 / 删除JM」控制指令 ────────────────────────────
-      // 命中就改写成强指令，让模型调用 control 工具执行（工具自己发确认），
-      // 避免模型自由发挥或误把"暂停下载"当成聊天内容。
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const cmd = parseControl(e.text);
-        if (!cmd) continue;
-        const who = String(e.senderName || e.senderId || '群友');
-        if (!chatAllowed) {
-          e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能，暂停/继续/删除也用不了。'
-            + '群主或机主在群里 @我 说「开启JM」即可开通。';
-          log(`JM 控制指令被群白名单拦下（${who}）`);
-          return;
-        }
-        controlRequests.set(callerKey(ctx), { ...cmd, who, at: Date.now() });
-        const actionText = cmd.action === 'pause' ? '暂停下载' : cmd.action === 'resume' ? '继续下载' : '删除JM';
-        e.text = `${actionText}（${who} 触发的固定指令）：请立刻调用工具 ${toolId('control')}，`
-          + `action 填 "${cmd.action}"，album_id 填 ${cmd.id}。`
-          + '工具会自己把结果发到群里，你**不要**再复述、不要补充、不要重复调用。';
-        log(`JM 控制指令命中：${actionText} JM${cmd.id}（来自 ${who}）`);
-        return;
-      }
-
-      // ── 「更新JM」精确匹配（需在榜单刷新指令前判断，避免「更新JM」误判为刷新）──
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const raw = String(e.text || '').replace(/@\S+\s*/g, '').trim();
-        if (!UPDATE_RE.test(raw)) continue;
-        const who = String(e.senderName || e.senderId || '群友');
-        if (!chatAllowed) {
-          e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能。'
-            + '群主或机主在群里 @我 说「开启JM」即可开通。';
-          log(`更新JM 指令被群白名单拦下（${who}）`);
-          return;
-        }
-        pendingUpdate.set(callerKey(ctx), { who, at: Date.now() });
-        e.text = '更新JM（' + who + ' 触发的固定指令）：请立刻调用工具 ' + toolId('daily_updates') + '。'
-          + '工具会自己把清单和封面发到群里，你**不要**再复述、不要补充、不要重复调用。';
-        log('更新JM 指令命中（来自 ' + who + '）');
-        return;
-      }
-
-      // ── 「今日JM / JM日榜 / JM周榜 / JM热门 / JM同人日榜」榜单精确匹配 ─────────
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const cmd = parseRankCommand(e.text);
-        if (!cmd) continue;
-        const who = String(e.senderName || e.senderId || '群友');
-        if (!chatAllowed) {
-          e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能。'
-            + '群主或机主在群里 @我 说「开启JM」即可开通。';
-          log(`JM排行榜 指令被群白名单拦下（${who}）`);
-          return;
-        }
-        const label = rankDisplayInfo(cmd.kind, cmd.category).label;
-        pendingRank.set(callerKey(ctx), { ...cmd, who, at: Date.now() });
-        e.text = `${label}（${who} 触发的固定指令）：请立刻调用工具 ${toolId('rank')}，`
-          + `kind 填 "${cmd.kind}"，category 填 "${cmd.category || 'all'}"`
-          + `${cmd.force ? '，force 填 true' : ''}${cmd.topN ? `，topN 填 ${cmd.topN}` : ''}。工具会自己发图到群里，你**不要**再复述、不要重复调用。`;
-        log(`JM排行榜 指令命中：${cmd.kind}/${cmd.category || 'all'}${cmd.force ? ' (force)' : ''}（来自 ${who}）`);
-        return;
-      }
-
-      // ── 「jm / JM指令」菜单精确匹配 ──────────────────────────────────────────
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const raw = String(e.text || '').replace(/@\S+\s*/g, '').trim();
-        if (!HELP_RE.test(raw) || !chatAllowed) continue;
-        const who = String(e.senderName || e.senderId || '群友');
-        pendingHelp.set(callerKey(ctx), { who, at: Date.now() });
-        e.text = `JM指令菜单（${who} 触发的固定指令）：请立刻调用工具 ${toolId('help')}。`
-          + '菜单会由工具自己发到群里，你**不要**再复述、不要重复调用。';
-        log(`JM帮助指令命中（来自 ${who}）`);
-        return;
-      }
-
-      // ── 「JM书架」精确匹配 ────────────────────────────────────────────────
-      for (const e of entries) {
-        if (!e || e.self) continue;
-        const raw = String(e.text || '').replace(/@\S+\s*/g, '').trim();
-        if (!BOOKSHELF_RE.test(raw)) continue;
-        const who = String(e.senderName || e.senderId || '群友');
-        if (!chatAllowed) {
-          e.text = '（固定回复，原样发出，不要改动）：本群还没有开启 JM 漫画功能。'
-            + '群主或机主在群里 @我 说「开启JM」即可开通。';
-          log(`JM书架 指令被群白名单拦下（${who}）`);
-          return;
-        }
-        pendingBookshelf.set(callerKey(ctx), { who, at: Date.now() });
-        e.text = 'JM书架（' + who + ' 触发的固定指令）：请立刻调用工具 ' + toolId('bookshelf') + '，'
-          + '然后把工具返回的文本原样发出来——不要改写、不要总结、不要补充、不要加开头结尾。';
-        log('JM书架 指令命中（来自 ' + who + '）');
-        return;
-      }
-
       let hit = null;
       for (const e of entries) {
         if (!e || e.self) continue;
@@ -2896,78 +2794,6 @@ export const hooks = {
   /** 即将发给模型之前：把 ID 提示补成一条 system 消息（messages 是引用，可原地改）。 */
   async 'before-llm-messages'(ctx = {}) {
     try {
-      const gcmd = pendingGroupCmd.get(callerKey(ctx));
-      if (gcmd && Date.now() - gcmd.at < 120000) {
-        pendingGroupCmd.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          const actionText = gcmd.action === 'on' ? '开启JM' : gcmd.action === 'off' ? '关闭JM'
-            : gcmd.action === 'list' ? 'JM群列表' : 'JM所有群开放';
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是「${actionText}」固定指令（来自 ${gcmd.who}）：`
-              + `立刻调用 ${toolId('group_toggle')}，action 填 "${gcmd.action}"。`
-              + '结果由工具自己发送，不要复述、不要重复调用。',
-          });
-        }
-      }
-      const rankRec = pendingRank.get(callerKey(ctx));
-      if (rankRec && Date.now() - rankRec.at < 120000) {
-        pendingRank.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          const label = rankDisplayInfo(rankRec.kind, rankRec.category).label;
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是「${label}」固定指令：调用 ${toolId('rank')}，`
-              + `kind 填 "${rankRec.kind}"，category 填 "${rankRec.category || 'all'}"`
-              + `${rankRec.force ? '，force 填 true' : ''}${rankRec.topN ? `，topN 填 ${rankRec.topN}` : ''}，不要复述或重复调用。`,
-          });
-        }
-      }
-      const helpRec = pendingHelp.get(callerKey(ctx));
-      if (helpRec && Date.now() - helpRec.at < 120000) {
-        pendingHelp.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是「JM指令菜单」固定指令：立刻调用 ${toolId('help')}，不要复述或重复调用。`,
-          });
-        }
-      }
-      const shelf = pendingBookshelf.get(callerKey(ctx));
-      if (shelf && Date.now() - shelf.at < 120000) {
-        pendingBookshelf.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是「JM书架」固定指令：调用 ${toolId('bookshelf')}，`
-              + '并把返回文本原样发出（不改写/不总结/不补充）。',
-          });
-        }
-      }
-      const upd = pendingUpdate.get(callerKey(ctx));
-      if (upd && Date.now() - upd.at < 120000) {
-        pendingUpdate.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是「更新JM」固定指令（来自 ${upd.who}）：`
-              + `立刻调用 ${toolId('daily_updates')}，清单和封面由工具自己发送，`
-              + '不要复述、不要重复调用。',
-          });
-        }
-      }
-      const ctrl = controlRequests.get(callerKey(ctx));
-      if (ctrl && Date.now() - ctrl.at < 120000) {
-        controlRequests.delete(callerKey(ctx));
-        if (Array.isArray(ctx.messages)) {
-          ctx.messages.push({
-            role: 'system',
-            content: `[${SKILL_ID}] 本轮是固定的「${ctrl.action}」控制指令（来自 ${ctrl.who}）：`
-              + `立刻调用 ${toolId('control')}，action 填 "${ctrl.action}"，album_id 填 ${ctrl.id}。`
-              + '结果由工具自己发送；不要重复调用、不要自己编回复。',
-          });
-        }
-      }
       const rec = pendingHint.get(callerKey(ctx));
       if (!rec || Date.now() - rec.at > 120_000) return;
       pendingHint.delete(callerKey(ctx));

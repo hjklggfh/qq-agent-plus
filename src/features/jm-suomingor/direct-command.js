@@ -1,9 +1,22 @@
 export const BOOKSHELF_RE = /^(?:(?:JM|禁漫)\s*书架|本地\s*(?:JM|禁漫|漫画)|(?:JM|禁漫)\s*(?:列表|清单|目录)|(?:查看|看看)?\s*(?:我的)?\s*(?:JM|禁漫)\s*书架)$/iu;
-export const UPDATE_RE = /^(?:(?:今日|今天|本日)?\s*(?:更新|日更|新更)|更新\s*JM|JM\s*更新)$/iu;
+export const UPDATE_RE = /^(?:(?:今日|今天|本日)?\s*(?:更新|日更|新更)\s*(?:JM|禁漫)?|更新\s*(?:JM|禁漫)|(?:JM|禁漫)\s*更新)$/iu;
 export const HELP_RE = /^(?:JM|禁漫)(?:\s*(?:帮助|指令|菜单|命令|功能|help|\?|？))?$/iu;
+const STATUS_RE = /^(?:(?:JM|禁漫)\s*(?:进度|状态|任务|下载进度)|查看\s*(?:JM|禁漫)\s*进度)$/iu;
+const LIBRARY_RE = /^(?:(?:JM|禁漫)\s*收藏|本地\s*(?:JM|禁漫)?\s*收藏)$/iu;
+const STORAGE_RE = /^(?:(?:JM|禁漫)\s*(?:空间|存储|配额|磁盘)|(?:JM|禁漫)\s*支持\s*PDF)$/iu;
 const CONTROL = /^(暂停下载|继续下载|删除\s*JM)\s*[-_:#：]?\s*(?:JM)?(\d{2,9})$/iu;
 const GROUP_ON = /^(?:开启|打开|开通|开放)\s*(?:JM|禁漫)$/iu;
 const GROUP_OFF = /^(?:关闭|停用)\s*(?:JM|禁漫)$/iu;
+
+/**
+ * 判断该直通工具在当前会话未开启 JM 白名单时，是否应静默跳过（不拦截正常闲聊）。
+ */
+export function isSilentWhenChatDenied(toolName) {
+  return toolName === 'jm_help'
+    || toolName === 'jm_task_status'
+    || toolName === 'jm_library'
+    || toolName === 'jm_storage';
+}
 
 function matchRankKind(body) {
   const text = String(body || '').trim();
@@ -66,6 +79,9 @@ export function classifyJmDirectCommand(value) {
   const rank = parseRankCommand(text);
   if (rank) return { tool: 'jm_rank', args: rank };
   if (BOOKSHELF_RE.test(text)) return { tool: 'jm_bookshelf', args: {} };
+  if (STATUS_RE.test(text)) return { tool: 'jm_task_status', args: {} };
+  if (LIBRARY_RE.test(text)) return { tool: 'jm_library', args: {} };
+  if (STORAGE_RE.test(text)) return { tool: 'jm_storage', args: {} };
   if (HELP_RE.test(text)) return { tool: 'jm_help', args: {} };
   const control = CONTROL.exec(text);
   if (control) return {

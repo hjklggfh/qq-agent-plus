@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import test from 'node:test';
 import sharp from 'sharp';
-import { classifyJmDirectCommand, parseRankCommand } from '../src/features/jm-suomingor/direct-command.js';
+import { classifyJmDirectCommand, isSilentWhenChatDenied, parseRankCommand } from '../src/features/jm-suomingor/direct-command.js';
 import * as engine from '../src/features/jm-suomingor/engine.js';
 import { createRankService, rankFiles } from '../src/features/jm-suomingor/rankings.js';
 
@@ -29,6 +29,12 @@ test('直通指令拆分：今日JM 指向全站日榜，JM同人日榜指向同
   assert.deepEqual(classifyJmDirectCommand('刷新JM同人周榜 48'), { tool: 'jm_rank', args: { kind: 'weekly', category: 'doujin', force: true, topN: 48 } });
   assert.deepEqual(classifyJmDirectCommand('jm'), { tool: 'jm_help', args: {} });
   assert.deepEqual(classifyJmDirectCommand('JM指令'), { tool: 'jm_help', args: {} });
+  assert.deepEqual(classifyJmDirectCommand('JM进度'), { tool: 'jm_task_status', args: {} });
+  assert.deepEqual(classifyJmDirectCommand('JM收藏'), { tool: 'jm_library', args: {} });
+  assert.deepEqual(classifyJmDirectCommand('JM空间'), { tool: 'jm_storage', args: {} });
+  assert.equal(isSilentWhenChatDenied('jm_help'), true);
+  assert.equal(isSilentWhenChatDenied('jm_task_status'), true);
+  assert.equal(isSilentWhenChatDenied('jm_rank'), false);
   assert.deepEqual(classifyJmDirectCommand('JM123456'), { tool: 'jm_download_album', args: { album_id: '123456' } });
   assert.deepEqual(classifyJmDirectCommand('JM书架'), { tool: 'jm_bookshelf', args: {} });
   assert.deepEqual(classifyJmDirectCommand('本地JM'), { tool: 'jm_bookshelf', args: {} });

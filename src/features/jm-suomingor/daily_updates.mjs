@@ -217,10 +217,11 @@ function archiveOld(state, statePath) {
  * 采集一轮。
  * @returns {Promise<{added:number,total:number,error?:string}>}
  */
-export async function collect({ pages = 3, quiet = false } = {}) {
-  const { settings, statePath, coversPath } = readSettingsAndPaths();
+export async function collect({ pages = 3, quiet = false, settingsOverride = null } = {}) {
+  const { settings, statePath, coversPath } = readSettingsAndPaths(settingsOverride);
+  const fetchFn = typeof settings.fetchImpl === 'function' ? settings.fetchImpl : globalThis.fetch.bind(globalThis);
   const client = engine.createClient({
-    fetchImpl: globalThis.fetch.bind(globalThis),
+    fetchImpl: fetchFn,
     timeoutMs: () => (Number(settings.timeoutSeconds) || 30) * 1000,
     domains: settings.domains || '',
     warn: () => {},
@@ -242,52 +243,56 @@ export async function collect({ pages = 3, quiet = false } = {}) {
   const todayItems = [];
   let newestUpdateAt = 0;
 
-  for (let page = 1; page <= pages; page++) {
-    const list = await fetchLatestPage(client, page);
-    if (!list.length) break;
-    let allStale = true;
-    for (const raw of list) {
-      const upd = Number(raw?.update_at) || 0;
-      if (upd >= startTs) allStale = false;
-      if (upd >= startTs && upd > newestUpdateAt) newestUpdateAt = upd;
-      const id = String(raw?.id ?? '').trim();
-      if (!id || upd < startTs || known.has(id)) continue;
-      todayItems.push({
-        id,
-        name: String(raw.name ?? '').trim(),
-        author: String(raw.author ?? '').trim(),
-        category: String(raw.category?.title ?? '').trim(),
-        categorySub: String(raw.category_sub?.title ?? '').trim(),
-        updateAt: upd,
-      });
-      known.add(id);
+  try {
+    for (let page = 1; page <= pages; page++) {
+      const list = await fetchLatestPage(client, page);
+      if (!list.length) break;
+      let allStale = true;
+      for (const raw of list) {
+        const upd = Number(raw?.update_at) || 0;
+        if (upd >= startTs) allStale = false;
+        if (upd >= startTs && upd > newestUpdateAt) newestUpdateAt = upd;
+        const id = String(raw?.id ?? '').trim();
+        if (!id || upd < startTs || known.has(id)) continue;
+        todayItems.push({
+          id,
+          name: String(raw.name ?? '').trim(),
+          author: String(raw.author ?? '').trim(),
+          category: String(raw.category?.title ?? '').trim(),
+          categorySub: String(raw.category_sub?.title ?? '').trim(),
+          updateAt: upd,
+        });
+        known.add(id);
+      }
+      if (allStale) break; // 这一页全是昨天以前的，后面只会更旧
     }
-    if (allStale) break; // 这一页全是昨天以前的，后面只会更旧
-  }
 
-  let added = 0;
-  for (const item of todayItems) {
-    if (state.items.length >= MAX_ITEMS) break;
-    let tags = [];
-    try {
-      const detail = await client.albumInfo(item.id);
-      tags = (detail.tags ?? []).slice(0, 8);
-      if (!item.name) item.name = detail.name ?? '';
-      if (!item.author) item.author = (detail.authors ?? [])[0] ?? '';
-    } catch { /* 详情偶发失败就先记列表信息，tags 留空 */ }
-    item.tags = tags;
-    item.cover = await fetchCover(client, item.id, coversPath);
-    item.seenAt = new Date().toISOString();
-    state.items.push(item);
-    added += 1;
-  }
+    let added = 0;
+    for (const item of todayItems) {
+      if (state.items.length >= MAX_ITEMS) break;
+      let tags = [];
+      try {
+        const detail = await client.albumInfo(item.id);
+        tags = (detail.tags ?? []).slice(0, 8);
+        if (!item.name) item.name = detail.name ?? '';
+        if (!item.author) item.author = (detail.authors ?? [])[0] ?? '';
+      } catch { /* 详情偶发失败就先记列表信息，tags 留空 */ }
+      item.tags = tags;
+      item.cover = await fetchCover(client, item.id, coversPath);
+      item.seenAt = new Date().toISOString();
+      state.items.push(item);
+      added += 1;
+    }
 
-  state.lastRun = new Date().toISOString();
-  state.newestUpdateAt = Math.max(state.newestUpdateAt || 0, newestUpdateAt);
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 1));
-  if (!quiet || added) console.log(`[${today}] 采集完成：新增 ${added}，当日累计 ${state.items.length}`);
-  return { added, total: state.items.length };
+    state.lastRun = new Date().toISOString();
+    state.newestUpdateAt = Math.max(state.newestUpdateAt || 0, newestUpdateAt);
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(state, null, 1));
+    if (!quiet || added) console.log(`[${today}] 采集完成：新增 ${added}，当日累计 ${state.items.length}`);
+    return { added, total: state.items.length };
+  } finally {
+    try { await client.close?.(); } catch { /* ignore */ }
+  }
 }
 
 // ───────────────────────── 排版 ─────────────────────────
@@ -308,8 +313,8 @@ export function cleanTitle(name) {
  * 供文字版与图片版共用。
  * @returns {Promise<{date:string, until:string, items:Array<{id,title,kind,tags,cover,updateAt}>}>}
  */
-export async function loadDigestItems({ simplify, translate } = {}) {
-  const { statePath } = readSettingsAndPaths();
+export async function loadDigestItems({ simplify, translate, settingsOverride = null } = {}) {
+  const { statePath } = readSettingsAndPaths(settingsOverride);
   const state = loadState(statePath);
   const today = todayKey();
   const simp = (s) => (typeof simplify === 'function' ? simplify(s) : String(s ?? ''));
@@ -358,11 +363,11 @@ export async function loadDigestItems({ simplify, translate } = {}) {
  * @param {number}   [opts.limit]      文字清单最多列几本（默认 40，防消息超长）
  * @returns {Promise<{text:string, coverPaths:string[], count:number, total:number}>}
  */
-export async function buildDigestFromState({ simplify, translate, limit = 40 } = {}) {
-  const { date, until, items: all } = await loadDigestItems({ simplify, translate });
+export async function buildDigestFromState({ simplify, translate, limit = 40, settingsOverride = null } = {}) {
+  const { date, until, items: all } = await loadDigestItems({ simplify, translate, settingsOverride });
 
   if (!all.length) {
-    return { text: '今天还没有采集到禁漫更新（每 30 分钟自动抓一次，先等等再看）。', coverPaths: [], count: 0, total: 0 };
+    return { text: '今天还没有采集到禁漫更新（每 12 小时自动抓一次，刚刚现场拉取暂无新更新）。', coverPaths: [], count: 0, total: 0 };
   }
 
   let budget = 3200; // QQ 文本消息长度保险

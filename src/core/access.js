@@ -24,9 +24,9 @@ export function canRun(chatKey) {
  * 活跃时段/运行模式照旧。模型自己发消息（send_message / send_voice 工具）永远不带这个标记，
  * 所以"引擎文本只发给在册玩家"这条不变量不依赖模型自觉。
  */
-export function assertCanSend(chatKey, signal, { gameScoped = false } = {}) {
+export function assertCanSend(chatKey, signal, { gameScoped = false, bypassTimeControl = false } = {}) {
   signal?.throwIfAborted();
-  if (!isTimeActive(chatKey)) throw new Error('非活跃时间，禁止发送消息');
+  if (!bypassTimeControl && !isTimeActive(chatKey)) throw new Error('非活跃时间，禁止发送消息');
   const cfg = getConfig();
   const [kind, id] = String(chatKey).split(':');
   // /^\d+$/ 是有意收紧的：私聊命名空间在生产里就是 QQ 号，这道判据确保豁免只作用于它。
@@ -38,6 +38,12 @@ export function assertCanSend(chatKey, signal, { gameScoped = false } = {}) {
     }
     if ((cfg.deny?.private || []).map(String).includes(id)) {
       throw new Error('Send blocked: 该用户被管理员屏蔽（deny 优先于游戏豁免）');
+    }
+    return;
+  }
+  if (bypassTimeControl) {
+    if (cfg.runtime?.mode !== 'active' || cfg.runtime?.paused || !chatAllowed(chatKey, cfg)) {
+      throw new Error('Send blocked: observe/paused mode or chat not allowed');
     }
     return;
   }

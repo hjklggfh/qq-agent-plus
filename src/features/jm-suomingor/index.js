@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { setup as setupLegacy, activate as activateLegacy, deactivate as deactivateLegacy } from './legacy-index.js';
 import { handleMessage as handleLegacyMessage, dispose as disposeLegacy, isChatAllowed as isLegacyChatAllowed } from './legacy-index.js';
-import { classifyJmDirectCommand } from './direct-command.js';
+import { classifyJmDirectCommand, isSilentWhenChatDenied } from './direct-command.js';
 import { clearSearchSessions, resolveSearchFollowup } from './search-session.js';
 
 const TOOL_PREFIX = 'jm_';
@@ -85,7 +85,9 @@ export function activate(api) {
   return {
     isDirectMessage({ chatKey, senderId, text } = {}) {
       const direct = classifyJmDirectCommand(text);
-      if (direct?.tool === 'jm_help' && !isLegacyChatAllowed(String(chatKey || ''))) return false;
+      if (direct?.tool && isSilentWhenChatDenied(direct.tool) && !isLegacyChatAllowed(String(chatKey || ''))) {
+        return false;
+      }
       return Boolean(direct || resolveSearchFollowup({ chatKey, senderId, text }));
     },
     async handleMessage(toolCtx, message) {
@@ -95,8 +97,21 @@ export function activate(api) {
         const runner = toolRunners.get(name);
         return runner ? runner(directCtx, args) : null;
       };
-      const replyFollowup = async (reply) => {
-        try { await toolCtx.send([String(reply)]); } catch { /* 发送状态交由宿主 outbox 核对，避免回退普通流程后重复执行 */ }
+      const sendDirect = async (reply) => {
+        const text = String(reply || '').trim();
+        if (!text) return;
+        try {
+          if (typeof toolCtx.send === 'function') {
+            await toolCtx.send([text]);
+            return;
+          }
+        } catch { /* 退回 onebot 直发 */ }
+        const [msgKind, targetId] = String(toolCtx.chatKey || '').split(':');
+        try {
+          if (toolCtx.onebot?.sendSegments && msgKind && targetId) {
+            await toolCtx.onebot.sendSegments(msgKind, targetId, [{ type: 'text', data: { text } }]);
+          }
+        } catch { /* 发送状态交由宿主 outbox 核对，避免回退普通流程后重复执行 */ }
       };
       const followup = resolveSearchFollowup({
         chatKey: toolCtx.chatKey,
@@ -105,30 +120,34 @@ export function activate(api) {
       });
       if (followup) {
         if (followup.type === 'notice') {
-          await replyFollowup(followup.text);
+          await sendDirect(followup.text);
           return true;
         }
         if (followup.type === 'page') {
           const result = await directTool('jm_search', { query: followup.query, page: followup.page });
-          if ((result?.isError || result?.notify) && result.content) await replyFollowup(result.content);
+          if ((result?.isError || result?.notify) && result.content) await sendDirect(result.content);
           return true;
         }
         if (followup.type === 'resource') {
           const result = await directTool('jm_download_album', { album_id: followup.albumId });
-          if (result?.isError && result.content) await replyFollowup(result.content);
+          if (result?.isError && result.content) await sendDirect(result.content);
           else if (result?.content) {
             const reply = /已经排上队/.test(result.content)
               ? `已选择第 ${followup.index} 项（JM${followup.albumId}），开始处理；结果会发到本会话。`
               : String(result.content);
-            await replyFollowup(reply);
+            await sendDirect(reply);
           }
           return true;
         }
       }
       if (direct?.tool) {
-        if (direct.tool === 'jm_help' && !isLegacyChatAllowed(String(toolCtx.chatKey || ''))) return false;
+        if (isSilentWhenChatDenied(direct.tool) && !isLegacyChatAllowed(String(toolCtx.chatKey || ''))) {
+          return false;
+        }
         const result = await directTool(direct.tool, direct.args);
-        if ((result?.isError || result?.notify) && result.content) await toolCtx.send([String(result.content)]);
+        if ((result?.isError || result?.notify || result?.directReply) && result.content) {
+          await sendDirect(result.content);
+        }
         return true;
       }
       return handleLegacyMessage({

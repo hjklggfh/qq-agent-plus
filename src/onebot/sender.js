@@ -312,7 +312,10 @@ export class SendQueue {
       const isLast = i === parts.length - 1;
       const gap = this.#gap(text, isLast);
       promises.push(chain(async () => {
-        assertCanSend(chatKey, options.signal, { gameScoped: options.gameScoped === true });
+        assertCanSend(chatKey, options.signal, {
+          gameScoped: options.gameScoped === true,
+          bypassTimeControl: options.bypassTimeControl === true,
+        });
         if (options.runId && this.store.hasUncertainEffects(options.runId)) throw new Error('Previous send delivery is uncertain');
         this.#checkRate(chatKey);
         if (gap > 0) await sleep(gap);
