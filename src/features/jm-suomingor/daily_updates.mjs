@@ -267,27 +267,42 @@ export async function collect({ pages = 3, quiet = false, settingsOverride = nul
       if (allStale) break; // 这一页全是昨天以前的，后面只会更旧
     }
 
-    let added = 0;
-    for (const item of todayItems) {
-      if (state.items.length >= MAX_ITEMS) break;
-      let tags = [];
-      try {
-        const detail = await client.albumInfo(item.id);
-        tags = (detail.tags ?? []).slice(0, 8);
-        if (!item.name) item.name = detail.name ?? '';
-        if (!item.author) item.author = (detail.authors ?? [])[0] ?? '';
-      } catch { /* 详情偶发失败就先记列表信息，tags 留空 */ }
-      item.tags = tags;
-      item.cover = await fetchCover(client, item.id, coversPath);
-      item.seenAt = new Date().toISOString();
-      state.items.push(item);
-      added += 1;
+    const DETAIL_COVER_LIMIT = 60;
+    const toEnrich = todayItems.slice(0, Math.max(0, Math.min(DETAIL_COVER_LIMIT, MAX_ITEMS - state.items.length)));
+    const restItems = todayItems.slice(toEnrich.length, Math.max(0, MAX_ITEMS - state.items.length));
+    const CONCURRENCY = 6;
+    let cursor = 0;
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, toEnrich.length) }, async () => {
+      while (cursor < toEnrich.length) {
+        const item = toEnrich[cursor++];
+        let tags = [];
+        try {
+          const detail = await client.albumInfo(item.id);
+          tags = (detail.tags ?? []).slice(0, 8);
+          if (!item.name) item.name = detail.name ?? '';
+          if (!item.author) item.author = (detail.authors ?? [])[0] ?? '';
+        } catch { /* 详情偶发失败就先记列表信息，tags 留空 */ }
+        item.tags = tags;
+        item.cover = await fetchCover(client, item.id, coversPath);
+        item.seenAt = new Date().toISOString();
+      }
+    }));
+    const nowIso = new Date().toISOString();
+    for (const item of restItems) {
+      item.tags = [];
+      item.cover = '';
+      item.seenAt = nowIso;
     }
+    const appended = [...toEnrich, ...restItems];
+    state.items.push(...appended);
+    const added = appended.length;
 
     state.lastRun = new Date().toISOString();
     state.newestUpdateAt = Math.max(state.newestUpdateAt || 0, newestUpdateAt);
     fs.mkdirSync(path.dirname(statePath), { recursive: true });
-    fs.writeFileSync(statePath, JSON.stringify(state, null, 1));
+    const tmpPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 1));
+    fs.renameSync(tmpPath, statePath);
     if (!quiet || added) console.log(`[${today}] 采集完成：新增 ${added}，当日累计 ${state.items.length}`);
     return { added, total: state.items.length };
   } finally {
