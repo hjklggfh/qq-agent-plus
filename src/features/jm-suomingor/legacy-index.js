@@ -144,20 +144,42 @@ async function saveJpCache() {
 
 const hasKana = (s) => KANA_RE.test(String(s || ''));
 
-/** 读 agent 的全局模型配置（技能自己的 cfg() 里没有 API key）。 */
+/** 读 agent 的全局模型配置（优先读取新版 providerKeys[pid]，兼容旧字段与手动 apiKey）。 */
 function agentModelConfig() {
   try {
-    const dataDir = cfg().dataDir || path.join(APP_ROOT, 'data');
+    const dataDir = cfg().dataDir || process.env.QQ_AGENT_DATA_DIR || path.join(APP_ROOT, 'data');
     const raw = fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8');
     const c = JSON.parse(raw);
     const p = c?.api || {};
-    const pid = p.provider;
-    const key = (c?.dshProviderKeys || {})[pid] || p.apiKey || '';
-    return { baseUrl: p.baseUrl || '', apiKey: key || '', model: p.model || '' };
+    const pid = String(p.provider ?? '').trim();
+    const providers = Array.isArray(c?.providers) ? c.providers : [];
+    const selected = pid ? providers.find((x) => x?.id === pid) : null;
+    const fromCatalog = pid ? String(c?.providerKeys?.[pid] ?? c?.dshProviderKeys?.[pid] ?? '').trim() : '';
+    const fromProvider = String(selected?.apiKey ?? '').trim();
+    const fromApi = String(p.apiKey ?? '').trim();
+    const apiKey = [fromCatalog, fromProvider, fromApi].find((v) => v && v !== '******') || '';
+    const baseUrl = String(p.baseUrl || selected?.baseURL || '').trim();
+    return { baseUrl, apiKey, model: String(p.model || '').trim() };
   } catch (error) {
     warn(`读取全局模型配置失败：${error?.message ?? error}`);
     return { baseUrl: '', apiKey: '', model: '' };
   }
+}
+
+/** 复用宿主 fetch；脱离工具执行作用域时平滑退回全局 fetch。 */
+function createSafeFetch() {
+  const hostFetch = fetchImpl();
+  if (typeof hostFetch !== 'function') return globalThis.fetch?.bind(globalThis);
+  return async (...args) => {
+    try {
+      return await hostFetch(...args);
+    } catch (error) {
+      if (/只能在工具执行期间使用/.test(String(error?.message ?? error)) && typeof globalThis.fetch === 'function') {
+        return globalThis.fetch(...args);
+      }
+      throw error;
+    }
+  };
 }
 
 /** 调模型批量翻译日文标题。返回 { 原文: 译文 }。失败返回空对象。 */
@@ -198,7 +220,7 @@ async function translateTitles(texts) {
   let lastError = '';
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     try {
-      const request = fetchImpl();
+      const request = createSafeFetch();
       if (typeof request !== 'function') throw new Error('当前运行环境没有可用的 fetch');
       const res = await request(`${baseUrl}/chat/completions`, {
         method: 'POST',
@@ -213,7 +235,9 @@ async function translateTitles(texts) {
       });
       const text = await res.text();
       if (res.status >= 400) {
-        throw new Error(`HTTP ${res.status}: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
+        const err = new Error(`HTTP ${res.status}: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
+        err.noRetry = res.status < 500 && res.status !== 408 && res.status !== 429;
+        throw err;
       }
       const parsed = JSON.parse(text);
       const choice = parsed?.choices?.[0];
@@ -233,6 +257,10 @@ async function translateTitles(texts) {
       return out;
     } catch (error) {
       lastError = error?.message ?? String(error);
+      if (error?.noRetry) {
+        warn(`日语标题翻译失败（不重试，退回原文）：${lastError}`);
+        return out;
+      }
       if (attempt < ATTEMPTS) await new Promise((r) => setTimeout(r, 1200 * attempt));
     }
   }
@@ -2330,19 +2358,7 @@ async function mapWithLimit(items, limit, fn) {
  * 解析信息卡封面：优先从站点拉官方未混淆 3:4 封面，拉不到再兜底本地第一页（并附带 scrambleId 以便还原）。
  */
 async function resolveAlbumCover({ albumId, albumDir, scrambleId = 0, settings = cfg() }) {
-  const hostFetch = fetchImpl();
-  const safeFetch = typeof hostFetch === 'function'
-    ? async (...args) => {
-        try {
-          return await hostFetch(...args);
-        } catch (error) {
-          if (/只能在工具执行期间使用/.test(String(error?.message ?? error))) {
-            return globalThis.fetch(...args);
-          }
-          throw error;
-        }
-      }
-    : undefined;
+  const safeFetch = createSafeFetch();
   let siteCover = '';
   try {
     siteCover = await fetchSiteCover(String(albumId), {
