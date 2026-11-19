@@ -70,7 +70,8 @@ test('JmRankPushManager 单次渲染复用发往多个白名单群，单群失�
 test('config.jm 榜单与定时推送字段校验生效', () => {
   const base = structuredClone(DEFAULT_CONFIG);
   setRuntimeConfig(base);
-  assert.throws(() => updateConfig({ jm: { rankTopN: 100 } }), /4～40/);
+  assert.throws(() => updateConfig({ jm: { rankTopN: 100 } }), /4～60/);
+  updateConfig({ jm: { rankTopN: 48 } });
   assert.throws(() => updateConfig({ jm: { rankCacheTtlMinutes: 1 } }), /5～1440/);
   assert.throws(() => updateConfig({ jm: { rankPushTime: '25:00' } }), /HH:MM/);
   assert.throws(() => updateConfig({ jm: { rankPushKinds: [] } }), /至少选择一项/);

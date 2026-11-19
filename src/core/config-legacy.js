@@ -73,7 +73,7 @@ export const DEFAULT_CONFIG = {
     progress: true,
     translateTitles: true,
     pythonPath: '',
-    rankTopN: 20,
+    rankTopN: 48,
     rankCacheTtlMinutes: 60,
     rankPushEnabled: false,
     rankPushTime: '00:05',

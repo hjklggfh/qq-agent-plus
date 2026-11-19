@@ -94,7 +94,7 @@ export class JmRankPushManager {
       time: String(j.rankPushTime || '00:05'),
       kinds: kinds.length ? kinds : ['daily', 'weekly'],
       chats,
-      topN: Math.min(40, Math.max(4, Number(j.rankTopN) || 20)),
+      topN: Math.min(60, Math.max(4, Number(j.rankTopN) || 48)),
     };
   }
 

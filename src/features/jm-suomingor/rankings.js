@@ -206,7 +206,7 @@ export function createRankService(deps = {}) {
   async function getRank(kind = 'daily', { force = false, topN, ttlMinutes } = {}) {
     const k = normalizeRankKind(kind);
     const settings = deps.getSettings();
-    const limit = Math.min(40, Math.max(4, Number(topN ?? settings.rankTopN) || 20));
+    const limit = Math.min(60, Math.max(4, Number(topN ?? settings.rankTopN) || 48));
     const ttl = Math.max(5, Math.min(1440, Number(ttlMinutes ?? settings.rankCacheTtlMinutes) || 60));
     const dataRoot = deps.getDataRoot();
     const existing = readRankCache(dataRoot, k);

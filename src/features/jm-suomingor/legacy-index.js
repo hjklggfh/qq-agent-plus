@@ -491,7 +491,7 @@ function cfg() {
     translateApiKey: String(c.translateApiKey ?? '').trim(),
     translateModel: String(c.translateModel ?? '').trim(),
     proxy: String(c.proxy ?? '').trim(),
-    rankTopN: num(c.rankTopN, 20, 4, 40),
+    rankTopN: num(c.rankTopN, 48, 4, 60),
     rankCacheTtlMinutes: num(c.rankCacheTtlMinutes, 60, 5, 1440),
     rankPushEnabled: c.rankPushEnabled === true,
     rankPushTime: String(c.rankPushTime || '00:05').trim(),

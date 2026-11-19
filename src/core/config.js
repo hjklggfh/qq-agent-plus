@@ -338,7 +338,7 @@ export function updateConfig(patch) {
     }
     if (Object.hasOwn(jmPatch, 'rankTopN')) {
       const n = Number(jmPatch.rankTopN);
-      if (!Number.isInteger(n) || n < 4 || n > 40) throw new Error('JM 榜单展示条数须为 4～40 的整数');
+      if (!Number.isInteger(n) || n < 4 || n > 60) throw new Error('JM 榜单展示条数须为 4～60 的整数');
     }
     if (Object.hasOwn(jmPatch, 'rankCacheTtlMinutes')) {
       const m = Number(jmPatch.rankCacheTtlMinutes);
