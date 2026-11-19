@@ -72,7 +72,13 @@ export const DEFAULT_CONFIG = {
     multiChapter: true,
     progress: true,
     translateTitles: true,
-    pythonPath: ''
+    pythonPath: '',
+    rankTopN: 20,
+    rankCacheTtlMinutes: 60,
+    rankPushEnabled: false,
+    rankPushTime: '00:05',
+    rankPushKinds: ['daily', 'weekly'],
+    rankPushChats: []
   },
   bilibili: {
     enabled: false,

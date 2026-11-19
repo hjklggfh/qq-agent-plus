@@ -15,7 +15,7 @@ function recordSummary(records = [], successStatuses, failureStatuses) {
 }
 
 export function createAppBackgroundTasks({ config, log, orchestrator, dailyMoments, qzoneInteractions,
-  groupDigest, dailyReport, groupGame, autoUpdate }) {
+  groupDigest, dailyReport, groupGame, autoUpdate, jmRankPush }) {
   const registry = new BackgroundTaskRegistry({ config, log });
   registry.register({ id: 'message-recovery', name: '消息恢复巡检', schedule: '每 5 秒',
     start: () => orchestrator.startRecoveryLoop(), stop: () => orchestrator.stopRecoveryLoop(),
@@ -78,5 +78,19 @@ export function createAppBackgroundTasks({ config, log, orchestrator, dailyMomen
         needsReview: report.last?.outcome === 'unknown', failed: Boolean(report.error),
         failureCode: observed.failureCode || (report.error ? 'report' : '') };
     } });
+  if (jmRankPush) {
+    registry.register({ id: 'jm-rank-push', name: 'JM 榜单定时推送', featureId: 'jm', configKey: 'jm',
+      enabled: cfg => cfg.jm?.enabled !== false && cfg.jm?.rankPushEnabled === true,
+      schedule: '沿用 JM 设置的每日推送时刻',
+      start: () => jmRankPush.start(), reconfigure: () => jmRankPush.reconfigure(), stop: () => jmRankPush.shutdown(),
+      failureReasons: { rank: 'JM 榜单抓取或群推送失败，请检查网络或目标群状态' },
+      status: () => {
+        const st = jmRankPush.status();
+        return { running: st.running, nextRunAt: st.nextRunAt, lastRunAt: st.lastRun?.at,
+          successKind: 'delivery', nextKind: 'schedule', lastSuccessAt: st.lastSuccessAt,
+          lastErrorAt: st.lastErrorAt, failureCode: st.lastErrorAt ? 'rank' : '',
+          failed: st.lastErrorAt > 0 && st.lastErrorAt >= st.lastSuccessAt };
+      } });
+  }
   return registry;
 }

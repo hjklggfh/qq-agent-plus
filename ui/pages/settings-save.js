@@ -50,6 +50,15 @@ async function saveConfig({ quiet = false } = {}) {
   if (sec === 'haigui-tang') return saveHaiguiTangSettings();
 
   if (sec === 'jm') {
+    const rankPushKinds = [
+      chk('#cfg-jm-rank-kind-daily', true) ? 'daily' : '',
+      chk('#cfg-jm-rank-kind-weekly', true) ? 'weekly' : '',
+      chk('#cfg-jm-rank-kind-monthly', false) ? 'monthly' : '',
+      chk('#cfg-jm-rank-kind-total', false) ? 'total' : '',
+    ].filter(Boolean);
+    const rankPushChats = parseList(val('#cfg-jm-rank-push-chats'))
+      .map((item) => (/^group:\d{5,15}$/.test(item) ? item : /^\d{5,15}$/.test(item) ? `group:${item}` : ''))
+      .filter((item, idx, arr) => item && arr.indexOf(item) === idx);
     const settings = {
       ...(c.jm || {}),
       enabled: chk('#cfg-jm-enabled', true),
@@ -76,7 +85,13 @@ async function saveConfig({ quiet = false } = {}) {
       multiChapter: chk('#cfg-jm-multi', true),
       progress: chk('#cfg-jm-progress', true),
       translateTitles: chk('#cfg-jm-translate', true),
-      pythonPath: val('#cfg-jm-python').trim()
+      pythonPath: val('#cfg-jm-python').trim(),
+      rankTopN: clampInt(val('#cfg-jm-rank-top-n', 20), 4, 40, 20),
+      rankCacheTtlMinutes: clampInt(val('#cfg-jm-rank-ttl', 60), 5, 1440, 60),
+      rankPushEnabled: chk('#cfg-jm-rank-push-enabled', false),
+      rankPushTime: val('#cfg-jm-rank-push-time', '00:05').trim() || '00:05',
+      rankPushKinds: rankPushKinds.length ? rankPushKinds : ['daily'],
+      rankPushChats,
     };
     const result = await api('/api/config', {
       method: 'POST',
@@ -84,7 +99,7 @@ async function saveConfig({ quiet = false } = {}) {
     });
     state.config = state.config || {};
     state.config.jm = result.config?.jm || result.jm || settings;
-    setStatusLabel('cfg-save-result', 'JM 设置已保存，重启服务后生效。');
+    setStatusLabel('cfg-save-result', 'JM 设置已保存，定时推送已更新（其余下载参数重启后生效）。');
     return;
   }
 

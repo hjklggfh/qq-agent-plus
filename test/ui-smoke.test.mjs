@@ -34,7 +34,18 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
   const { window, ctx } = loadPage();
   await settle();
   try {
-    const cfg = { jm: { concurrency: 48, cdnStrategy: 'fixed' } };
+    const cfg = {
+      jm: {
+        concurrency: 48,
+        cdnStrategy: 'fixed',
+        rankTopN: 20,
+        rankCacheTtlMinutes: 60,
+        rankPushEnabled: true,
+        rankPushTime: '00:05',
+        rankPushKinds: ['daily', 'weekly'],
+        rankPushChats: ['group:747206342', 'group:892485992'],
+      },
+    };
     window.__jmConfig = cfg;
     vm.runInContext('state.config = __jmConfig; state.settingsSection = "jm";', ctx);
     const container = window.document.createElement('div');
@@ -44,6 +55,11 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
     assert.equal(input.max, '48');
     assert.equal(input.value, '48');
     assert.equal(container.querySelector('#cfg-jm-cdn-strategy').value, 'fixed');
+    assert.equal(container.querySelector('#cfg-jm-rank-top-n').value, '20');
+    assert.equal(container.querySelector('#cfg-jm-rank-ttl').value, '60');
+    assert.equal(container.querySelector('#cfg-jm-rank-push-enabled').checked, true);
+    assert.equal(container.querySelector('#cfg-jm-rank-push-time').value, '00:05');
+    assert.equal(container.querySelector('#cfg-jm-rank-push-chats').value, '747206342, 892485992');
     const patches = [];
     window.fetch = async (_url, opts = {}) => {
       if (opts.method === 'POST') patches.push(JSON.parse(opts.body));
@@ -52,11 +68,21 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
     await window.saveConfig({ quiet: true });
     assert.equal(patches[0].jm.concurrency, 48);
     assert.equal(patches[0].jm.cdnStrategy, 'fixed');
+    assert.equal(patches[0].jm.rankTopN, 20);
+    assert.equal(patches[0].jm.rankCacheTtlMinutes, 60);
+    assert.equal(patches[0].jm.rankPushEnabled, true);
+    assert.equal(patches[0].jm.rankPushTime, '00:05');
+    assert.deepEqual(patches[0].jm.rankPushKinds, ['daily', 'weekly']);
+    assert.deepEqual(patches[0].jm.rankPushChats, ['group:747206342', 'group:892485992']);
     input.value = '1';
     container.querySelector('#cfg-jm-cdn-strategy').value = 'adaptive';
+    container.querySelector('#cfg-jm-rank-push-chats').value = '747206342';
+    container.querySelector('#cfg-jm-rank-kind-total').checked = true;
     await window.saveConfig({ quiet: true });
     assert.equal(patches[1].jm.concurrency, 1);
     assert.equal(patches[1].jm.cdnStrategy, 'adaptive');
+    assert.deepEqual(patches[1].jm.rankPushChats, ['group:747206342']);
+    assert.deepEqual(patches[1].jm.rankPushKinds, ['daily', 'weekly', 'total']);
   } finally { window.happyDOM?.abort?.(); }
 });
 

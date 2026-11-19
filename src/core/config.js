@@ -327,12 +327,42 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
   if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
   if (Object.hasOwn(rawPatch, 'jm')) {
+    const jmPatch = rawPatch.jm || {};
     for (const field of ['allowedChats', 'deniedChats']) {
-      if (!Object.hasOwn(rawPatch.jm || {}, field)) continue;
-      const list = rawPatch.jm[field];
+      if (!Object.hasOwn(jmPatch, field)) continue;
+      const list = jmPatch[field];
       if (!Array.isArray(list) || list.length > 500
         || list.some((key) => typeof key !== 'string' || !/^(group|private):\d{5,15}$/.test(key))) {
         throw new Error(`JM ${field} 必须是最多 500 项的会话列表`);
+      }
+    }
+    if (Object.hasOwn(jmPatch, 'rankTopN')) {
+      const n = Number(jmPatch.rankTopN);
+      if (!Number.isInteger(n) || n < 4 || n > 40) throw new Error('JM 榜单展示条数须为 4～40 的整数');
+    }
+    if (Object.hasOwn(jmPatch, 'rankCacheTtlMinutes')) {
+      const m = Number(jmPatch.rankCacheTtlMinutes);
+      if (!Number.isInteger(m) || m < 5 || m > 1440) throw new Error('JM 榜单缓存刷新间隔须为 5～1440 分钟');
+    }
+    if (Object.hasOwn(jmPatch, 'rankPushEnabled') && typeof jmPatch.rankPushEnabled !== 'boolean') {
+      throw new Error('JM 榜单定时推送开关须为布尔值');
+    }
+    if (Object.hasOwn(jmPatch, 'rankPushTime')
+      && (typeof jmPatch.rankPushTime !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(jmPatch.rankPushTime))) {
+      throw new Error('JM 榜单推送时间须为 HH:MM（如 00:05）');
+    }
+    if (Object.hasOwn(jmPatch, 'rankPushKinds')) {
+      const kinds = jmPatch.rankPushKinds;
+      if (!Array.isArray(kinds) || !kinds.length
+        || kinds.some((k) => !['daily', 'weekly', 'monthly', 'total'].includes(String(k)))) {
+        throw new Error('JM 定时推送榜单至少选择一项有效榜单（daily/weekly/monthly/total）');
+      }
+    }
+    if (Object.hasOwn(jmPatch, 'rankPushChats')) {
+      const chats = jmPatch.rankPushChats;
+      if (!Array.isArray(chats) || chats.length > 100
+        || chats.some((key) => typeof key !== 'string' || !/^group:\d{5,15}$/.test(key))) {
+        throw new Error('JM 定时推送目标群必须是最多 100 项的 group:<群号> 列表');
       }
     }
   }

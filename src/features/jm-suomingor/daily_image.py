@@ -230,11 +230,16 @@ def main():
             radius=10,
             fill=(30, 52, 66),
         )
-        label = f"{idx + 1}. JM{it.get('id', '')}"
-        # 文字按徽章宽度居中
-        label_w = draw.textlength(label, font=f_id)
+        rank_no = it.get("rank")
+        label = f"#{rank_no} JM{it.get('id', '')}" if rank_no else f"{idx + 1}. JM{it.get('id', '')}"
+        # 文字按徽章宽度居中；编号较长时微缩字号防溢出
+        badge_font = f_id
+        if draw.textlength(label, font=badge_font) > CARD_W - 24:
+            badge_font = load_font(32)
+        label_w = draw.textlength(label, font=badge_font)
         lx = cx + 8 + ((CARD_W - 16) - label_w) / 2
-        draw.text((lx, ty + 1), label, font=f_id, fill=(96, 208, 255))
+        ly = ty + max(1, (ID_BADGE_H - badge_font.size) // 2 - 2)
+        draw.text((lx, ly), label, font=badge_font, fill=(96, 208, 255))
         # 标题（最多 2 行）
         title = str(it.get("title") or "")
         ty2 = ty + ID_BADGE_H + 4

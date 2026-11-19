@@ -190,8 +190,8 @@ test('单本简介卡与今日JM优先使用站点官方封面，不可用时回
   assert.equal(cachedFallbackCard.cover_scrambled, true);
   assert.equal(cachedFallbackCard.cover_scramble_id, 220980);
 
-  // 4) 今日JM书架卡片：533801 命中站点封面（不反混淆），533802 回退本地图（标记需反混淆）
-  await tools.get('today_list').execute(ctx, {});
+  // 4) JM书架卡片：533801 命中站点封面（不反混淆），533802 回退本地图（标记需反混淆）
+  await tools.get('bookshelf').execute(ctx, {});
   assert.equal(state.digests.length, 1);
   const item533801 = state.digests[0].items.find((it) => it.id === '533801');
   const item533802 = state.digests[0].items.find((it) => it.id === '533802');

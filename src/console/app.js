@@ -822,7 +822,8 @@ export function createApp({
       : {})
   });
   const backgroundTasks = createAppBackgroundTasks({ config: getConfig, log, orchestrator,
-    dailyMoments, qzoneInteractions, groupDigest, dailyReport, groupGame, autoUpdate });
+    dailyMoments, qzoneInteractions, groupDigest, dailyReport, groupGame, autoUpdate,
+    jmRankPush: jmFeature?.rankScheduler || null });
   async function syncIdentityPilot({ reindex = false, reconfigure = false } = {}) {
     if (!identityPilotEnabled()) {
       identityPilot?.stop();
@@ -4114,6 +4115,18 @@ export function createApp({
   router.add('POST', '/api/group-digest/run', async (req, res) => {
     try {
       const result = await groupDigest.runOnce();
+      return json(res, 200, { ok: true, ...result });
+    } catch (error) {
+      return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+    }
+  });
+  router.add('GET', '/api/jm/rank-push/status', async (_req, res) => {
+    return json(res, 200, jmFeature?.rankScheduler?.status?.() || { enabled: false });
+  });
+  router.add('POST', '/api/jm/rank-push/run', async (_req, res) => {
+    try {
+      const result = await (jmFeature?.rankScheduler?.runOnce?.({ forceRefresh: true })
+        || Promise.resolve({ skipped: 'unavailable' }));
       return json(res, 200, { ok: true, ...result });
     } catch (error) {
       return json(res, 400, { ok: false, error: String(error?.message ?? error) });

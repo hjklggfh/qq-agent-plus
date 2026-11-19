@@ -1,7 +1,8 @@
 import path from 'node:path';
 
 import { activate as activateJm } from './jm-suomingor/index.js';
-import { promptSections as jmPromptSections, isChatAllowed as jmChatAllowed, configuredJmGroups } from './jm-suomingor/legacy-index.js';
+import { promptSections as jmPromptSections, isChatAllowed as jmChatAllowed, configuredJmGroups, getRank as jmGetRank } from './jm-suomingor/legacy-index.js';
+import { JmRankPushManager } from './jm-suomingor/rank-scheduler.js';
 import { registerBuiltinFeature } from './feature-registry.js';
 
 const ALLOWED_ONEBOT_CALLS = new Set([
@@ -15,6 +16,7 @@ let deactivation = null;
 let runtimeState = null;
 let featureHandleMessage = null;
 let featureIsDirectMessage = null;
+let rankScheduler = null;
 
 function responseFromFetch(response, url) {
   return response.arrayBuffer().then((bytes) => ({
@@ -99,7 +101,19 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
     runtimeState.getConfig = getConfig || (() => ({}));
     runtimeState.onebot = onebot;
     runtimeState.sender = sender;
-    return { handleMessage: featureHandleMessage, isDirectMessage: featureIsDirectMessage, deactivate: deactivation, isChatAllowed: jmChatAllowed, configuredGroups: configuredJmGroups };
+    if (rankScheduler) {
+      rankScheduler.dataDir = runtimeState.dataDir;
+      rankScheduler.getConfig = runtimeState.getConfig;
+      rankScheduler.onebot = onebot;
+    }
+    return {
+      handleMessage: featureHandleMessage,
+      isDirectMessage: featureIsDirectMessage,
+      deactivate: deactivation,
+      isChatAllowed: jmChatAllowed,
+      configuredGroups: configuredJmGroups,
+      rankScheduler,
+    };
   }
   initialized = true;
 
@@ -144,9 +158,21 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
   };
 
   const activated = activateJm(api);
+  rankScheduler = new JmRankPushManager({
+    dataDir: runtime.dataDir,
+    getConfig: () => runtime.getConfig(),
+    onebot: {
+      sendSegments: (kind, id, segments) => runtime.onebot?.sendSegments?.(kind, id, segments),
+    },
+    getRank: (kind, opts) => jmGetRank(kind, opts),
+    isChatAllowed: (chatKey) => jmChatAllowed(chatKey),
+    log: logInfo,
+  });
   featureHandleMessage = (ctx, message) => activated?.handleMessage?.(hostToolContext(ctx, runtime), message);
   featureIsDirectMessage = (message) => activated?.isDirectMessage?.(message) === true;
   deactivation = async () => {
+    await rankScheduler?.shutdown?.();
+    rankScheduler = null;
     await activated?.deactivate?.();
     initialized = false;
     runtimeState = null;
@@ -165,7 +191,8 @@ export function initJmFeature({ dataDir, getConfig, onebot, sender, log = consol
     isDirectMessage: featureIsDirectMessage,
     deactivate: deactivation,
     isChatAllowed: jmChatAllowed,
-    configuredGroups: configuredJmGroups
+    configuredGroups: configuredJmGroups,
+    rankScheduler,
   };
 }
 

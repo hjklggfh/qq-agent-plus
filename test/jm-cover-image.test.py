@@ -111,6 +111,7 @@ class JmCoverImageTest(unittest.TestCase):
                 input=json.dumps({
                     "title": "Digest",
                     "items": [{
+                        "rank": 1,
                         "id": album_id,
                         "title": "Item",
                         "cover": str(local_page),

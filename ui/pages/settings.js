@@ -155,6 +155,8 @@ function renderJmSection(c) {
   const j = c?.jm || {};
   const checked = (key, fallback = true) => (j[key] === undefined ? fallback : j[key] !== false);
   const value = (key, fallback = '') => esc(String(j[key] ?? fallback));
+  const pushKinds = Array.isArray(j.rankPushKinds) ? j.rankPushKinds : ['daily', 'weekly'];
+  const pushChats = Array.isArray(j.rankPushChats) ? j.rankPushChats.map((x) => String(x).replace(/^group:/, '')).join(', ') : '';
   return `<h3 id="settings-jm">JM 禁漫漫画下载</h3>
     <div class="hint">JM 是宿主内置功能。下载任务在后台运行，结果发送回触发下载的当前会话；可在这里直接开启、关闭和调整全部参数。</div>
     <div class="field-row">
@@ -204,8 +206,22 @@ function renderJmSection(c) {
     </div>
     <div class="field-row">
       <div class="field"><label>Python 路径（可选）</label><input type="text" id="cfg-jm-python" value="${value('pythonPath')}" placeholder="python3"></div>
+      <div class="field"><label>榜单条数（4～40）</label><input type="number" id="cfg-jm-rank-top-n" min="4" max="40" value="${value('rankTopN', 20)}"></div>
+      <div class="field"><label>榜单缓存有效期（分钟）</label><input type="number" id="cfg-jm-rank-ttl" min="5" max="1440" value="${value('rankCacheTtlMinutes', 60)}"></div>
     </div>
-    <div class="hint">群文件上传、群权限和群文件配额由宿主的 JM 专用 OneBot 能力处理，只能作用于当前会话。</div>`;
+    <h4 style="margin:14px 0 8px">每日榜单定时推送</h4>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="cfg-jm-rank-push-enabled" ${checked('rankPushEnabled', false) ? 'checked' : ''}> 启用每日定时推送</label></div>
+      <div class="field"><label>推送时间（北京时间 HH:MM）</label><input type="text" id="cfg-jm-rank-push-time" value="${value('rankPushTime', '00:05')}" placeholder="00:05"></div>
+      <div class="field"><label>推送目标群号（逗号分隔）</label><input type="text" id="cfg-jm-rank-push-chats" value="${esc(pushChats)}" placeholder="747206342, 892485992"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label><input type="checkbox" id="cfg-jm-rank-kind-daily" ${pushKinds.includes('daily') ? 'checked' : ''}> 日榜（今日JM）</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-rank-kind-weekly" ${pushKinds.includes('weekly') ? 'checked' : ''}> 周榜（JM周榜）</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-rank-kind-monthly" ${pushKinds.includes('monthly') ? 'checked' : ''}> 月榜（JM月榜）</label></div>
+      <div class="field"><label><input type="checkbox" id="cfg-jm-rank-kind-total" ${pushKinds.includes('total') ? 'checked' : ''}> 总榜（JM热门）</label></div>
+    </div>
+    <div class="hint">群文件上传、群权限和群文件配额由宿主的 JM 专用 OneBot 能力处理，只能作用于当前会话；每日榜单定时推送保存后立即生效。</div>`;
 }
 
 function renderSettingsSection(c) {

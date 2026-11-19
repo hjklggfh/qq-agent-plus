@@ -293,8 +293,9 @@ export function createClient(options = {}) {
 
   /** 请求禁漫接口拿 JSON，多域名轮询 + 解密。全挂时抛错（带前几个失败原因）。 */
   async function jmApi(apiPath) {
-    // 搜索没有 /album、/photo 那样的网页详情兜底，网页域名的 HTML 不能当接口数据解析。
-    const candidates = apiPath.startsWith('/search?')
+    // 搜索与榜单没有 /album、/photo 那样的网页详情兜底，网页域名的 HTML 不能当接口数据解析。
+    const apiOnly = apiPath.startsWith('/search?') || apiPath.startsWith('/categories/');
+    const candidates = apiOnly
       ? domainCandidates(domains).filter((domain) => !DEFAULT_WEB_DOMAINS.includes(domain))
       : domainCandidates(domains);
     const errors = [];
@@ -302,7 +303,7 @@ export function createClient(options = {}) {
     for (const domain of candidates) {
       const base = `https://${domain}`;
 
-      if (DEFAULT_API_DOMAINS.includes(domain) || apiPath.startsWith('/search?')) {
+      if (DEFAULT_API_DOMAINS.includes(domain) || apiOnly) {
         const ts = tsSeconds();
         const res = await httpGet(`${base}${apiPath}`, {
           headers: {
@@ -384,6 +385,24 @@ export function createClient(options = {}) {
   const photoInfo = (photoId) => jmApi(`/chapter?id=${encodeURIComponent(photoId)}`).then((r) => normalizePhoto(r, photoId));
   const searchAlbums = (query, page = 1) => jmApi(`/search?main_tag=0&search_query=${encodeURIComponent(query)}`
     + `&page=${encodeURIComponent(page)}&o=mr&t=a`);
+  const rankAlbums = async (kind = 'daily', page = 1) => {
+    const orderMap = { daily: 'mv_t', weekly: 'mv_w', monthly: 'mv_m', total: 'mv', favorite: 'tf' };
+    const order = orderMap[String(kind || 'daily').toLowerCase()] || 'mv_t';
+    const p = Math.max(1, Number(page) || 1);
+    const res = await jmApi(`/categories/filter?page=${p}&order=${order}&c=0&o=${order}`);
+    const list = Array.isArray(res) ? res : (Array.isArray(res?.content) ? res.content : Array.isArray(res?.list) ? res.list : []);
+    return {
+      total: Number(res?.total) || list.length,
+      items: list.map((raw) => ({
+        id: firstString(raw?.id, raw?.album_id),
+        name: firstString(raw?.name, raw?.title),
+        author: firstString(raw?.author),
+        category: firstString(raw?.category?.title, raw?.category),
+        categorySub: firstString(raw?.category_sub?.title, raw?.category_sub),
+        updateAt: Number(raw?.update_at) || 0,
+      })).filter((item) => item.id),
+    };
+  };
 
   const buildImageUrl = (domain, photoId, fileName) =>
     `https://${domain}/media/photos/${photoId}/${encodeURIComponent(String(fileName).split('/').pop())}`;
@@ -403,6 +422,6 @@ export function createClient(options = {}) {
       referer: 'https://cdn-msp.jmapiproxy1.cc/', 'accept-language': 'zh-CN,zh;q=0.9' }
   });
   const fetchImage = async (photoId, fileName) => (await images.downloadImage(photoId, fileName)).buffer;
-  return { httpGet, jmApi, albumInfo, photoInfo, searchAlbums, fetchScrambleId, fetchImage, buildImageUrl,
+  return { httpGet, jmApi, albumInfo, photoInfo, searchAlbums, rankAlbums, fetchScrambleId, fetchImage, buildImageUrl,
     downloadImage: images.downloadImage, downloadStats: images.snapshot, close: () => dispatcher?.close() };
 }
