@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import * as engine from './engine.js';
 import { validateImage } from './image-download.js';
 import * as pdfBridge from './pdf.js';
-import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js';
+import { uploadFile, groupQuota, deleteGroupFile, deleteIncompleteGroupFiles, humanSize } from './upload.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
 import { searchCardNodes, deliverSearchCard } from './search.js';
@@ -495,7 +495,27 @@ function downloadRoot() {
   return cfg().downloadDir || path.join(APP_ROOT, 'data', DATA_SUBDIR);
 }
 
-/** 在 keepHours 内复用已有 PDF；命中后每次请求都会重新发送。 */
+const INCOMPLETE_PDF_RE = /（缺(\d+)页）(?:\.part\d+of\d+)?\.pdf$/i;
+
+function isIncompletePdfRecord(filePath, meta = {}) {
+  if (INCOMPLETE_PDF_RE.test(path.basename(String(filePath || '')))) return true;
+  if (meta?.incomplete === true) return true;
+  if (Number(meta?.pagesFail) > 0) return true;
+  const total = Number(meta?.pages) || 0;
+  const ok = Number(meta?.pagesOk) || 0;
+  if (total > 0 && ok > 0 && ok < total) return true;
+  const pdfPages = Number(meta?.pdf?.pages) || 0;
+  if (total > 0 && pdfPages > 0 && pdfPages < total) return true;
+  return false;
+}
+
+function buildPdfName(albumId, albumName, failCount = 0) {
+  const base = engine.sanitizeSegment(`JM${albumId}-${albumName}`, `JM${albumId}`);
+  const fail = Number(failCount) || 0;
+  return `${base}${fail > 0 ? `（缺${fail}页）` : ''}.pdf`;
+}
+
+/** 在 keepHours 内复用已有 PDF；同时识别它是否完整，残缺版会触发断点补图。 */
 async function findCachedPdf(albumId, keepHours) {
   const hours = Number(keepHours);
   if (!Number.isFinite(hours) || hours <= 0) return null;
@@ -508,7 +528,7 @@ async function findCachedPdf(albumId, keepHours) {
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(full);
-      else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.pdf') {
+      else if (entry.isFile() && path.extname(entry.name).toLowerCase() === '.pdf' && !/\.part\d+of\d+\.pdf$/i.test(entry.name)) {
         try {
           const st = await fsp.stat(full);
           if (st.size > 1024 && st.mtimeMs >= cutoff) {
@@ -521,10 +541,13 @@ async function findCachedPdf(albumId, keepHours) {
   await walk(base);
   if (!found.length) return null;
   found.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  const hit = found[0];
-  let meta = {};
-  try { meta = JSON.parse(await fsp.readFile(path.join(hit.dir, 'metadata.json'), 'utf8')); } catch {}
-  return { ...hit, meta };
+  const loaded = [];
+  for (const hit of found) {
+    let meta = {};
+    try { meta = JSON.parse(await fsp.readFile(path.join(hit.dir, 'metadata.json'), 'utf8')); } catch {}
+    loaded.push({ ...hit, meta, incomplete: isIncompletePdfRecord(hit.path, meta) });
+  }
+  return loaded.find((item) => !item.incomplete) || loaded[0];
 }
 
 function fetchImpl() {
@@ -883,8 +906,10 @@ async function runJob(job) {
   const record = { id: albumId, chatKey, who, ok: false, stage: 'download', startedAt: Date.now() };
 
   try {
-    // ① 优先复用近期已完成的 PDF；没有缓存才走下载流程
-    const cachedPdf = c.outputFormat === 'pdf' ? await findCachedPdf(albumId, c.keepHours) : null;
+    // ① 优先复用近期已完成的**完整** PDF；若发现本地只有残缺 PDF，则跳过缓存触发断点补下
+    const foundPdf = c.outputFormat === 'pdf' ? await findCachedPdf(albumId, c.keepHours) : null;
+    const cachedPdf = foundPdf && !foundPdf.incomplete ? foundPdf : null;
+    const prevIncomplete = foundPdf && foundPdf.incomplete ? foundPdf : null;
     const dl = cachedPdf
       ? {
           cachedPdf,
@@ -896,7 +921,14 @@ async function runJob(job) {
           scrambleId: 0,
         }
       : (await (async () => {
-          await say(`🔍 开始处理 JM${albumId}…`);
+          if (prevIncomplete) {
+            const miss = Math.max(1, (Number(prevIncomplete.meta?.pages) || 0) - (Number(prevIncomplete.meta?.pagesOk) || 0));
+            const matchName = path.basename(prevIncomplete.path).match(INCOMPLETE_PDF_RE);
+            const missText = matchName ? Number(matchName[1]) : miss;
+            await say(`🔍 检测到 JM${albumId} 本地版本缺 ${missText} 页，正在尝试单独补下缺失图片…`);
+          } else {
+            await say(`🔍 开始处理 JM${albumId}…`);
+          }
           return downloadAlbum({
             albumId,
             chatKey,
@@ -941,8 +973,16 @@ async function runJob(job) {
     let deliverPath = '';
     let deliverName = '';
     let pdfInfo = null;
+    let reusedIncompletePdf = false;
     const wantPdf = c.outputFormat === 'pdf';
     const worker = wantPdf ? detectWorker() : { ok: false, error: '输出格式设为「原始图片」' };
+
+    const prevOkCount = Number(prevIncomplete?.meta?.pagesOk) || 0;
+    const noProgressOnIncomplete = Boolean(
+      wantPdf && !dl.cachedPdf && prevIncomplete
+      && fs.existsSync(prevIncomplete.path)
+      && dl.totals.fail > 0 && dl.totals.ok <= prevOkCount,
+    );
 
     if (wantPdf && dl.cachedPdf) {
       record.stage = 'pdf';
@@ -952,10 +992,18 @@ async function runJob(job) {
       deliverName = path.basename(cachedInfo.path);
       record.cacheHit = true;
       record.pdf = { bytes: pdfInfo.bytes, pages: pdfInfo.pages, pagesOk: pdfInfo.pagesOk, restored: pdfInfo.restored, cached: true };
+    } else if (noProgressOnIncomplete) {
+      record.stage = 'pdf';
+      reusedIncompletePdf = true;
+      const prevBytes = fs.statSync(prevIncomplete.path).size;
+      pdfInfo = { ok: true, output: prevIncomplete.path, bytes: prevBytes, pages: Number(prevIncomplete.meta?.pdf?.pages) || dl.totals.ok, pagesOk: dl.totals.ok, restored: Number(prevIncomplete.meta?.pdf?.restored) || 0 };
+      deliverPath = prevIncomplete.path;
+      deliverName = path.basename(prevIncomplete.path);
+      record.pdf = { bytes: pdfInfo.bytes, pages: pdfInfo.pages, pagesOk: pdfInfo.pagesOk, restored: pdfInfo.restored, cached: true };
     } else if (wantPdf && worker.ok) {
       record.stage = 'pdf';
       await say(`🖼 下载完成（${dl.totals.ok} 张），正在${c.restore ? '还原竖切并' : ''}合成 PDF…`);
-      const pdfName = `${engine.sanitizeSegment(`JM${dl.album.id}-${dl.album.name}`, `JM${dl.album.id}`)}.pdf`;
+      const pdfName = buildPdfName(dl.album.id, dl.album.name, dl.totals.fail);
       const outPath = path.join(dl.albumDir, pdfName);
       const task = {
         album_id: dl.album.id,
@@ -989,6 +1037,18 @@ async function runJob(job) {
         deliverPath = res.output;
         deliverName = pdfName;
         record.pdf = { bytes: res.bytes, pages: res.pages, pagesOk: res.pagesOk, restored: res.restored };
+        // 新 PDF 生成成功后，顺手清掉同目录旧的残缺 PDF 及旧分卷文件
+        try {
+          const oldFiles = await fsp.readdir(dl.albumDir);
+          for (const fname of oldFiles) {
+            const full = path.join(dl.albumDir, fname);
+            if (path.resolve(full) === path.resolve(outPath)) continue;
+            if (INCOMPLETE_PDF_RE.test(fname) || /\.part\d+of\d+\.pdf$/i.test(fname)
+              || (prevIncomplete && path.resolve(full) === path.resolve(prevIncomplete.path))) {
+              await fsp.rm(full, { force: true });
+            }
+          }
+        } catch { /* 清理旧本地残缺文件失败不影响交付 */ }
       } else if (task?.control?.deleted) {
         throw new Error('任务已被删除，停止处理');
       } else {
@@ -1017,8 +1077,11 @@ async function runJob(job) {
           if (!s || !(s.name || s.id)) return null;
           return { id: s.id || '', name: s.name || '', at: s.at || Date.now() };
         })(),
-        chapters: dl.chapters.length,        pages: dl.totals.total,
+        chapters: dl.chapters.length,
+        pages: dl.totals.total,
         pagesOk: dl.totals.ok,
+        pagesFail: dl.totals.fail,
+        incomplete: dl.totals.fail > 0,
         downloadedAt: new Date().toISOString(),
         dir: dl.albumDir,
         scrambleId: Number(dl.scrambleId || 0),
@@ -1030,7 +1093,9 @@ async function runJob(job) {
         note: '图片为站点原始文件；较新的本子带站点防爬的竖切打乱，本技能会按站点返回的 scramble_id 还原。',
       };
       // 缓存重发沿用原元数据，避免丢失原始标题、下载时间及删除原图记录。
-      if (!dl.cachedPdf) await fsp.writeFile(path.join(dl.albumDir, 'metadata.json'), JSON.stringify(meta, null, 2), 'utf8');
+      if (!dl.cachedPdf && !reusedIncompletePdf) {
+        await fsp.writeFile(path.join(dl.albumDir, 'metadata.json'), JSON.stringify(meta, null, 2), 'utf8');
+      }
     } catch (error) {
       warn(`metadata.json 写入失败（不影响下载）：${error?.message ?? error}`);
     }
@@ -1049,6 +1114,8 @@ async function runJob(job) {
     let uploadError = '';
     let filenameCompatibilityNote = '';
     let deliveryConfirmed = false;
+    const uploadedFileIds = [];
+    const incompleteTag = dl.totals.fail > 0 ? `（缺${dl.totals.fail}页）` : '';
     if (c.uploadMode === 'off') {
       deliveryConfirmed = true;
       uploadNote = '（当前设置不上传文件，图片已存在本地）';
@@ -1071,11 +1138,12 @@ async function runJob(job) {
             const r = await uploadFile({
               onebot, chatKey: dest, filePath: part, name: path.basename(part),
               publish: c.uploadMode !== 'off', checkQuota: c.checkQuota,
-              fallbackName: `JM${dl.album.id}.part${sent + 1}of${parts.length}.pdf`, fallbackOnFailure: true, log,
+              fallbackName: `JM${dl.album.id}${incompleteTag}.part${sent + 1}of${parts.length}.pdf`, fallbackOnFailure: true, log,
             });
             if (r.ok) {
               sent += 1;
               deliveryConfirmed = true;
+              if (r.fileId) uploadedFileIds.push(r.fileId);
               rememberGroupFile(dest, r.fileId, r.fileName || path.basename(part), onebot);
               if (r.compatibilityNote) filenameCompatibilityNote = r.compatibilityNote;
             } else {
@@ -1092,10 +1160,11 @@ async function runJob(job) {
       } else {
         const r = await uploadFile({
           onebot, chatKey: dest, filePath: deliverPath, name: deliverName || path.basename(deliverPath),
-          checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}.pdf`, fallbackOnFailure: true, log,
+          checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}${incompleteTag}.pdf`, fallbackOnFailure: true, log,
         });
         if (r.ok) {
           deliveryConfirmed = true;
+          if (r.fileId) uploadedFileIds.push(r.fileId);
           const uploadedName = r.fileName || deliverName || path.basename(deliverPath);
           rememberGroupFile(dest, r.fileId, uploadedName, onebot);
           filenameCompatibilityNote = r.compatibilityNote || '';
@@ -1106,6 +1175,15 @@ async function runJob(job) {
           uploadError = r.error;
           uploadNote = `⚠️ 文件上传失败（PDF 和原图已保留）：${r.error}`;
         }
+      }
+    }
+
+    if (deliveryConfirmed && !uploadError && dl.totals.fail === 0 && String(dest).startsWith('group:') && onebot?.call) {
+      const [, destGroupId] = String(dest).split(':');
+      const cleaned = await deleteIncompleteGroupFiles(onebot, destGroupId, dl.album.id, uploadedFileIds);
+      if (cleaned.deleted.length) {
+        uploadNote += `\n🗑 已自动清理群里旧的残缺版本（${cleaned.deleted.length} 个）。`;
+        log(`JM${dl.album.id} 完整版已送达，自动删除群内残缺旧文件：${cleaned.deleted.map((x) => x.fileName).join('、')}`);
       }
     }
 
@@ -1192,7 +1270,8 @@ async function runJob(job) {
     if (record.pdfError) lines.push(`PDF 没生成：${record.pdfError}`);
     if (uploadNote) lines.push(uploadNote);
     if (filenameCompatibilityNote) lines.push(filenameCompatibilityNote);
-    if (dl.totals.fail > 0) lines.push(`有 ${dl.totals.fail} 张没下下来，重发同一个 ID 会接着补下。`);
+    if (reusedIncompletePdf) lines.push(`尝试补全未果，仍有 ${dl.totals.fail} 张没下下来（可能是源站缺图），已直接重发原缺页版本。`);
+    else if (dl.totals.fail > 0) lines.push(`有 ${dl.totals.fail} 张没下下来，重发同一个 ID 会接着补下。`);
     await say(lines.join('\n'));
 
     // 运维细节只写日志

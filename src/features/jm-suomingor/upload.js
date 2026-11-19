@@ -314,14 +314,48 @@ export async function uploadFile({ onebot, chatKey, filePath, name, publish = tr
   });
 }
 
-/** 删除群文件（用于到期清理）。 */
-export async function deleteGroupFile(onebot, groupId, fileId) {
+/** 删除群文件（用于到期清理与残缺替换）。 */
+export async function deleteGroupFile(onebot, groupId, fileId, busid = null) {
   try {
-    await onebot.call('delete_group_file', { group_id: Number(groupId), file_id: String(fileId) });
+    const params = { group_id: Number(groupId), file_id: String(fileId) };
+    if (busid != null && Number.isFinite(Number(busid))) params.busid = Number(busid);
+    await onebot.call('delete_group_file', params);
     return { ok: true };
   } catch (error) {
     return { ok: false, error: error?.message ?? String(error) };
   }
+}
+
+/**
+ * 清理群根目录里同一漫画编号的残缺标记文件（`（缺N页）`）。
+ * 仅在完整版重新上传成功后调用，跳过本次刚上传的 fileId。
+ */
+export async function deleteIncompleteGroupFiles(onebot, groupId, albumId, keepFileIds = []) {
+  if (!onebot?.call || !groupId || !albumId) return { deleted: [], failed: [] };
+  const keep = new Set((keepFileIds || []).map((x) => String(x || '').trim()).filter(Boolean));
+  const idStr = String(albumId).trim();
+  const albumPattern = new RegExp(`^JM${idStr}(?:[-（.]|$)`, 'i');
+  const incompletePattern = /（缺\d+页）(?:\.part\d+of\d+)?\.pdf$/i;
+  let files;
+  try {
+    const data = await onebot.call('get_group_root_files', { group_id: Number(groupId), file_count: 300 });
+    files = data?.files ?? data?.data?.files;
+  } catch (error) {
+    return { deleted: [], failed: [{ error: error?.message ?? String(error) }] };
+  }
+  if (!Array.isArray(files)) return { deleted: [], failed: [] };
+  const deleted = [];
+  const failed = [];
+  for (const item of files) {
+    const fid = String(item?.file_id ?? '').trim();
+    const fname = String(item?.file_name ?? '').trim();
+    if (!fid || keep.has(fid)) continue;
+    if (!albumPattern.test(fname) || !incompletePattern.test(fname)) continue;
+    const res = await deleteGroupFile(onebot, groupId, fid, item?.busid);
+    if (res.ok) deleted.push({ fileId: fid, fileName: fname });
+    else failed.push({ fileId: fid, fileName: fname, error: res.error });
+  }
+  return { deleted, failed };
 }
 
 /**
