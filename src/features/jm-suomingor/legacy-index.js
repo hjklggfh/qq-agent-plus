@@ -39,6 +39,7 @@ import { searchCardNodes, deliverSearchCard } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
 import { BOOKSHELF_RE, UPDATE_RE, parseRankCommand } from './direct-command.js';
 import { createRankService, RANK_META, normalizeRankKind } from './rankings.js';
+import { modelServiceOfBaseUrl, resolveThinkingPatch } from '../../core/provider-presets.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TASKS_FILE = () => path.join(downloadRoot(), 'tasks.json');
@@ -163,10 +164,15 @@ function agentModelConfig() {
     const fromApi = String(p.apiKey ?? '').trim();
     const apiKey = [fromCatalog, fromProvider, fromApi].find((v) => v && v !== '******') || '';
     const baseUrl = String(p.baseUrl || selected?.baseURL || '').trim();
-    return { baseUrl, apiKey, model: String(p.model || '').trim() };
+    return {
+      baseUrl,
+      apiKey,
+      model: String(p.model || '').trim(),
+      thinkingParams: p.thinkingParams && typeof p.thinkingParams === 'object' ? p.thinkingParams : null,
+    };
   } catch (error) {
     warn(`读取全局模型配置失败：${error?.message ?? error}`);
-    return { baseUrl: '', apiKey: '', model: '' };
+    return { baseUrl: '', apiKey: '', model: '', thinkingParams: null };
   }
 }
 
@@ -218,6 +224,8 @@ async function translateTitles(texts) {
   //    1200+ token 做思考，然后才输出正文。给 320 的话预算全被思考吃掉，
   //    content 直接是空的 —— 表现就是"翻译静默失败、标题还是日文"。
   //    实测：max_tokens=320 → content 空；1500 / 3000 → 正常。
+  const svc = modelServiceOfBaseUrl(baseUrl);
+  let thinkingPatch = resolveThinkingPatch(svc?.id || '', 'off', g.thinkingParams)?.patch || null;
   const maxTokens = Math.max(2048, 1600 + list.length * 150);
   // 中转站网关会偶发 502/504（不是我们的问题），重试几次就好
   const ATTEMPTS = 3;
@@ -226,7 +234,7 @@ async function translateTitles(texts) {
     try {
       const request = createSafeFetch();
       if (typeof request !== 'function') throw new Error('当前运行环境没有可用的 fetch');
-      const res = await request(`${baseUrl}/chat/completions`, {
+      const sendChat = (extra) => request(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -234,10 +242,18 @@ async function translateTitles(texts) {
           messages: [{ role: 'user', content: prompt }],
           max_tokens: maxTokens,
           temperature: 0,
+          ...(extra || {}),
         }),
         signal: AbortSignal.timeout(120000),
       });
-      const text = await res.text();
+      let res = await sendChat(thinkingPatch);
+      let text = await res.text();
+      if (res.status === 400 && thinkingPatch && /thinking|reasoning/i.test(text)) {
+        // 个别网关不识别关思考参数时，剥离后再试一次。
+        thinkingPatch = null;
+        res = await sendChat(null);
+        text = await res.text();
+      }
       if (res.status >= 400) {
         const err = new Error(`HTTP ${res.status}: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
         err.noRetry = res.status < 500 && res.status !== 408 && res.status !== 429;

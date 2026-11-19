@@ -19,7 +19,11 @@ const engineStub = `export * from '${new URL('../src/features/jm-suomingor/engin
     ...base.createClient(opts),
     albumInfo: async id => ({
       id,
-      name: String(id) === '777002' ? 'テスト別タイトル' : 'テスト獵奇女僕裝項圈裡',
+      name: String(id) === '777002'
+        ? 'テスト別タイトル'
+        : String(id) === '777003'
+          ? 'テスト第三弾'
+          : 'テスト獵奇女僕裝項圈裡',
       series: [],
       authors: ['作者'],
       tags: ['獵奇'],
@@ -106,6 +110,7 @@ test('翻译优先读取全局 providerKeys 并生效 opencc-js，401 错误立�
   }));
 
   const llmAuths = [];
+  const llmBodies = [];
   let llmMode = 'ok';
   const tools = new Map();
   const logs = [];
@@ -128,8 +133,13 @@ test('翻译优先读取全局 providerKeys 并生效 opencc-js，401 错误立�
     fetch: async (url, opts = {}) => {
       if (String(url).endsWith('/chat/completions')) {
         llmAuths.push(opts.headers?.Authorization);
+        const parsedBody = opts.body ? JSON.parse(opts.body) : {};
+        llmBodies.push(parsedBody);
         if (llmMode === 'unauthorized') {
           return new Response(JSON.stringify({ error: { message: 'invalid key' } }), { status: 401 });
+        }
+        if (llmMode === 'reject-thinking' && parsedBody.thinking) {
+          return new Response(JSON.stringify({ error: { message: 'unknown parameter: thinking' } }), { status: 400 });
         }
         return new Response(JSON.stringify({
           choices: [{ message: { content: '1|测试猎奇女仆装项圈里' } }],
@@ -149,10 +159,11 @@ test('翻译优先读取全局 providerKeys 并生效 opencc-js，401 错误立�
     sender: { async sendTextBatch() {} },
   };
 
-  // 1) 正常读取 providerKeys['custom_provider'] 与 opencc-js 繁转简
+  // 1) 正常读取 providerKeys['custom_provider'] 与 opencc-js 繁转简，并注入关思考参数
   await tools.get('download_album').execute(ctx, { album_id: '777001' });
   await waitFor(() => state.cards.length === 1);
   assert.deepEqual(llmAuths, ['Bearer valid-key-c260']);
+  assert.deepEqual(llmBodies[0].thinking, { type: 'disabled' });
   assert.equal(state.cards[0].title, '测试猎奇女仆装项圈里');
   assert.deepEqual(state.cards[0].tags, ['猎奇']);
   assert.equal(state.cards[0].desc, '里世界简介');
@@ -176,4 +187,23 @@ test('翻译优先读取全局 providerKeys 并生效 opencc-js，401 错误立�
   assert.equal(llmAuths.length, 1);
   assert.equal(state.cards[1].title, 'テスト别タイトル');
   assert.ok(logs.some((line) => line.includes('不重试，退回原文')));
+
+  // 3) 若网关拒绝 thinking 参数返回 400，应自动剥离后重试成功
+  llmMode = 'reject-thinking';
+  llmBodies.length = 0;
+  fs.writeFileSync(cfgPath, JSON.stringify({
+    api: {
+      provider: 'custom_provider',
+      baseUrl: 'https://api.deepseek.com/v1',
+      model: 'deepseek-flash',
+    },
+    providerKeys: {
+      custom_provider: 'valid-key-c260',
+    },
+  }));
+  await tools.get('download_album').execute(ctx, { album_id: '777003' });
+  await waitFor(() => state.cards.length === 3);
+  assert.equal(llmBodies.length, 2);
+  assert.deepEqual(llmBodies[0].thinking, { type: 'disabled' });
+  assert.equal(llmBodies[1].thinking, undefined);
 });
