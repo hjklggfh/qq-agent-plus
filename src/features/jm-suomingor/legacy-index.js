@@ -849,7 +849,7 @@ async function runJob(job) {
   let downloadFinished = false;
   const c = cfg();
   const { albumId, chatKey, kind, sender, onebot, who, whoName } = job;
-  const say = (text) => sendText(sender, onebot, chatKey, text);
+  const say = (text) => sendText(sender, onebot, chatKey, text, { bypassTimeControl: true });
   /** 单本「简介」信息卡：图 + 一句话说明，发当前会话。 */
   const sendAlbumCard = async (ob, key, imagePath) => {
     if (!ob?.sendSegments) return false;
@@ -1350,11 +1350,11 @@ function humanize(msg) {
 
 // ───────────────────────── 发消息 ─────────────────────────
 
-async function sendText(sender, onebot, chatKey, text) {
+async function sendText(sender, onebot, chatKey, text, options = {}) {
   try {
     if (!chatKey || !text) return false;
     if (sender?.sendTextBatch) {
-      await sender.sendTextBatch(chatKey, [text]);
+      await sender.sendTextBatch(chatKey, [text], options);
       return true;
     }
     const [kind, id] = String(chatKey).split(':');

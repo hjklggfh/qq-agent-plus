@@ -40,10 +40,11 @@ test('authenticated feature inventory coordinates live tasks and cleans all time
     };
     const first = await request('/api/features');
     assert.equal(first.features.length, 16);
-    assert.equal(first.tasks.length, 11);
+    assert.equal(first.tasks.length, 12);
     assert.equal(new Set(first.features.map(item => item.id)).size, first.features.length);
     assert.equal(first.tasks.find(item => item.id === 'reminders').state, 'waiting');
     assert.equal(first.tasks.find(item => item.id === 'daily-report').state, 'disabled');
+    assert.equal(first.tasks.find(item => item.id === 'jm-rank-push').state, 'disabled');
     const recovery = first.tasks.find(item => item.id === 'message-recovery');
     assert.equal(recovery.lastSuccessAt > 0, true, 'real startup recovery completed');
     assert.equal(recovery.nextRunAt > recovery.lastSuccessAt, true);
