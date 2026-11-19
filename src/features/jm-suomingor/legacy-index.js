@@ -37,8 +37,8 @@ import { uploadFile, groupQuota, deleteGroupFile, humanSize } from './upload.js'
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
 import { searchCardNodes, deliverSearchCard } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
-import { BOOKSHELF_RE, UPDATE_RE, parseRankCommand } from './direct-command.js';
-import { createRankService, RANK_META, normalizeRankKind } from './rankings.js';
+import { BOOKSHELF_RE, UPDATE_RE, HELP_RE, parseRankCommand } from './direct-command.js';
+import { createRankService, normalizeRankKind, normalizeRankCategory, rankDisplayInfo } from './rankings.js';
 import { modelServiceOfBaseUrl, resolveThinkingPatch } from '../../core/provider-presets.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -74,8 +74,10 @@ const pendingHint = new Map(); // sessionId/chatKey -> { id, who, at }
 
 // 「JM书架」指令命中标记：sessionId/chatKey -> { who, at }
 const pendingBookshelf = new Map();
-// 「今日JM / JM日榜 / JM周榜 / JM热门」榜单指令命中标记：sessionId/chatKey -> { kind, force, who, at }
+// 「今日JM / JM日榜 / JM周榜 / JM热门 / JM同人日榜」榜单指令命中标记
 const pendingRank = new Map();
+// 「jm / JM指令」帮助菜单命中标记
+const pendingHelp = new Map();
 // 「更新JM」指令命中标记：sessionId/chatKey -> { who, at }
 const pendingUpdate = new Map();
 // 「开启JM/关闭JM」群开关指令命中标记：sessionId/chatKey -> { action, who, at }
@@ -492,6 +494,7 @@ function cfg() {
     translateModel: String(c.translateModel ?? '').trim(),
     proxy: String(c.proxy ?? '').trim(),
     rankTopN: num(c.rankTopN, 48, 4, 60),
+    rankCategoryTopN: num(c.rankCategoryTopN, 24, 4, 60),
     rankCacheTtlMinutes: num(c.rankCacheTtlMinutes, 60, 5, 1440),
     rankPushEnabled: c.rankPushEnabled === true,
     rankPushTime: String(c.rankPushTime || '00:05').trim(),
@@ -1996,15 +1999,16 @@ const JM_CONTROL_OWNER_ID = '2118530760';
     },
   });
 
-  // ── 工具：JM 排行榜（日榜 / 周榜 / 月榜 / 总榜，带本地原子缓存）────────────────
+  // ── 工具：JM 排行榜（日榜 / 周榜 / 月榜 / 总榜 × 全站 / 同人，带本地原子缓存）────────
   api.registerTool({
     id: 'rank',
     name: 'JM排行榜',
     category: 'media',
     icon: '🏆',
     description:
-      '查看禁漫站点热度排行榜（支持日榜 daily、周榜 weekly、月榜 monthly、总榜 total），渲染成封面网格卡片发到当前会话。'
-      + '当群友说「今日JM」「JM日榜」「JM周榜」「JM月榜」「JM热门」「刷新JM日榜」时使用。'
+      '查看禁漫站点热度排行榜（支持日榜 daily、周榜 weekly、月榜 monthly、总榜 total；类别支持全站 all 与同人 doujin），'
+      + '渲染成封面网格卡片发到当前会话。'
+      + '当群友说「今日JM」「JM日榜」「JM周榜」「JM月榜」「JM热门」「JM同人日榜」「JM同人周榜」「刷新JM日榜」时使用。'
       + '结果由工具自己发送到会话，调用一次后不要再复述或重复调用。',
     parameters: {
       type: 'object',
@@ -2012,11 +2016,20 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         kind: {
           type: 'string',
           enum: ['daily', 'weekly', 'monthly', 'total'],
-          description: '榜单类型：daily=日榜，weekly=周榜，monthly=月榜，total=热门总榜',
+          description: '榜单周期：daily=日榜，weekly=周榜，monthly=月榜，total=热门总榜',
+        },
+        category: {
+          type: 'string',
+          enum: ['all', 'doujin'],
+          description: '榜单类别：all=全站综合（默认），doujin=同人分类',
         },
         force: {
           type: 'boolean',
           description: '是否跳过本地缓存强制重抓，默认 false。',
+        },
+        topN: {
+          type: 'integer',
+          description: '可选，指定展示前多少本（4～60）；不传时全站默认 48、同人默认 24。',
         },
       },
     },
@@ -2026,8 +2039,10 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         const denied = gateChat(chatKey);
         if (denied) return { content: denied, isError: true };
         const kind = normalizeRankKind(args?.kind);
+        const category = normalizeRankCategory(args?.category);
         const force = args?.force === true;
-        const res = await rankService.getRank(kind, { force });
+        const topN = Number.isInteger(Number(args?.topN)) ? Number(args.topN) : undefined;
+        const res = await rankService.getRank(kind, { category, force, topN });
         const [msgKind, targetId] = chatKey.split(':');
         if (!ctx?.onebot?.sendSegments || !msgKind || !targetId) {
           return { content: `${res.label}已缓存（${res.fetchedAtText}），但当前会话没有可用图片通道。`, isError: true };
@@ -2044,9 +2059,50 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             + '你**不要**再复述榜单内容，也不要重复调用本工具。',
         };
       } catch (error) {
-        warn(`生成 ${RANK_META[normalizeRankKind(args?.kind)].label} 失败：${error?.message ?? error}`);
+        const label = rankDisplayInfo(args?.kind, args?.category).label;
+        warn(`生成 ${label} 失败：${error?.message ?? error}`);
         return { content: `获取排行榜失败：${error?.message ?? error}`, isError: true };
       }
+    },
+  });
+
+  // ── 工具：「jm」全部指令菜单 ──────────────────────────────────────────────────
+  api.registerTool({
+    id: 'help',
+    name: 'JM指令列表',
+    category: 'media',
+    icon: '📖',
+    description:
+      '显示 JM 漫画功能的全部可用指令与用法说明。当群友单独发送「jm」「JM帮助」「JM指令」时调用。'
+      + '内容由工具自己发送到会话，调用一次后不要再复述或重复调用。',
+    parameters: { type: 'object', properties: {} },
+    async execute(ctx) {
+      const chatKey = String(ctx?.chatKey || '');
+      const denied = gateChat(chatKey);
+      if (denied) return { content: denied, isError: true };
+      const c = cfg();
+      const helpText =
+        '📖 JM 漫画全部指令\n\n'
+        + '📥 下载与搜索\n'
+        + '• jm123456（或发 /album/123456 链接）— 下载本子并合成 PDF\n'
+        + '• JM搜索 关键词 [第N页] — 搜索漫画（出卡后可发「下一页」「上一页」或选序号）\n\n'
+        + '🏆 热门榜单（可加空格+数字临时指定条数，或前缀「刷新」跳过缓存）\n'
+        + `• 今日JM / JM日榜 / JM周榜 / JM月榜 / JM热门 — 全站榜单（默认前 ${c.rankTopN} 本）\n`
+        + `• JM同人日榜 / JM同人周榜 / JM同人月榜 / JM同人热门 — 同人分类榜（默认前 ${c.rankCategoryTopN} 本）\n`
+        + '• 刷新今日JM / 刷新JM周榜 / 刷新JM同人日榜 — 强制重新抓取\n\n'
+        + '📚 本地书架与站点更新\n'
+        + '• JM书架（本地JM）— 查看本地已下载书架\n'
+        + '• 更新JM — 查看站点今日新上架\n\n'
+        + '⚙️ 任务控制与群开关\n'
+        + '• 暂停下载 <ID> / 继续下载 <ID> / 删除JM <ID> — 控制下载或清理本地缓存\n'
+        + '• 开启JM / 关闭JM / JM群列表 / JM所有群开放 — 群功能开关（群主或机主）';
+      const [msgKind, targetId] = chatKey.split(':');
+      if (ctx?.onebot?.sendSegments && msgKind && targetId) {
+        await ctx.onebot.sendSegments(msgKind, targetId, [{ type: 'text', data: { text: helpText } }]);
+        return { content: 'JM 指令菜单已直接发到会话，你不要再复述或重复调用。' };
+      }
+      const sent = await sendText(ctx?.sender, ctx?.onebot, chatKey, helpText);
+      return { content: sent ? 'JM 指令菜单已直接发到会话，你不要再复述。' : helpText };
     },
   });
 
@@ -2265,6 +2321,10 @@ export async function handleMessage(ctx = {}, message = {}) {
     await invoke(toolId('rank'), rankDirect);
     return true;
   }
+  if (HELP_RE.test(normalized) && isChatAllowed(String(ctx.chatKey || ''))) {
+    await invoke(toolId('help'), {});
+    return true;
+  }
   if (BOOKSHELF_RE.test(normalized) && isChatAllowed(String(ctx.chatKey || ''))) {
     await invoke(toolId('bookshelf'), {});
     return true;
@@ -2305,7 +2365,16 @@ export async function handleMessage(ctx = {}, message = {}) {
   }
   const rank = take(pendingRank);
   if (rank) {
-    await invoke(toolId('rank'), { kind: rank.kind, force: rank.force });
+    await invoke(toolId('rank'), {
+      kind: rank.kind,
+      category: rank.category || 'all',
+      force: rank.force,
+      ...(rank.topN ? { topN: rank.topN } : {}),
+    });
+    return true;
+  }
+  if (take(pendingHelp)) {
+    await invoke(toolId('help'), {});
     return true;
   }
   if (take(pendingBookshelf)) {
@@ -2732,7 +2801,7 @@ export const hooks = {
         return;
       }
 
-      // ── 「今日JM / JM日榜 / JM周榜 / JM热门」榜单精确匹配 ─────────────────
+      // ── 「今日JM / JM日榜 / JM周榜 / JM热门 / JM同人日榜」榜单精确匹配 ─────────
       for (const e of entries) {
         if (!e || e.self) continue;
         const cmd = parseRankCommand(e.text);
@@ -2744,10 +2813,25 @@ export const hooks = {
           log(`JM排行榜 指令被群白名单拦下（${who}）`);
           return;
         }
+        const label = rankDisplayInfo(cmd.kind, cmd.category).label;
         pendingRank.set(callerKey(ctx), { ...cmd, who, at: Date.now() });
-        e.text = `${RANK_META[cmd.kind].label}（${who} 触发的固定指令）：请立刻调用工具 ${toolId('rank')}，`
-          + `kind 填 "${cmd.kind}"${cmd.force ? '，force 填 true' : ''}。工具会自己发图到群里，你**不要**再复述、不要重复调用。`;
-        log(`JM排行榜 指令命中：${cmd.kind}${cmd.force ? ' (force)' : ''}（来自 ${who}）`);
+        e.text = `${label}（${who} 触发的固定指令）：请立刻调用工具 ${toolId('rank')}，`
+          + `kind 填 "${cmd.kind}"，category 填 "${cmd.category || 'all'}"`
+          + `${cmd.force ? '，force 填 true' : ''}${cmd.topN ? `，topN 填 ${cmd.topN}` : ''}。工具会自己发图到群里，你**不要**再复述、不要重复调用。`;
+        log(`JM排行榜 指令命中：${cmd.kind}/${cmd.category || 'all'}${cmd.force ? ' (force)' : ''}（来自 ${who}）`);
+        return;
+      }
+
+      // ── 「jm / JM指令」菜单精确匹配 ──────────────────────────────────────────
+      for (const e of entries) {
+        if (!e || e.self) continue;
+        const raw = String(e.text || '').replace(/@\S+\s*/g, '').trim();
+        if (!HELP_RE.test(raw) || !chatAllowed) continue;
+        const who = String(e.senderName || e.senderId || '群友');
+        pendingHelp.set(callerKey(ctx), { who, at: Date.now() });
+        e.text = `JM指令菜单（${who} 触发的固定指令）：请立刻调用工具 ${toolId('help')}。`
+          + '菜单会由工具自己发到群里，你**不要**再复述、不要重复调用。';
+        log(`JM帮助指令命中（来自 ${who}）`);
         return;
       }
 
@@ -2830,10 +2914,22 @@ export const hooks = {
       if (rankRec && Date.now() - rankRec.at < 120000) {
         pendingRank.delete(callerKey(ctx));
         if (Array.isArray(ctx.messages)) {
+          const label = rankDisplayInfo(rankRec.kind, rankRec.category).label;
           ctx.messages.push({
             role: 'system',
-            content: `[${SKILL_ID}] 本轮是「${RANK_META[rankRec.kind].label}」固定指令：调用 ${toolId('rank')}，`
-              + `kind 填 "${rankRec.kind}"${rankRec.force ? '，force 填 true' : ''}，不要复述或重复调用。`,
+            content: `[${SKILL_ID}] 本轮是「${label}」固定指令：调用 ${toolId('rank')}，`
+              + `kind 填 "${rankRec.kind}"，category 填 "${rankRec.category || 'all'}"`
+              + `${rankRec.force ? '，force 填 true' : ''}${rankRec.topN ? `，topN 填 ${rankRec.topN}` : ''}，不要复述或重复调用。`,
+          });
+        }
+      }
+      const helpRec = pendingHelp.get(callerKey(ctx));
+      if (helpRec && Date.now() - helpRec.at < 120000) {
+        pendingHelp.delete(callerKey(ctx));
+        if (Array.isArray(ctx.messages)) {
+          ctx.messages.push({
+            role: 'system',
+            content: `[${SKILL_ID}] 本轮是「JM指令菜单」固定指令：立刻调用 ${toolId('help')}，不要复述或重复调用。`,
           });
         }
       }
@@ -2940,8 +3036,10 @@ export function promptSections() {
       + '2. 只在对方明确想下载时调用；群里随便出现的数字不要调用，拿不准先问一句确认。\n'
       + '3. 这个工具是**异步**的：调用后立刻返回，下载/还原/合成/上传都在后台跑，完成后会自动发消息。'
       + '**不要因为没立刻看到结果就重复调用同一个 ID。**\n'
-      + `4. 群友说「今日JM」「JM日榜」「JM周榜」「JM月榜」「JM热门」时，调用 ${toolId('rank')}（传 kind=daily/weekly/monthly/total），`
-      + '榜单图由工具自己发送，不要复述。说「JM书架」「本地JM」「JM目录」时调用 ' + `${toolId('bookshelf')} 查看本地已下载书架。\n`
+      + `4. 群友说「今日JM」「JM日榜」「JM周榜」「JM月榜」「JM热门」时，调用 ${toolId('rank')}（传 kind=daily/weekly/monthly/total, category=all），`
+      + `说「JM同人日榜」「JM同人周榜」「JM同人月榜」「JM同人热门」时传 category=doujin，榜单图由工具自己发送，不要复述。`
+      + `单独发「jm」「JM指令」「JM帮助」时调用 ${toolId('help')}。`
+      + `说「JM书架」「本地JM」「JM目录」时调用 ${toolId('bookshelf')} 查看本地已下载书架。\n`
       + `5. 群友说「更新JM」「JM更新」「今日更新」「日更」时，调用 ${toolId('daily_updates')}，`
       + '清单和封面由工具自己发送，你不要再复述（注意与「今日JM」本地书架区分：有「更新」二字的是看站点当日新上架）。\n'
       + `6. JM 功能按群开关：有人说「开启JM」「关闭JM」「JM群列表」「JM所有群开放」时，调用 ${toolId('group_toggle')}（结果由工具自己发，不要复述）。\n`

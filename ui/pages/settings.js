@@ -206,7 +206,8 @@ function renderJmSection(c) {
     </div>
     <div class="field-row">
       <div class="field"><label>Python 路径（可选）</label><input type="text" id="cfg-jm-python" value="${value('pythonPath')}" placeholder="python3"></div>
-      <div class="field"><label>榜单条数（4～60）</label><input type="number" id="cfg-jm-rank-top-n" min="4" max="60" value="${value('rankTopN', 48)}"></div>
+      <div class="field"><label>总榜条数（4～60）</label><input type="number" id="cfg-jm-rank-top-n" min="4" max="60" value="${value('rankTopN', 48)}"></div>
+      <div class="field"><label>分类榜条数（同人，4～60）</label><input type="number" id="cfg-jm-rank-cat-top-n" min="4" max="60" value="${value('rankCategoryTopN', 24)}"></div>
       <div class="field"><label>榜单缓存有效期（分钟）</label><input type="number" id="cfg-jm-rank-ttl" min="5" max="1440" value="${value('rankCacheTtlMinutes', 60)}"></div>
     </div>
     <h4 style="margin:14px 0 8px">每日榜单定时推送</h4>

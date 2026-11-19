@@ -1,7 +1,7 @@
 ﻿import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 import { setup as setupLegacy, activate as activateLegacy, deactivate as deactivateLegacy } from './legacy-index.js';
-import { handleMessage as handleLegacyMessage, dispose as disposeLegacy } from './legacy-index.js';
+import { handleMessage as handleLegacyMessage, dispose as disposeLegacy, isChatAllowed as isLegacyChatAllowed } from './legacy-index.js';
 import { classifyJmDirectCommand } from './direct-command.js';
 import { clearSearchSessions, resolveSearchFollowup } from './search-session.js';
 
@@ -84,8 +84,9 @@ export function activate(api) {
   activateLegacy();
   return {
     isDirectMessage({ chatKey, senderId, text } = {}) {
-      return Boolean(classifyJmDirectCommand(text)
-        || resolveSearchFollowup({ chatKey, senderId, text }));
+      const direct = classifyJmDirectCommand(text);
+      if (direct?.tool === 'jm_help' && !isLegacyChatAllowed(String(chatKey || ''))) return false;
+      return Boolean(direct || resolveSearchFollowup({ chatKey, senderId, text }));
     },
     async handleMessage(toolCtx, message) {
       const directCtx = { ...toolCtx, triggerEntries: [{ ...message, self: false }] };
@@ -125,6 +126,7 @@ export function activate(api) {
         }
       }
       if (direct?.tool) {
+        if (direct.tool === 'jm_help' && !isLegacyChatAllowed(String(toolCtx.chatKey || ''))) return false;
         const result = await directTool(direct.tool, direct.args);
         if ((result?.isError || result?.notify) && result.content) await toolCtx.send([String(result.content)]);
         return true;

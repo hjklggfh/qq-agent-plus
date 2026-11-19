@@ -385,11 +385,13 @@ export function createClient(options = {}) {
   const photoInfo = (photoId) => jmApi(`/chapter?id=${encodeURIComponent(photoId)}`).then((r) => normalizePhoto(r, photoId));
   const searchAlbums = (query, page = 1) => jmApi(`/search?main_tag=0&search_query=${encodeURIComponent(query)}`
     + `&page=${encodeURIComponent(page)}&o=mr&t=a`);
-  const rankAlbums = async (kind = 'daily', page = 1) => {
+  const rankAlbums = async (kind = 'daily', page = 1, category = '') => {
     const orderMap = { daily: 'mv_t', weekly: 'mv_w', monthly: 'mv_m', total: 'mv', favorite: 'tf' };
     const order = orderMap[String(kind || 'daily').toLowerCase()] || 'mv_t';
     const p = Math.max(1, Number(page) || 1);
-    const res = await jmApi(`/categories/filter?page=${p}&order=${order}&c=0&o=${order}`);
+    const catRaw = String(category || '').trim();
+    const cat = !catRaw || catRaw.toLowerCase() === 'all' ? '0' : catRaw;
+    const res = await jmApi(`/categories/filter?page=${p}&order=${order}&c=${encodeURIComponent(cat)}&o=${order}`);
     const list = Array.isArray(res) ? res : (Array.isArray(res?.content) ? res.content : Array.isArray(res?.list) ? res.list : []);
     return {
       total: Number(res?.total) || list.length,

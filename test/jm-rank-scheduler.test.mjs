@@ -29,7 +29,8 @@ test('JmRankPushManager 单次渲染复用发往多个白名单群，单群失�
       },
     }),
     isChatAllowed: (chatKey) => chatKey !== 'group:999999999',
-    getRank: async (kind) => {
+    getRank: async (kind, opts) => {
+      assert.equal(opts?.category, 'all');
       fetchedKinds.push(kind);
       const imagePath = path.join(dataDir, `rank-${kind}.jpg`);
       fs.writeFileSync(imagePath, `img-${kind}`);
@@ -58,8 +59,8 @@ test('JmRankPushManager 单次渲染复用发往多个白名单群，单群失�
   // 999999999 未授权跳过；747206342 daily 成功、weekly 失败；892485992 daily 与 weekly 都成功
   assert.equal(sent.length, 3);
   assert.ok(sent.some((s) => s.id === '747206342' && s.text.includes('daily')));
-  assert.ok(sent.some((s) => s.id === '892485992' && s.text.includes('daily')));
-  assert.ok(sent.some((s) => s.id === '892485992' && s.text.includes('weekly')));
+  assert.ok(sent.some((s) => s.id === '892485992' && s.text.includes('daily') && !s.text.includes('全部指令')));
+  assert.ok(sent.some((s) => s.id === '892485992' && s.text.includes('weekly') && s.text.includes('JM同人日榜') && s.text.includes('jm')));
 
   // 当日重复 scheduled 调用直接跳过
   const second = await mgr.runOnce({ forceRefresh: true, scheduled: true });
@@ -71,7 +72,8 @@ test('config.jm 榜单与定时推送字段校验生效', () => {
   const base = structuredClone(DEFAULT_CONFIG);
   setRuntimeConfig(base);
   assert.throws(() => updateConfig({ jm: { rankTopN: 100 } }), /4～60/);
-  updateConfig({ jm: { rankTopN: 48 } });
+  assert.throws(() => updateConfig({ jm: { rankCategoryTopN: 2 } }), /4～60/);
+  updateConfig({ jm: { rankTopN: 48, rankCategoryTopN: 24 } });
   assert.throws(() => updateConfig({ jm: { rankCacheTtlMinutes: 1 } }), /5～1440/);
   assert.throws(() => updateConfig({ jm: { rankPushTime: '25:00' } }), /HH:MM/);
   assert.throws(() => updateConfig({ jm: { rankPushKinds: [] } }), /至少选择一项/);

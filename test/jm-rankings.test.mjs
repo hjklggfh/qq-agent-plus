@@ -13,14 +13,23 @@ const validJpg = await sharp(crypto.randomBytes(120 * 160 * 3), {
   raw: { width: 120, height: 160, channels: 3 },
 }).jpeg({ quality: 90 }).toBuffer();
 
-test('直通指令拆分：今日JM 指向日榜，JM书架指向本地书架，更新JM 保持独立', () => {
-  assert.deepEqual(classifyJmDirectCommand('今日JM'), { tool: 'jm_rank', args: { kind: 'daily', force: false } });
-  assert.deepEqual(classifyJmDirectCommand('JM日榜'), { tool: 'jm_rank', args: { kind: 'daily', force: false } });
-  assert.deepEqual(classifyJmDirectCommand('JM周榜'), { tool: 'jm_rank', args: { kind: 'weekly', force: false } });
-  assert.deepEqual(classifyJmDirectCommand('JM月榜'), { tool: 'jm_rank', args: { kind: 'monthly', force: false } });
-  assert.deepEqual(classifyJmDirectCommand('JM热门'), { tool: 'jm_rank', args: { kind: 'total', force: false } });
-  assert.deepEqual(classifyJmDirectCommand('刷新JM周榜'), { tool: 'jm_rank', args: { kind: 'weekly', force: true } });
-  assert.deepEqual(classifyJmDirectCommand('刷新今日JM'), { tool: 'jm_rank', args: { kind: 'daily', force: true } });
+test('直通指令拆分：今日JM 指向全站日榜，JM同人日榜指向同人小榜，jm 指向指令菜单', () => {
+  assert.deepEqual(classifyJmDirectCommand('今日JM'), { tool: 'jm_rank', args: { kind: 'daily', category: 'all', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM日榜'), { tool: 'jm_rank', args: { kind: 'daily', category: 'all', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM周榜'), { tool: 'jm_rank', args: { kind: 'weekly', category: 'all', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM月榜'), { tool: 'jm_rank', args: { kind: 'monthly', category: 'all', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM热门'), { tool: 'jm_rank', args: { kind: 'total', category: 'all', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('刷新JM周榜'), { tool: 'jm_rank', args: { kind: 'weekly', category: 'all', force: true } });
+  assert.deepEqual(classifyJmDirectCommand('刷新今日JM'), { tool: 'jm_rank', args: { kind: 'daily', category: 'all', force: true } });
+  assert.deepEqual(classifyJmDirectCommand('JM同人日榜'), { tool: 'jm_rank', args: { kind: 'daily', category: 'doujin', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM同人周榜'), { tool: 'jm_rank', args: { kind: 'weekly', category: 'doujin', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM同人月榜'), { tool: 'jm_rank', args: { kind: 'monthly', category: 'doujin', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('JM同人热门'), { tool: 'jm_rank', args: { kind: 'total', category: 'doujin', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('今日JM 同人'), { tool: 'jm_rank', args: { kind: 'daily', category: 'doujin', force: false } });
+  assert.deepEqual(classifyJmDirectCommand('刷新JM同人周榜 48'), { tool: 'jm_rank', args: { kind: 'weekly', category: 'doujin', force: true, topN: 48 } });
+  assert.deepEqual(classifyJmDirectCommand('jm'), { tool: 'jm_help', args: {} });
+  assert.deepEqual(classifyJmDirectCommand('JM指令'), { tool: 'jm_help', args: {} });
+  assert.deepEqual(classifyJmDirectCommand('JM123456'), { tool: 'jm_download_album', args: { album_id: '123456' } });
   assert.deepEqual(classifyJmDirectCommand('JM书架'), { tool: 'jm_bookshelf', args: {} });
   assert.deepEqual(classifyJmDirectCommand('本地JM'), { tool: 'jm_bookshelf', args: {} });
   assert.deepEqual(classifyJmDirectCommand('更新JM'), { tool: 'jm_daily_updates', args: {} });
@@ -61,18 +70,20 @@ test('rankings 本地持久化缓存：命中复用、跨天/超时刷新、失�
 
   const service = createRankService({
     getDataRoot: () => root,
-    getSettings: () => ({ rankTopN: 20, rankCacheTtlMinutes: 60 }),
+    getSettings: () => ({ rankTopN: 48, rankCategoryTopN: 24, rankCacheTtlMinutes: 60 }),
     createClient: () => ({
-      async rankAlbums(kind) {
+      async rankAlbums(kind, _page, category) {
         fetchCount += 1;
         if (mode === 'fetch-fail') throw new Error('上游榜单拉取失败');
-        return {
-          total: 20,
-          items: [
-            { id: topId, name: `${kind}-作品1`, author: '作者1', category: '韩漫', categorySub: '', updateAt: 1700000000 },
-            { id: '100002', name: `${kind}-作品2`, author: '作者2', category: '单本', categorySub: '中文', updateAt: 1700000000 },
-          ],
-        };
+        const list = Array.from({ length: 30 }, (_, idx) => ({
+          id: idx === 0 ? topId : String(100002 + idx),
+          name: `${kind}-${category}-作品${idx + 1}`,
+          author: '作者1',
+          category: category === 'doujin' ? '同人' : '韩漫',
+          categorySub: '',
+          updateAt: 1700000000,
+        }));
+        return { total: 30, items: list };
       },
       async close() {},
     }),
@@ -135,4 +146,14 @@ test('rankings 本地持久化缓存：命中复用、跨天/超时刷新、失�
   assert.equal(refreshed.dateKey, '2026-11-20');
   assert.equal(refreshed.payload.items[0].id, '200001');
   assert.notDeepEqual(fs.readFileSync(imagePath), firstBytes);
+
+  // 6) 同人分类小榜默认 24 本，缓存文件独立存放在 rank-daily-doujin.*，与全站互不覆盖
+  const doujin = await service.getRank('daily', { category: 'doujin' });
+  assert.equal(doujin.category, 'doujin');
+  assert.equal(doujin.topN, 24);
+  assert.match(doujin.payload.title, /同人日榜/);
+  const doujinFiles = rankFiles(root, 'daily', 'doujin');
+  assert.ok(doujinFiles.imagePath.endsWith('rank-daily-doujin.jpg'));
+  assert.ok(fs.existsSync(doujinFiles.jsonPath));
+  assert.ok(fs.existsSync(imagePath));
 });

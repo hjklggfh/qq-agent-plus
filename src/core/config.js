@@ -340,6 +340,10 @@ export function updateConfig(patch) {
       const n = Number(jmPatch.rankTopN);
       if (!Number.isInteger(n) || n < 4 || n > 60) throw new Error('JM 榜单展示条数须为 4～60 的整数');
     }
+    if (Object.hasOwn(jmPatch, 'rankCategoryTopN')) {
+      const n = Number(jmPatch.rankCategoryTopN);
+      if (!Number.isInteger(n) || n < 4 || n > 60) throw new Error('JM 分类小榜展示条数须为 4～60 的整数');
+    }
     if (Object.hasOwn(jmPatch, 'rankCacheTtlMinutes')) {
       const m = Number(jmPatch.rankCacheTtlMinutes);
       if (!Number.isInteger(m) || m < 5 || m > 1440) throw new Error('JM 榜单缓存刷新间隔须为 5～1440 分钟');

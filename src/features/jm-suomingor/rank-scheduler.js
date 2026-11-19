@@ -214,7 +214,7 @@ export class JmRankPushManager {
       signal.throwIfAborted();
       const kind = normalizeRankKind(rawKind);
       try {
-        const res = await this.getRank(kind, { force: forceRefresh, topN: cfg.topN });
+        const res = await this.getRank(kind, { force: forceRefresh, category: 'all', topN: cfg.topN });
         prepared.push(res);
       } catch (error) {
         const msg = String(error?.message ?? error);
@@ -239,10 +239,15 @@ export class JmRankPushManager {
         continue;
       }
       let chatOk = true;
-      for (const rank of prepared) {
+      for (let rIdx = 0; rIdx < prepared.length; rIdx++) {
+        const rank = prepared[rIdx];
         if (signal.aborted) break;
         try {
-          const caption = `${rank.payload.title}\n${rank.payload.subtitle}`;
+          const baseCaption = `${rank.payload.title}\n${rank.payload.subtitle}`;
+          const hint = rIdx === prepared.length - 1
+            ? '\n💡 也可发送「JM月榜」「JM热门」「JM同人日榜」「JM同人周榜」获取其他榜单，发「jm」查看全部指令。'
+            : '';
+          const caption = `${baseCaption}${hint}`;
           await this.onebot.sendSegments('group', groupId, [
             { type: 'text', data: { text: caption } },
             { type: 'image', data: { file: `file://${rank.imagePath}` } },

@@ -2,10 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const RANK_META = Object.freeze({
-  daily: { kind: 'daily', label: 'JM日榜', title: '🔥 今日 JM 热度日榜' },
-  weekly: { kind: 'weekly', label: 'JM周榜', title: '📈 本周 JM 热度周榜' },
-  monthly: { kind: 'monthly', label: 'JM月榜', title: '🗓 本月 JM 热度月榜' },
-  total: { kind: 'total', label: 'JM热门总榜', title: '🏆 JM 热门总榜' },
+  daily: { kind: 'daily', label: 'JM日榜', title: '🔥 今日 JM 热度日榜', shortLabel: '日榜', periodPrefix: '今日 JM' },
+  weekly: { kind: 'weekly', label: 'JM周榜', title: '📈 本周 JM 热度周榜', shortLabel: '周榜', periodPrefix: '本周 JM' },
+  monthly: { kind: 'monthly', label: 'JM月榜', title: '🗓 本月 JM 热度月榜', shortLabel: '月榜', periodPrefix: '本月 JM' },
+  total: { kind: 'total', label: 'JM热门总榜', title: '🏆 JM 热门总榜', shortLabel: '热门总榜', periodPrefix: 'JM' },
+});
+
+export const RANK_CATEGORIES = Object.freeze({
+  all: { category: 'all', slug: '0', label: '', prefix: 'JM' },
+  doujin: { category: 'doujin', slug: 'doujin', label: '同人', prefix: 'JM同人' },
 });
 
 export function normalizeRankKind(kind) {
@@ -13,13 +18,44 @@ export function normalizeRankKind(kind) {
   return Object.hasOwn(RANK_META, k) ? k : 'daily';
 }
 
-export function rankFiles(dataRoot, kind) {
+export function normalizeRankCategory(category) {
+  const raw = String(category || 'all').trim().toLowerCase();
+  if (!raw || raw === 'all' || raw === '0' || raw === '全部' || raw === '总榜' || raw === '全站') return 'all';
+  if (raw === 'doujin' || raw === '同人') return 'doujin';
+  return 'all';
+}
+
+export function rankDisplayInfo(kind, category = 'all') {
   const k = normalizeRankKind(kind);
+  const c = normalizeRankCategory(category);
+  const meta = RANK_META[k];
+  const catMeta = RANK_CATEGORIES[c];
+  if (c === 'all') {
+    return { kind: k, category: c, label: meta.label, title: meta.title };
+  }
+  const titleMap = {
+    daily: `🔥 今日 JM ${catMeta.label}日榜`,
+    weekly: `📈 本周 JM ${catMeta.label}周榜`,
+    monthly: `🗓 本月 JM ${catMeta.label}月榜`,
+    total: `🏆 JM ${catMeta.label}热门总榜`,
+  };
+  return {
+    kind: k,
+    category: c,
+    label: `${catMeta.prefix}${meta.shortLabel}`,
+    title: titleMap[k] || `${meta.title}（${catMeta.label}）`,
+  };
+}
+
+export function rankFiles(dataRoot, kind, category = 'all') {
+  const k = normalizeRankKind(kind);
+  const c = normalizeRankCategory(category);
   const dir = path.join(String(dataRoot), 'ranks');
+  const suffix = c === 'all' ? '' : `-${c}`;
   return {
     dir,
-    jsonPath: path.join(dir, `rank-${k}.json`),
-    imagePath: path.join(dir, `rank-${k}.jpg`),
+    jsonPath: path.join(dir, `rank-${k}${suffix}.json`),
+    imagePath: path.join(dir, `rank-${k}${suffix}.jpg`),
   };
 }
 
@@ -50,8 +86,8 @@ function isValidImageFile(filePath) {
   }
 }
 
-export function readRankCache(dataRoot, kind) {
-  const { jsonPath, imagePath } = rankFiles(dataRoot, kind);
+export function readRankCache(dataRoot, kind, category = 'all') {
+  const { jsonPath, imagePath } = rankFiles(dataRoot, kind, category);
   try {
     if (!isValidImageFile(imagePath)) return null;
     const parsed = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
@@ -97,24 +133,26 @@ export function createRankService(deps = {}) {
   const sanitizeTitle = (x) => (typeof deps.cleanTitle === 'function' ? deps.cleanTitle(x) : String(x ?? ''));
   const clockNow = () => (typeof deps.now === 'function' ? deps.now() : Date.now());
 
-  async function refreshAndStore(kind, { topN }) {
+  async function refreshAndStore(kind, { category = 'all', topN }) {
     const k = normalizeRankKind(kind);
-    const meta = RANK_META[k];
+    const cat = normalizeRankCategory(category);
+    const catMeta = RANK_CATEGORIES[cat];
+    const display = rankDisplayInfo(k, cat);
     const dataRoot = deps.getDataRoot();
     const settings = deps.getSettings();
-    const { dir, jsonPath, imagePath } = rankFiles(dataRoot, k);
+    const { dir, jsonPath, imagePath } = rankFiles(dataRoot, k, cat);
     await fs.promises.mkdir(dir, { recursive: true });
 
     const client = deps.createClient();
     let raw;
     try {
-      raw = await client.rankAlbums(k, 1);
+      raw = await client.rankAlbums(k, 1, catMeta.slug);
     } finally {
       try { await client.close?.(); } catch { /* ignore */ }
     }
 
     const picked = (raw?.items || []).slice(0, topN);
-    if (!picked.length) throw new Error(`${meta.label}返回为空`);
+    if (!picked.length) throw new Error(`${display.label}返回为空`);
 
     const items = picked.map((row, index) => {
       const cat = [row.category, row.categorySub].map((s) => simplify(String(s || '').trim())).filter(Boolean);
@@ -161,13 +199,14 @@ export function createRankService(deps = {}) {
     const dateKey = beijingDateKey(fetchedAt);
     const stamp = beijingStamp(fetchedAt);
     const payload = {
-      title: `${meta.title}（Top ${items.length}）`,
+      title: `${display.title}（Top ${items.length}）`,
       subtitle: `${stamp} 更新 · 发送编号（如 jm${items[0].id}）即可下载`,
-      footnote: `${meta.label} · 前 ${items.length} 本 · 本地缓存于 ${stamp}`,
+      footnote: `${display.label} · 前 ${items.length} 本 · 本地缓存于 ${stamp}`,
       items: items.map(({ rawTitle: _rawTitle, ...rest }) => rest),
     };
 
-    const tmpImg = path.join(dir, `rank-${k}.${process.pid}.${fetchedAt}.tmp.jpg`);
+    const catSuffix = cat === 'all' ? '' : `-${cat}`;
+    const tmpImg = path.join(dir, `rank-${k}${catSuffix}.${process.pid}.${fetchedAt}.tmp.jpg`);
     try {
       await deps.renderDigestImage({
         payload,
@@ -184,7 +223,8 @@ export function createRankService(deps = {}) {
 
     const record = {
       kind: k,
-      label: meta.label,
+      category: cat,
+      label: display.label,
       dateKey,
       fetchedAt,
       fetchedAtText: stamp,
@@ -193,7 +233,7 @@ export function createRankService(deps = {}) {
       payload,
     };
     atomicWriteJson(jsonPath, record);
-    deps.log?.(`[jm-rank] ${meta.label}已刷新并原子落盘（${items.length} 本）`);
+    deps.log?.(`[jm-rank] ${display.label}已刷新并原子落盘（${items.length} 本）`);
     return {
       ...record,
       imagePath,
@@ -203,13 +243,18 @@ export function createRankService(deps = {}) {
     };
   }
 
-  async function getRank(kind = 'daily', { force = false, topN, ttlMinutes } = {}) {
+  async function getRank(kind = 'daily', { force = false, category = 'all', topN, ttlMinutes } = {}) {
     const k = normalizeRankKind(kind);
+    const cat = normalizeRankCategory(category);
+    const display = rankDisplayInfo(k, cat);
     const settings = deps.getSettings();
-    const limit = Math.min(60, Math.max(4, Number(topN ?? settings.rankTopN) || 48));
+    const defaultN = cat === 'all'
+      ? (Number(settings.rankTopN) || 48)
+      : (Number(settings.rankCategoryTopN) || RANK_CATEGORIES[cat]?.defaultTopN || 24);
+    const limit = Math.min(60, Math.max(4, Number(topN ?? defaultN) || defaultN));
     const ttl = Math.max(5, Math.min(1440, Number(ttlMinutes ?? settings.rankCacheTtlMinutes) || 60));
     const dataRoot = deps.getDataRoot();
-    const existing = readRankCache(dataRoot, k);
+    const existing = readRankCache(dataRoot, k, cat);
 
     const cachedLimit = Number(existing?.requestedTopN ?? existing?.topN ?? 0);
     if (!force && existing && cachedLimit === limit && isRankCacheFresh(existing, { ttlMinutes: ttl, now: clockNow() })) {
@@ -220,10 +265,10 @@ export function createRankService(deps = {}) {
       };
     }
 
-    const inflightKey = `${k}:${limit}`;
+    const inflightKey = `${k}:${cat}:${limit}`;
     let pending = inFlight.get(inflightKey);
     if (!pending) {
-      pending = refreshAndStore(k, { topN: limit }).finally(() => inFlight.delete(inflightKey));
+      pending = refreshAndStore(k, { category: cat, topN: limit }).finally(() => inFlight.delete(inflightKey));
       inFlight.set(inflightKey, pending);
     }
 
@@ -231,7 +276,7 @@ export function createRankService(deps = {}) {
       return await pending;
     } catch (error) {
       if (existing) {
-        deps.warn?.(`[jm-rank] 刷新 ${RANK_META[k].label} 失败，沿用旧缓存（${existing.fetchedAtText || '历史'}）：${error?.message ?? error}`);
+        deps.warn?.(`[jm-rank] 刷新 ${display.label} 失败，沿用旧缓存（${existing.fetchedAtText || '历史'}）：${error?.message ?? error}`);
         return {
           ...existing,
           fromCache: true,
@@ -245,6 +290,6 @@ export function createRankService(deps = {}) {
 
   return {
     getRank,
-    readCache: (kind) => readRankCache(deps.getDataRoot(), kind),
+    readCache: (kind, category = 'all') => readRankCache(deps.getDataRoot(), kind, category),
   };
 }

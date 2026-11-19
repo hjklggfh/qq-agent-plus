@@ -87,6 +87,7 @@ async function saveConfig({ quiet = false } = {}) {
       translateTitles: chk('#cfg-jm-translate', true),
       pythonPath: val('#cfg-jm-python').trim(),
       rankTopN: clampInt(val('#cfg-jm-rank-top-n', 48), 4, 60, 48),
+      rankCategoryTopN: clampInt(val('#cfg-jm-rank-cat-top-n', 24), 4, 60, 24),
       rankCacheTtlMinutes: clampInt(val('#cfg-jm-rank-ttl', 60), 5, 1440, 60),
       rankPushEnabled: chk('#cfg-jm-rank-push-enabled', false),
       rankPushTime: val('#cfg-jm-rank-push-time', '00:05').trim() || '00:05',

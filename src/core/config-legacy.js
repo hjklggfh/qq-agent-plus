@@ -74,6 +74,7 @@ export const DEFAULT_CONFIG = {
     translateTitles: true,
     pythonPath: '',
     rankTopN: 48,
+    rankCategoryTopN: 24,
     rankCacheTtlMinutes: 60,
     rankPushEnabled: false,
     rankPushTime: '00:05',

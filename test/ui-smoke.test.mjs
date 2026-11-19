@@ -39,6 +39,7 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
         concurrency: 48,
         cdnStrategy: 'fixed',
         rankTopN: 48,
+        rankCategoryTopN: 24,
         rankCacheTtlMinutes: 60,
         rankPushEnabled: true,
         rankPushTime: '00:05',
@@ -57,6 +58,8 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
     assert.equal(container.querySelector('#cfg-jm-cdn-strategy').value, 'fixed');
     assert.equal(container.querySelector('#cfg-jm-rank-top-n').max, '60');
     assert.equal(container.querySelector('#cfg-jm-rank-top-n').value, '48');
+    assert.equal(container.querySelector('#cfg-jm-rank-cat-top-n').max, '60');
+    assert.equal(container.querySelector('#cfg-jm-rank-cat-top-n').value, '24');
     assert.equal(container.querySelector('#cfg-jm-rank-ttl').value, '60');
     assert.equal(container.querySelector('#cfg-jm-rank-push-enabled').checked, true);
     assert.equal(container.querySelector('#cfg-jm-rank-push-time').value, '00:05');
@@ -70,6 +73,7 @@ test('JM 并发 1～48 与 CDN 回退策略在真实 DOM 显示、保存后保�
     assert.equal(patches[0].jm.concurrency, 48);
     assert.equal(patches[0].jm.cdnStrategy, 'fixed');
     assert.equal(patches[0].jm.rankTopN, 48);
+    assert.equal(patches[0].jm.rankCategoryTopN, 24);
     assert.equal(patches[0].jm.rankCacheTtlMinutes, 60);
     assert.equal(patches[0].jm.rankPushEnabled, true);
     assert.equal(patches[0].jm.rankPushTime, '00:05');
