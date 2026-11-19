@@ -965,6 +965,7 @@ async function runJob(job) {
         pagesOk: dl.totals.ok,
         downloadedAt: new Date().toISOString(),
         dir: dl.albumDir,
+        scrambleId: Number(dl.scrambleId || 0),
         // 名字被翻译过时留一份日文原文，方便回溯/纠错（没翻就不写这个字段）
         ...(jpName && jpName !== baseName ? { nameOriginal: baseName } : {}),
         pdf: pdfInfo ? { bytes: pdfInfo.bytes, pages: pdfInfo.pages, pagesOk: pdfInfo.pagesOk, restored: pdfInfo.restored } : null,
@@ -1087,7 +1088,12 @@ async function runJob(job) {
     const displayName = toSimplified(dl.album.name);
     let cardSent = false;
     try {
-      const cover = firstPageImage(dl.albumDir) || await fetchSiteCover(String(dl.album.id));
+      const coverInfo = await resolveAlbumCover({
+        albumId: dl.album.id,
+        albumDir: dl.albumDir,
+        scrambleId: dl.scrambleId || dl.cachedPdf?.meta?.scrambleId || 0,
+        settings: c,
+      });
       const payload = {
         id: String(dl.album.id),
         title: cleanTitle(displayName) || displayName,
@@ -1096,11 +1102,17 @@ async function runJob(job) {
         kind: `${dl.chapters.length} 话 · ${dl.totals.ok} 张`,
         pdf: pdfInfo ? `PDF ${pdfInfo.pages} 页（${humanSize(pdfInfo.bytes)}）` : '',
         desc: toSimplified(String(dl.album.description || '')).slice(0, 400),
-        cover,
+        cover: coverInfo.cover,
+        cover_scramble_id: coverInfo.coverScrambleId,
+        cover_scrambled: coverInfo.coverScrambled,
       };
       // 与 PDF 使用同一个数据根目录，协议容器只挂载该目录；不同会话不能相互覆盖。
-      const imagePath = await renderAlbumImage({ payload,
-        outPath: path.join(downloadRoot(), `album-card-${chatKey.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`) });
+      const imagePath = await renderAlbumImage({
+        payload,
+        outPath: path.join(downloadRoot(), `album-card-${chatKey.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`),
+        settings: { ...c, downloadDir: downloadRoot() },
+        pythonPath: c.pythonPath,
+      });
       cardSent = await sendAlbumCard(onebot, chatKey, imagePath);
     } catch (error) {
       warn(`简介卡片渲染/发送失败，降级文字版：${error?.message ?? error}`);
@@ -1886,7 +1898,13 @@ const JM_CONTROL_OWNER_ID = '2118530760';
               footnote: `共 ${items.length} 本 · 发漫画编号即可下载`,
               items,
             };
-            const imagePath = await renderDigestImage({ payload, outPath: path.join(root, '..', 'today-list.jpg') });
+            const currentCfg = cfg();
+            const imagePath = await renderDigestImage({
+              payload,
+              outPath: path.join(root, '..', 'today-list.jpg'),
+              settings: { ...currentCfg, downloadDir: downloadRoot() },
+              pythonPath: currentCfg.pythonPath,
+            });
             const sent = await sendDigestImage({ onebot: ctx?.onebot, chatKey, payload, imagePath });
             if (sent === true) {
               return {
@@ -1955,7 +1973,12 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             footnote: `共 ${payload.items.length} 本（站点当日新上架/新章节）`,
             items: payload.items,
           };
-          const imagePath = await renderDigestImage({ payload: full });
+          const currentCfg = cfg();
+          const imagePath = await renderDigestImage({
+            payload: full,
+            settings: { ...currentCfg, downloadDir: downloadRoot() },
+            pythonPath: currentCfg.pythonPath,
+          });
           const sent = await sendDigestImage({ onebot: ctx?.onebot, chatKey, payload: full, imagePath });
           if (sent === true) {
             return {
@@ -2258,7 +2281,7 @@ async function buildTodayItems(root, { limit = 50 } = {}) {
     return { title: zh, apply: (t) => { const x = toSimplified(String(t || '').trim()); if (x) meta.name = x; } };
   }));
 
-  const mapped = shown.map((e) => {
+  const mapped = await mapWithLimit(shown, 6, async (e) => {
     const meta = detail.get(String(e.id)) || {};
     const rawName = toSimplified(String(meta.name || e.name || ('JM' + e.id)).trim());
     const name = cleanTitle(rawName) || rawName;
@@ -2269,22 +2292,73 @@ async function buildTodayItems(root, { limit = 50 } = {}) {
     const tags = Array.isArray(meta.tags)
       ? meta.tags.map((t) => toSimplified(String(t).trim())).filter(Boolean)
       : [];
+    const coverInfo = await resolveAlbumCover({
+      albumId: e.id,
+      albumDir: e.dir,
+      scrambleId: meta.scrambleId || 0,
+    });
     return {
       id: String(e.id),
       title: name,
       kind: [pages ? `${pages} 页` : '', e.pdf ? 'PDF' : ''].filter(Boolean).join('·'),
       tags: [...authors.slice(0, 2), ...tags.slice(0, 3)],
-      cover: firstPageImage(e.dir),
+      cover: coverInfo.cover,
+      cover_scramble_id: coverInfo.coverScrambleId,
+      cover_scrambled: coverInfo.coverScrambled,
     };
   });
-  // 封面兜底：本地图被「合成 PDF 后删原图」清掉时，从站点拉（daily-covers 有缓存）
-  for (const it of mapped) {
-    if (it.cover) continue;
-    try {
-      it.cover = await fetchSiteCover(it.id);
-    } catch { /* 拉不到就显示"无封面"占位 */ }
-  }
   return mapped;
+}
+
+/**
+ * 有限并发映射，避免书架多本并发拉封面时串行过慢或压垮出口。
+ */
+async function mapWithLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const idx = cursor++;
+      out[idx] = await fn(items[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/**
+ * 解析信息卡封面：优先从站点拉官方未混淆 3:4 封面，拉不到再兜底本地第一页（并附带 scrambleId 以便还原）。
+ */
+async function resolveAlbumCover({ albumId, albumDir, scrambleId = 0, settings = cfg() }) {
+  const hostFetch = fetchImpl();
+  const safeFetch = typeof hostFetch === 'function'
+    ? async (...args) => {
+        try {
+          return await hostFetch(...args);
+        } catch (error) {
+          if (/只能在工具执行期间使用/.test(String(error?.message ?? error))) {
+            return globalThis.fetch(...args);
+          }
+          throw error;
+        }
+      }
+    : undefined;
+  let siteCover = '';
+  try {
+    siteCover = await fetchSiteCover(String(albumId), {
+      ...settings,
+      downloadDir: settings.downloadDir || downloadRoot(),
+      fetchImpl: safeFetch,
+    });
+  } catch { /* 拉不到再兜底本地图 */ }
+  if (siteCover) return { cover: siteCover, coverScrambleId: 0, coverScrambled: false };
+  const localCover = firstPageImage(albumDir);
+  const sid = Number(scrambleId || 0);
+  return {
+    cover: localCover,
+    coverScrambleId: localCover && sid > 0 ? sid : 0,
+    coverScrambled: Boolean(localCover && sid > 0),
+  };
 }
 
 /**

@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as engine from './engine.js';
+import { findPython } from './pdf.js';
 
 const SKILL_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_ID = (() => {
@@ -38,23 +39,43 @@ const SKILL_ID = (() => {
   return path.basename(SKILL_DIR) || 'jm-suomingor';
 })();
 
-const HOST_ROOT = path.resolve(SKILL_DIR, '..', '..'); // qq-agent 根目录
+// 迁入宿主 src/features/jm-suomingor/ 后，应用根在上三级；兼容旧插件目录（上两级）与环境变量数据目录。
+const HOST_CANDIDATES = [
+  path.resolve(SKILL_DIR, '..', '..', '..'),
+  path.resolve(SKILL_DIR, '..', '..'),
+];
 const STATE_KEEP_DAYS = 3; // 状态归档保留天数（防文件无限增长）
 const MAX_ITEMS = 300;     // 单日上限：超过不再追加（防异常刷爆）
 
+function resolveDataDir(settings = {}) {
+  const explicit = String(settings?.dataDir ?? process.env.QQ_AGENT_DATA_DIR ?? '').trim();
+  if (explicit) return explicit;
+  for (const root of HOST_CANDIDATES) {
+    const dataDir = path.join(root, 'data');
+    if (fs.existsSync(path.join(dataDir, 'config.json'))) return dataDir;
+  }
+  return path.join(HOST_CANDIDATES[0], 'data');
+}
+
 function readHostSettings() {
+  const dataDir = resolveDataDir();
   try {
-    const c = JSON.parse(fs.readFileSync(path.join(HOST_ROOT, 'data', 'config.json'), 'utf8'));
-    return c?.plugins?.settings?.[SKILL_ID] ?? c?.skills?.[SKILL_ID] ?? {};
+    const c = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8'));
+    const raw = c?.jm ?? c?.plugins?.settings?.[SKILL_ID] ?? c?.skills?.[SKILL_ID] ?? {};
+    return { dataDir, ...raw };
   } catch {
-    return {};
+    return { dataDir };
   }
 }
 
-/** 数据目录：尊重技能设置里的自定义下载目录（与 index.js 的 downloadRoot 同一套规则）。 */
+/** 数据目录：尊重技能设置里的自定义下载目录，或宿主数据目录下的 plugin-state/jm-suomingor。 */
 export function dataRoot(settings = readHostSettings()) {
-  const custom = String(settings.downloadDir ?? '').trim();
-  return custom ? custom : path.join(HOST_ROOT, 'data', SKILL_ID);
+  const custom = String(settings?.downloadDir ?? '').trim();
+  if (custom) return custom;
+  const dataDir = resolveDataDir(settings);
+  const pluginState = path.join(dataDir, 'plugin-state', SKILL_ID);
+  if (fs.existsSync(pluginState) || fs.existsSync(path.join(dataDir, 'config.json'))) return pluginState;
+  return path.join(dataDir, SKILL_ID);
 }
 
 export const stateFile = (settings) => path.join(dataRoot(settings), 'daily_updates.json');
@@ -70,8 +91,10 @@ export function todayStartTs(now = Date.now()) {
   return Math.floor(Date.parse(`${todayKey(now)}T00:00:00+08:00`) / 1000);
 }
 
-function readSettingsAndPaths() {
-  const settings = readHostSettings();
+function readSettingsAndPaths(settingsOverride = null) {
+  const settings = settingsOverride && typeof settingsOverride === 'object'
+    ? { ...readHostSettings(), ...settingsOverride }
+    : readHostSettings();
   return { settings, statePath: stateFile(settings), coversPath: coverDir(settings) };
 }
 
@@ -90,11 +113,32 @@ async function fetchLatestPage(client, page) {
   return Array.isArray(r) ? r : (r?.list ?? r?.content ?? []);
 }
 
+function isValidImageBuffer(b) {
+  return Boolean(b?.length > 1024) && ((b[0] === 0xff && b[1] === 0xd8) || b[0] === 0x89 || (b[0] === 0x52 && b[1] === 0x49));
+}
+
+function hasCachedImage(filePath) {
+  try {
+    const st = fs.statSync(filePath);
+    if (!st.isFile() || st.size <= 1024) return false;
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const head = Buffer.alloc(4);
+      const n = fs.readSync(fd, head, 0, 4, 0);
+      return n >= 2 && ((head[0] === 0xff && head[1] === 0xd8) || head[0] === 0x89 || (head[0] === 0x52 && head[1] === 0x49));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
 /** 下载封面 /media/albums/<id>_3x4.jpg，多域名轮询。失败返回 ''（不致命）。 */
 async function fetchCover(client, albumId, coversPath) {
   fs.mkdirSync(coversPath, { recursive: true });
   const target = path.join(coversPath, `${albumId}.jpg`);
-  if (fs.existsSync(target) && fs.statSync(target).size > 1024) return target;
+  if (hasCachedImage(target)) return target;
   const ts = Math.floor(Date.now() / 1000);
   for (const domain of engine.IMAGE_DOMAINS) {
     for (const q of [`?v=${ts}`, '']) {
@@ -110,11 +154,8 @@ async function fetchCover(client, albumId, coversPath) {
           retries: 0,
         },
       );
-      if (res.ok && res.buffer?.length > 1024) {
-        const b = res.buffer;
-        const looksLikeImage = (b[0] === 0xff && b[1] === 0xd8) || b[0] === 0x89 || (b[0] === 0x52 && b[1] === 0x49);
-        if (!looksLikeImage) continue;
-        fs.writeFileSync(target, b);
+      if (res.ok && isValidImageBuffer(res.buffer)) {
+        fs.writeFileSync(target, res.buffer);
         return target;
       }
     }
@@ -134,14 +175,17 @@ function pruneOldCovers(keepIds, coversPath) {
 
 /**
  * 按 albumId 从站点拉封面（/media/albums/<id>_3x4.jpg），结果缓存在 daily-covers。
- * 供「今日JM」书架卡片兜底用：本地图被 PDF 合成清掉时，卡片还能有图。
+ * 供信息卡与「今日JM」书架卡片优先使用（未混淆的官方 3:4 封面）。
+ * @param {string|number} albumId
+ * @param {object} [settingsOverride] 宿主运行配置（downloadDir/dataDir/domains/proxy/timeoutSeconds/fetchImpl）
  * @returns {Promise<string>} 本地 jpg 路径；失败返回 ''
  */
-export async function fetchSiteCover(albumId) {
-  const { coversPath, settings } = readSettingsAndPaths();
+export async function fetchSiteCover(albumId, settingsOverride = null) {
+  const { coversPath, settings } = readSettingsAndPaths(settingsOverride);
   try {
+    const fetchFn = typeof settings.fetchImpl === 'function' ? settings.fetchImpl : globalThis.fetch.bind(globalThis);
     const client = engine.createClient({
-      fetchImpl: globalThis.fetch.bind(globalThis),
+      fetchImpl: fetchFn,
       timeoutMs: () => (Number(settings.timeoutSeconds) || 30) * 1000,
       domains: settings.domains || '',
       warn: () => {},
@@ -381,19 +425,20 @@ export async function sendDigest({ onebot, chatKey, digest, covers = 10 }) {
 
 // ───────────────────────── 图片版（默认） ─────────────────────────
 
-const PYTHON_CANDIDATES = ['python3', '/usr/bin/python3'];
-
-/** 起 python3 跑 daily_image.py 的通用壳子（JSON 从 stdin 喂，成功返回目标路径）。 */
-async function spawnPythonRender(extraArgs, payload, target) {
-  const py = PYTHON_CANDIDATES[0];
+/** 起 python 跑 daily_image.py 的通用壳子（JSON 从 stdin 喂，成功返回目标路径）。 */
+async function spawnPythonRender(extraArgs, payload, target, pythonPath = '') {
+  const detected = findPython(pythonPath);
+  const py = detected.ok ? detected.exe : (String(pythonPath || '').trim() || 'python3');
   const script = path.join(SKILL_DIR, 'daily_image.py');
   const { spawn } = await import('node:child_process');
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
+  const args = py === 'py' ? ['-3', script, ...extraArgs, target] : [script, ...extraArgs, target];
 
   return new Promise((resolve, reject) => {
-    const child = spawn(py, [script, ...extraArgs, target], {
+    const child = spawn(py, args, {
       cwd: SKILL_DIR,
       stdio: ['pipe', 'ignore', 'pipe'],
+      windowsHide: true,
     });
     let errOut = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 60000);
@@ -410,28 +455,32 @@ async function spawnPythonRender(extraArgs, payload, target) {
 
 /**
  * 把处理后的清单渲染成一张信息图（封面网格卡片）。
- * 调 python3 + daily_image.py（Pillow），条目 JSON 从 stdin 喂进去。
+ * 调 python + daily_image.py（Pillow），条目 JSON 从 stdin 喂进去。
  * @param {object} opts
  * @param {{title:string, subtitle:string, footnote:string, items:Array}} opts.payload
  * @param {string} [opts.outPath]   输出 jpg 路径（默认 dataRoot/daily-digest.jpg）
+ * @param {object} [opts.settings]
+ * @param {string} [opts.pythonPath]
  * @returns {Promise<string>} 成功返回图片路径；失败抛错（调用方降级到文字版）
  */
-export async function renderDigestImage({ payload, outPath } = {}) {
-  const { coversPath } = readSettingsAndPaths();
+export async function renderDigestImage({ payload, outPath, settings, pythonPath } = {}) {
+  const { coversPath, settings: resolved } = readSettingsAndPaths(settings);
   const target = outPath || path.join(path.dirname(coversPath), 'daily-digest.jpg');
-  return spawnPythonRender([], payload, target);
+  return spawnPythonRender([], payload, target, pythonPath || resolved.pythonPath);
 }
 
 /**
  * 单本「简介」信息卡（下载完成时发）。
- * @param {{id,title,authors,tags,kind,pdf,desc,cover}} payload
+ * @param {{id,title,authors,tags,kind,pdf,desc,cover,cover_scramble_id,cover_scrambled}} payload
  * @param {string} [outPath] 默认 dataRoot/album-card.jpg
+ * @param {object} [settings]
+ * @param {string} [pythonPath]
  * @returns {Promise<string>} 图片路径；失败抛错
  */
-export async function renderAlbumImage({ payload, outPath } = {}) {
-  const { coversPath } = readSettingsAndPaths();
+export async function renderAlbumImage({ payload, outPath, settings, pythonPath } = {}) {
+  const { coversPath, settings: resolved } = readSettingsAndPaths(settings);
   const target = outPath || path.join(path.dirname(coversPath), 'album-card.jpg');
-  return spawnPythonRender(['--album'], payload, target);
+  return spawnPythonRender(['--album'], payload, target, pythonPath || resolved.pythonPath);
 }
 
 /**

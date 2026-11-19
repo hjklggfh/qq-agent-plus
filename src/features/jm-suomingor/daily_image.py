@@ -12,6 +12,7 @@
 # 设计：5 列卡片；每张卡 = 封面(3:4 缩放) + 编号/JM编号(醒目) + 标题(最多2行) + 类型·标签。
 # 字体：DroidSansFallbackFull（服务器唯一中文字体，含假名）。
 
+import hashlib
 import json
 import math
 import os
@@ -27,12 +28,18 @@ FONT_CANDIDATES = [
     ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
     ("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf", 0),
+    ("C:/Windows/Fonts/msyh.ttc", 0),
+    ("C:/Windows/Fonts/simhei.ttf", 0),
 ]
-_FONT_PATH, _FONT_INDEX = FONT_CANDIDATES[-1]
+_FONT_PATH, _FONT_INDEX = None, 0
 for _p, _i in FONT_CANDIDATES:
     if os.path.exists(_p):
         _FONT_PATH, _FONT_INDEX = _p, _i
         break
+
+SCRAMBLE_268850 = 268850
+SCRAMBLE_421926 = 421926
+
 
 # 新字体没有 emoji 字形（📥 这类会变豆腐），画图前把 BMP 外的字符剥掉。
 def clean_glyphs(s):
@@ -40,7 +47,83 @@ def clean_glyphs(s):
 
 
 def load_font(size):
-    return ImageFont.truetype(_FONT_PATH, size, index=_FONT_INDEX)
+    if _FONT_PATH:
+        return ImageFont.truetype(_FONT_PATH, size, index=_FONT_INDEX)
+    return ImageFont.load_default()
+
+
+def segmentation_num(scramble_id, album_id, filename):
+    """与 jm_worker.py 一致的切块数算法（输入文件名为本地页图时必须去扩展名）。"""
+    try:
+        sid = int(scramble_id or 0)
+        aid = int(album_id or 0)
+    except (TypeError, ValueError):
+        return 0
+    if sid <= 0 or aid < sid:
+        return 0
+    if aid < SCRAMBLE_268850:
+        return 10
+    x = 10 if aid < SCRAMBLE_421926 else 8
+    stem = os.path.splitext(os.path.basename(str(filename)))[0]
+    last = hashlib.md5(f"{aid}{stem}".encode("utf-8")).hexdigest()[-1]
+    return (ord(last) % x) * 2 + 2
+
+
+def descramble_image(img, num):
+    """把被竖切混淆的页图还原，避免卡片封面变成条块错位堆砌。"""
+    if num <= 0:
+        return img
+    w, h = img.size
+    out = Image.new(img.mode, (w, h))
+    over = h % num
+    move = math.floor(h / num)
+    for i in range(num):
+        piece = move + over if i == 0 else move
+        y_src = h - (move * (i + 1)) - over
+        y_dst = 0 if i == 0 else move * i + over
+        out.paste(img.crop((0, y_src, w, y_src + piece)), (0, y_dst, w, y_dst + piece))
+    return out
+
+
+def prepare_cover(cover_path, tw, th, album_id="", scramble_id=0, cover_scrambled=False):
+    """读取封面图；仅当显式标记为未还原的本地页图时按 scramble_id 还原后再居中裁切。"""
+    if not cover_path or not os.path.exists(cover_path):
+        return None
+    try:
+        with Image.open(cover_path) as raw:
+            im = raw.convert("RGB")
+        if cover_scrambled:
+            num = segmentation_num(scramble_id, album_id, cover_path)
+            if num > 0:
+                im = descramble_image(im, num)
+        sw, sh = im.size
+        scale = max(tw / sw, th / sh)
+        nw, nh = int(sw * scale + 0.5), int(sh * scale + 0.5)
+        im = im.resize((nw, nh), Image.LANCZOS)
+        left = (nw - tw) // 2
+        top = (nh - th) // 2
+        return im.crop((left, top, left + tw, top + th))
+    except Exception:
+        return None
+
+
+def draw_cover_slot(img, draw, x, y, tw, th, radius, item, fallback_font):
+    """统一绘制圆角封面或无封面占位。"""
+    cover_img = prepare_cover(
+        item.get("cover") or "",
+        tw,
+        th,
+        album_id=item.get("id") or "",
+        scramble_id=item.get("cover_scramble_id") or 0,
+        cover_scrambled=bool(item.get("cover_scrambled")),
+    )
+    if cover_img is not None:
+        mask = Image.new("L", cover_img.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, cover_img.size[0], cover_img.size[1]), radius=radius, fill=255)
+        img.paste(cover_img, (x, y), mask)
+    else:
+        draw.rounded_rectangle((x, y, x + tw, y + th), radius=radius, fill=(52, 56, 68))
+        draw.text((x + max(10, tw // 2 - 42), y + th // 2 - 14), "无封面", font=fallback_font, fill=(120, 128, 140))
 
 COLS = 4
 CARD_W = 320
@@ -138,29 +221,7 @@ def main():
         )
 
         # 封面（居中裁成 3:4 再缩放；圆角粘贴，观感更柔和）
-        cover_img = None
-        cover_path = it.get("cover") or ""
-        if cover_path and os.path.exists(cover_path):
-            try:
-                im = Image.open(cover_path).convert("RGB")
-                tw, th = CARD_W - 8, COVER_H - 4
-                sw, sh = im.size
-                scale = max(tw / sw, th / sh)
-                nw, nh = int(sw * scale + 0.5), int(sh * scale + 0.5)
-                im = im.resize((nw, nh))
-                left = (nw - tw) // 2
-                top = (nh - th) // 2
-                cover_img = im.crop((left, top, left + tw, top + th))
-            except Exception:
-                cover_img = None
-        if cover_img is not None:
-            mask = Image.new("L", cover_img.size, 0)
-            ImageDraw.Draw(mask).rounded_rectangle((0, 0, cover_img.size[0], cover_img.size[1]), radius=10, fill=255)
-            img.paste(cover_img, (cx + 4, cy + 4), mask)
-        else:
-            draw.rectangle((cx + 4, cy + 4, cx + 4 + CARD_W - 8, cy + 4 + COVER_H - 4),
-                           fill=(52, 56, 68))
-            draw.text((cx + 14, cy + 4 + COVER_H // 2 - 14), "无封面", font=f_meta, fill=(120, 128, 140))
+        draw_cover_slot(img, draw, cx + 4, cy + 4, CARD_W - 8, COVER_H - 4, 10, it, f_meta)
 
         # 编号徽章条：唯一编号来源，深底 + 亮青大字，缩略图也能认出
         ty = cy + COVER_H + 6
@@ -220,7 +281,6 @@ def render_album(out_path):
     kind = clean_glyphs(payload.get("kind") or "")
     pdf = clean_glyphs(payload.get("pdf") or "")
     desc = clean_glyphs(payload.get("desc") or "").strip()
-    cover_path = payload.get("cover") or ""
 
     f_t = load_font(34)
     f_id = load_font(34)
@@ -253,25 +313,7 @@ def render_album(out_path):
     draw = ImageDraw.Draw(img)
 
     # 左：封面
-    cover = None
-    if cover_path and os.path.exists(cover_path):
-        try:
-            cimg = Image.open(cover_path).convert("RGB")
-            sw, sh = cimg.size
-            scale = max(COVER_AW / sw, COVER_AH / sh)
-            cimg = cimg.resize((int(sw * scale + 0.5), int(sh * scale + 0.5)))
-            left = (cimg.size[0] - COVER_AW) // 2
-            top = (cimg.size[1] - COVER_AH) // 2
-            cover = cimg.crop((left, top, left + COVER_AW, top + COVER_AH))
-        except Exception:
-            cover = None
-    if cover is not None:
-        mask = Image.new("L", cover.size, 0)
-        ImageDraw.Draw(mask).rounded_rectangle((0, 0, cover.size[0], cover.size[1]), radius=14, fill=255)
-        img.paste(cover, (28, 36), mask)
-    else:
-        draw.rounded_rectangle((28, 36, 28 + COVER_AW, 36 + COVER_AH), radius=14, fill=(52, 56, 68))
-        draw.text((28 + COVER_AW // 2 - 60, 36 + COVER_AH // 2 - 16), "无封面", font=f_line, fill=(120, 128, 140))
+    draw_cover_slot(img, draw, 28, 36, COVER_AW, COVER_AH, 14, payload, f_line)
 
     # 右：信息
     x0 = COVER_AW + 36 * 2
