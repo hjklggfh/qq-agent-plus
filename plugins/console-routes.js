@@ -468,7 +468,7 @@ export function installPluginRoutes(app, options = {}) {
       let purgeError = '';
       if (purgeState) {
         try {
-          fs.rmSync(pluginStateDir(DATA_DIR, id), { recursive: true, force: true });
+          fs.rmSync(pluginStateDir(dataDir, id), { recursive: true, force: true });
           purged = true;
         } catch (error) {
           // 数据没删掉不该让整个移除失败：配置那三处已经清了，如实报出来让人自己去看。

@@ -562,10 +562,14 @@ function requestExperimentOwnerUin(feature, current = '') {
       foot: '<button type="button" class="btn" data-owner-cancel>取消</button>'
         + '<button type="button" class="btn btn-primary" data-owner-confirm>继续上线</button>'
     });
+    let settled = false;
     const finish = (value) => {
+      if (settled) return;
+      settled = true;
       closeModelModal(overlay);
       resolve(value);
     };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(''); });
     overlay.querySelector('[data-owner-cancel]').addEventListener('click', () => finish(''));
     overlay.querySelector('.model-modal-close').addEventListener('click', () => finish(''));
     overlay.querySelector('[data-owner-confirm]').addEventListener('click', () => {

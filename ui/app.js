@@ -1167,6 +1167,7 @@ async function init() {
   checkUpdateNotice().catch(() => {});
 
   // 首启引导：关键配置（模型/白名单）没填就直接带去设置页
+  initSessionScrollLoader();
   try {
     // 复用上面那次 /api/config 的结果，少一次请求（首屏更快）
     const cfg = state.config || await api('/api/config');
@@ -1188,7 +1189,6 @@ async function init() {
   startListPoller();
   loadSessions();
   loadMemoryView();
-  initSessionScrollLoader();
 }
 
 // 启动：**必须等模块图全部求值完**再跑 init。

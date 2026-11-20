@@ -143,6 +143,7 @@ function runTaskUnqueued({ python, task, onProgress, timeoutMs = 300000 }) {
         windowsHide: true,
         env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
       });
+      child.stdin.on('error', () => { /* 忽略 worker 提前退出时的 EPIPE */ });
       if (task?.control) task.control.child = child;
     } catch (error) {
       resolve({ ok: false, error: `无法启动 Python：${error?.message ?? error}` });

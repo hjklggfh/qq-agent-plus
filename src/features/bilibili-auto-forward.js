@@ -119,13 +119,18 @@ export class BilibiliAutoForward {
     await this.sendCaption(chatKey, lines.length ? `B站搜索：${terms}\n${lines.join('\n')}` : `没有找到符合条件的 B 站视频：${terms}${result.error ? `（${result.error}）` : ''}`);
   }
   enqueue(task) {
+    const now = Date.now();
+    for (const [k, ts] of this.seen) {
+      if (now - ts >= 6 * 60 * 60_000) this.seen.delete(k);
+    }
     const key = `${task.chatKey}|${task.url}`;
     const previous = this.seen.get(key) || 0;
-    if (Date.now() - previous < 6 * 60 * 60_000) {
+    if (now - previous < 6 * 60 * 60_000) {
       this.log.info?.(`[bilibili] 跳过六小时内重复链接：${task.url}`);
       return;
     }
-    this.seen.set(key, Date.now()); this.pending.push(task);
+    if (this.seen.size >= 5000) this.seen.delete(this.seen.keys().next().value);
+    this.seen.set(key, now); this.pending.push(task);
     this.log.info?.(`[bilibili] 已入队：${task.url}（队列 ${this.pending.length}）`);
     this.pump();
   }

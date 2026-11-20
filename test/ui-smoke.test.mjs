@@ -743,3 +743,72 @@ test('真实 DOM 冒烟：第二人设设置页渲染、保存与叫回', { skip
     assert.equal(String(patch.altPersona.roleText ?? ''), '', '第二人设正文只存 personaSwitch 一份');
   } finally { window.happyDOM?.abort?.(); }
 });
+
+test('设置页数值 0 保留、会话切走后旧请求报错不覆盖新详情、实验模态框点遮罩正常收口', { skip: SKIP }, async () => {
+  const { window, ctx } = loadPage();
+  await settle();
+  try {
+    const baseCfg = {
+      api: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', temperature: 0.8, maxRounds: 12, thinking: 'auto' },
+      memory: { bailian: { enabled: false, minScore: 0.15, topN: 5 } },
+      proactive: { enabled: true, probability: 0.25 },
+      allow: { private: ['123456'], groups: [] },
+      allowAllWhenEmpty: false
+    };
+    window.__testCfg = structuredClone(baseCfg);
+    vm.runInContext('state.config = __testCfg;', ctx);
+
+    const patches = [];
+    window.fetch = async (url, opts = {}) => {
+      if (url === '/api/config' && opts.method === 'POST') {
+        patches.push(JSON.parse(opts.body));
+        return { ok: true, status: 200, json: async () => ({ config: baseCfg }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+
+    const holder = window.document.createElement('div');
+    holder.innerHTML = `
+      <input id="cfg-bailian-minscore" value="0" />
+      <input id="cfg-temperature" value="0" />
+      <input id="cfg-pro-prob" value="0" />
+    `;
+    window.document.body.append(holder);
+
+    vm.runInContext('state.settingsSection = "bailian";', ctx);
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches.at(-1).memory.bailian.minScore, 0);
+
+    vm.runInContext('state.settingsSection = "api";', ctx);
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches.at(-1).api.temperature, 0);
+
+    vm.runInContext('state.settingsSection = "chat";', ctx);
+    await window.saveConfig({ quiet: true });
+    assert.equal(patches.at(-1).proactive.probability, 0);
+
+    // requestExperimentOwnerUin：点击遮罩也必须 resolve('')，不能永远挂起
+    const ownerPromise = vm.runInContext('requestExperimentOwnerUin("incidents", "")', ctx);
+    const overlay = window.document.querySelector('.model-modal-overlay');
+    assert.ok(overlay, '应渲染实验管理员模态框');
+    overlay.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert.equal(await ownerPromise, '');
+
+    // loadSessionDetail：切到 B 后，A 的晚到失败不能覆盖 #session-detail
+    const detailEl = window.document.querySelector('#session-detail');
+    detailEl.innerHTML = '<div id="new-session-b">Session B</div>';
+    let rejectSlowA;
+    window.fetch = (url) => {
+      if (String(url).includes('/api/sessions/sess-a')) {
+        return new Promise((_resolve, reject) => { rejectSlowA = reject; });
+      }
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({}) });
+    };
+    vm.runInContext('state.currentSessionId = "sess-a"; state.tab = "sessions";', ctx);
+    const reqA = vm.runInContext('loadSessionDetail("sess-a")', ctx);
+    vm.runInContext('state.currentSessionId = "sess-b";', ctx);
+    rejectSlowA(new Error('late timeout'));
+    await reqA;
+    assert.ok(detailEl.querySelector('#new-session-b'), '切走后旧请求的报错不应覆盖新会话内容');
+  } finally { window.happyDOM?.abort?.(); }
+});

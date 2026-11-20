@@ -243,3 +243,13 @@ test('quota settings are validated as part of the report patch', () => {
   validateDailyReportPatch({ quota: { baseUrl: 'http://127.0.0.1:18045', webPassword: 'x' } });
   assert.equal(dailyReportConfig({ enabled: true, time: '23:00' }).quota.baseUrl, 'http://127.0.0.1:18045');
 });
+
+test('pre-send collection error or early return clears active controller', async t => {
+  const f = fixture(t, { host: async () => { throw new Error('boom'); } });
+  await assert.rejects(f.manager.tick(evening), /boom/);
+  assert.equal(f.manager.controller, null);
+
+  const f2 = fixture(t, { host: async () => { f2.cfg.runtime.paused = true; return host; } });
+  await f2.manager.tick(evening);
+  assert.equal(f2.manager.controller, null);
+});

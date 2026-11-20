@@ -39,6 +39,12 @@ async function saveConfig({ quiet = false } = {}) {
     const node = el(sel);
     return node ? node.checked : fallback;
   };
+  const num = (sel, existing, fallback) => {
+    const raw = String(val(sel, existing) ?? '').trim();
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  };
   const sec = state.settingsSection || 'api';
 
   const patch = {};
@@ -160,7 +166,7 @@ async function saveConfig({ quiet = false } = {}) {
         embeddingModel: val('#cfg-bailian-embed-model', c.memory?.bailian?.embeddingModel || 'text-embedding-v3').trim(),
         rerankModel: val('#cfg-bailian-rerank-model', c.memory?.bailian?.rerankModel || 'gte-rerank').trim(),
         topN: clampInt(val('#cfg-bailian-topn', c.memory?.bailian?.topN ?? 5), 1, 20, 5),
-        minScore: Math.max(0, Math.min(1, parseFloat(val('#cfg-bailian-minscore', c.memory?.bailian?.minScore ?? 0.15)) || 0.15))
+        minScore: Math.max(0, Math.min(1, num('#cfg-bailian-minscore', c.memory?.bailian?.minScore ?? 0.15, 0.15)))
       }
     };
   }
@@ -424,7 +430,7 @@ async function saveConfig({ quiet = false } = {}) {
           return c.api.extraBody || {};
         }
       })(),
-      temperature: Number(val('#cfg-temperature', c.api.temperature)) || 0.8,
+      temperature: num('#cfg-temperature', c.api.temperature, 0.8),
       maxRounds: Number(val('#cfg-maxrounds', c.api.maxRounds)) || 12,
       maxRunTokens: clampInt(
         val('#cfg-max-run-tokens', c.api.maxRunTokens),
@@ -822,7 +828,7 @@ async function saveConfig({ quiet = false } = {}) {
       enabled: chk('#cfg-proactive', !!c.proactive?.enabled),
       checkIntervalMinMs: Number(val('#cfg-pro-min', c.proactive?.checkIntervalMinMs)) || 1800000,
       checkIntervalMaxMs: Number(val('#cfg-pro-max', c.proactive?.checkIntervalMaxMs)) || 5400000,
-      probability: Number(val('#cfg-pro-prob', c.proactive?.probability)) || 0.25,
+      probability: num('#cfg-pro-prob', c.proactive?.probability, 0.25),
       // 默认 true（与升级前行为一致）：没这个控件时才退回已保存配置
       followUpEnabled: chk('#cfg-pro-followup', c.proactive?.followUpEnabled !== false),
       selfWakeEnabled: chk('#cfg-pro-selfwake', c.proactive?.selfWakeEnabled !== false)

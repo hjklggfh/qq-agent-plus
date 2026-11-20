@@ -638,3 +638,21 @@ test('Pixiv 已迁入宿主：旧配置归档保留，不再经插件接口清�
   assert.equal(saved.res.statusCode, 400);
   assert.deepEqual(getConfig().plugins.settings['pixiv-illust'], { ratings: ['safe'], 'group:123': ['safe', 'r18'], 'private:456': ['safe'] });
 });
+
+test('POST /api/plugins/remove：purgeState 清理的是注入的 dataDir，而非全局 DATA_DIR', async (t) => {
+  const customDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-plugin-custom-dir-'));
+  t.after(() => fs.rmSync(customDir, { recursive: true, force: true }));
+  const customState = path.join(customDir, 'plugin-state', 'hello');
+  const globalState = path.join(dataDir, 'plugin-state', 'hello');
+  fs.mkdirSync(customState, { recursive: true });
+  fs.mkdirSync(globalState, { recursive: true });
+  fs.writeFileSync(path.join(customState, 'k.txt'), 'custom');
+  fs.writeFileSync(path.join(globalState, 'k.txt'), 'global');
+
+  const { call } = setup({ enabled: ['hello'] }, { dataDir: customDir });
+  const { res, json } = await call('POST', '/api/plugins/remove', { body: { id: 'hello', purgeState: true } });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json.removed.purged, true);
+  assert.equal(fs.existsSync(customState), false, '应删除注入 dataDir 下的插件状态目录');
+  assert.equal(fs.existsSync(globalState), true, '不应误删全局 DATA_DIR 下的同名状态目录');
+});

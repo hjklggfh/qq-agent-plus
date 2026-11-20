@@ -460,6 +460,7 @@ async function spawnPythonRender(extraArgs, payload, target, pythonPath = '') {
       stdio: ['pipe', 'ignore', 'pipe'],
       windowsHide: true,
     });
+    child.stdin.on('error', () => { /* 忽略进程提前退出时的 EPIPE */ });
     let errOut = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 60000);
     child.on('error', (e) => { clearTimeout(timer); reject(e); });

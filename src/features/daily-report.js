@@ -47,7 +47,8 @@ export async function reportHostSnapshot(dataDir) {
     const text = await fs.promises.readFile('/proc/meminfo', 'utf8');
     const mem = Object.fromEntries([...text.matchAll(/^(\w+):\s+(\d+)/gm)].map(m => [m[1], Number(m[2]) * 1024]));
     host.memoryAvailable = mem.MemAvailable ?? host.memoryAvailable;
-    host.swapUsed = Math.max(0, mem.SwapTotal - mem.SwapFree);
+    const swapUsed = mem.SwapTotal - mem.SwapFree;
+    host.swapUsed = Number.isFinite(swapUsed) ? Math.max(0, swapUsed) : null;
   } catch { /* 非 Linux 主机降级为 os 指标。 */ }
   try {
     const info = await fs.promises.statfs(dataDir);
@@ -199,40 +200,42 @@ export class DailyReportManager {
     // Future keys also suppress delivery after a clock rollback.
     if (state?.day >= day) return;
     this.controller = new AbortController();
-    const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60000)]);
-    const [stats, host, quota] = await Promise.all([
-      this.options.usage(reportWindow(now)),
-      this.options.host(),
-      // 额度按"发报告这一刻"取：先让面板刷新，再读。
-      this.settings().content.quota ? this.collectQuota(this.settings().quota, signal) : null
-    ]);
-    signal.throwIfAborted();
-    const current = this.options.config();
-    if (!this.settings().enabled || this.settings().time !== settings.time || current.runtime?.mode !== 'active'
-      || current.runtime?.paused || current.admin?.ownerUin !== owner || !this.options.available()) return;
-    const text = formatDailyReport({ now, stats, host, connected: this.options.available(), runtime: current.runtime,
-      content: this.settings().content, quota });
-    const save = async record => {
-      const temp = `${file}.${process.pid}.tmp`;
-      const handle = await fs.promises.open(temp, 'w', 0o600);
-      try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); }
-      finally { await handle.close(); }
-      await fs.promises.rename(temp, file);
-      this.last = record;
-    };
-    // Persist before any QQ write; restart or unknown delivery must never replay.
-    const record = { day, at: now, outcome: 'unknown', owner };
-    await save(record);
     try {
+      const signal = AbortSignal.any([this.controller.signal, AbortSignal.timeout(60000)]);
+      const [stats, host, quota] = await Promise.all([
+        this.options.usage(reportWindow(now)),
+        this.options.host(),
+        // 额度按"发报告这一刻"取：先让面板刷新，再读。
+        this.settings().content.quota ? this.collectQuota(this.settings().quota, signal) : null
+      ]);
       signal.throwIfAborted();
-      const latest = this.options.config();
-      if (!this.settings().enabled || latest.runtime?.mode !== 'active' || latest.runtime?.paused
-        || latest.admin?.ownerUin !== owner || !this.options.available()) return;
-      await this.options.send(owner, text, signal, `daily-report:${day}`);
-      await save({ ...record, outcome: 'sent' });
-    } catch {
-      // Conservative hold, including partial delivery: no automatic repeat today.
-      this.last = record;
+      const current = this.options.config();
+      if (!this.settings().enabled || this.settings().time !== settings.time || current.runtime?.mode !== 'active'
+        || current.runtime?.paused || current.admin?.ownerUin !== owner || !this.options.available()) return;
+      const text = formatDailyReport({ now, stats, host, connected: this.options.available(), runtime: current.runtime,
+        content: this.settings().content, quota });
+      const save = async record => {
+        const temp = `${file}.${process.pid}.tmp`;
+        const handle = await fs.promises.open(temp, 'w', 0o600);
+        try { await handle.writeFile(JSON.stringify(record)); await handle.sync(); }
+        finally { await handle.close(); }
+        await fs.promises.rename(temp, file);
+        this.last = record;
+      };
+      // Persist before any QQ write; restart or unknown delivery must never replay.
+      const record = { day, at: now, outcome: 'unknown', owner };
+      await save(record);
+      try {
+        signal.throwIfAborted();
+        const latest = this.options.config();
+        if (!this.settings().enabled || latest.runtime?.mode !== 'active' || latest.runtime?.paused
+          || latest.admin?.ownerUin !== owner || !this.options.available()) return;
+        await this.options.send(owner, text, signal, `daily-report:${day}`);
+        await save({ ...record, outcome: 'sent' });
+      } catch {
+        // Conservative hold, including partial delivery: no automatic repeat today.
+        this.last = record;
+      }
     } finally { this.controller = null; }
   }
 }

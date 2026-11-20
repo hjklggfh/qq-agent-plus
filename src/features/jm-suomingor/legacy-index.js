@@ -73,6 +73,14 @@ const callerLog = new Map(); // sessionId/chatKey -> { candidates, at }
 const pendingHint = new Map(); // sessionId/chatKey -> { id, who, at }
 const firstSubmitters = new Map(); // `${chatKey}:${albumId}` -> { id, name, at }
 
+function pruneTimedMap(map, ttlMs, maxSize = 2000) {
+  const cutoff = Date.now() - ttlMs;
+  for (const [k, v] of map) {
+    if (!v || v.at < cutoff) map.delete(k);
+  }
+  while (map.size > maxSize) map.delete(map.keys().next().value);
+}
+
 // 2026-10-06：原来是一张手写的 152 字对照表，实测漏得很厉害 ——
 //   獵奇/女僕裝/項圈/妖精/蓮/潛/別/檔 全都转不过来，群友看到的还是繁体。
 // 现在用 OpenCC（npm 包 opencc-js，1.4.2）做真正的繁转简；
@@ -389,7 +397,9 @@ async function performControl({ action, albumId, onebot, chatKey }) {
     task.control.paused = false; // 先解除暂停，让等待循环能退出
     task.control.deleted = true;
     task.control.abortController?.abort();
+    try { task.control.child?.kill('SIGKILL'); } catch { /* ignore */ }
     await task.control.downloadSettled;
+    await task.done;
     try { task.control.child?.kill('SIGKILL'); } catch { /* ignore */ }
   }
   // 本地目录：先删图片目录里的独立子目录，再兜底删 jm-<id> 根
@@ -1135,6 +1145,7 @@ async function runJob(job) {
           uploadNote = `📦 文件 ${humanSize(size)} 超过 ${c.maxUploadMB} MB，已分成 ${parts.length} 卷上传`;
           let sent = 0;
           for (const part of parts) {
+            ensureAlive(job);
             const r = await uploadFile({
               onebot, chatKey: dest, filePath: part, name: path.basename(part),
               publish: c.uploadMode !== 'off', checkQuota: c.checkQuota,
@@ -1158,6 +1169,7 @@ async function runJob(job) {
           }
         }
       } else {
+        ensureAlive(job);
         const r = await uploadFile({
           onebot, chatKey: dest, filePath: deliverPath, name: deliverName || path.basename(deliverPath),
           checkQuota: c.checkQuota, fallbackName: `JM${dl.album.id}${incompleteTag}.pdf`, fallbackOnFailure: true, log,
@@ -1216,6 +1228,7 @@ async function runJob(job) {
     }
 
     // ⑤ 汇报
+    ensureAlive(job);
     // 2026-10-06 晚：简介也改成信息卡图片（与「更新JM」/「今日JM」同一套卡片风格）：
     //   封面 + 标题 + JM 编号徽章 + 作者/标签/规模 + 底部通栏简介。
     // 文字消息只保留"交付状态"类信息（首次发车/上传结果/失败说明）。
@@ -1517,6 +1530,7 @@ const uploadedGroupFiles = new Map(); // `${groupId}:${fileId}` -> { name, at, o
 
 function rememberGroupFile(chatKey, fileId, name, onebot) {
   if (!String(chatKey).startsWith('group:') || !fileId) return;
+  pruneTimedMap(uploadedGroupFiles, 30 * 86400000, 2000);
   uploadedGroupFiles.set(`${chatKey}:${fileId}`, { chatKey, fileId, name, at: Date.now(), onebot });
 }
 
@@ -1633,6 +1647,7 @@ function recordCallers(ctx = {}) {
       candidates,
       at: Date.now()
     };
+    pruneTimedMap(callerLog, 15 * 60 * 1000, 2000);
     for (const k of keys) callerLog.set(k, rec);
   } catch (error) {
     warn(`记录指令来源失败：${error?.message ?? error}`);
@@ -1785,6 +1800,7 @@ export function setup(injected) {
         const firstCaller = caller?.first || perm.caller || { id: '', name: '' };
         const attributionKey = `${chatKey}:${albumId}`;
         if (!firstSubmitters.has(attributionKey)) {
+          pruneTimedMap(firstSubmitters, 7 * 86400000, 2000);
           firstSubmitters.set(attributionKey, {
             id: firstCaller.id || '',
             name: firstCaller.name || '',
@@ -1811,7 +1827,7 @@ export function setup(injected) {
         if (ctx?.onebot) currentOnebotRef = ctx.onebot;
 
         // 后台跑；这里立刻返回，不阻塞模型回合（这是本版最重要的改动）
-        void (async () => {
+        task.done = (async () => {
           try {
             await runJob(task);
           } catch (error) {
@@ -2094,7 +2110,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
             const currentCfg = cfg();
             const imagePath = await renderDigestImage({
               payload,
-              outPath: path.join(root, '..', 'today-list.jpg'),
+              outPath: path.join(root, '..', `today-list-${chatKey.replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`),
               settings: { ...currentCfg, downloadDir: downloadRoot() },
               pythonPath: currentCfg.pythonPath,
             });
@@ -2283,6 +2299,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
           };
           const imagePath = await renderDigestImage({
             payload: full,
+            outPath: path.join(downloadRoot(), `daily-digest-${String(chatKey || 'default').replace(/[^a-zA-Z0-9_-]/g, '_')}.jpg`),
             settings: settingsOverride,
             pythonPath: settingsOverride.pythonPath,
           });
@@ -2413,6 +2430,7 @@ export function activate() {
     void cleanupLocal();
     void cleanupGroupFiles();
   }, 6 * 3600 * 1000);
+  cleanupTimer.unref?.();
   dailyCollectTimer = setInterval(() => {
     void ensureDailyUpdatesCollected({ force: true });
   }, DAILY_COLLECT_INTERVAL_MS);
@@ -2859,6 +2877,7 @@ export const hooks = {
       const note = `（这条消息里的 ${hit.id} 看起来是禁漫漫画 ID，来自 ${hit.who}。）`;
       const target = hit.entry;
       if (target && !String(target.text || '').includes('禁漫漫画 ID')) target.text = `${String(target.text || '')}${note}`;
+      pruneTimedMap(pendingHint, 120_000, 2000);
       pendingHint.set(callerKey(ctx), {
         id: hit.id,
         who: hit.who,

@@ -117,9 +117,9 @@ export class EhentaiManager {
           : `E站图片 CDN 请求失败：${error.message}`;
       throw new Error(message, { cause: error });
     }
-    if (!response.ok) throw new Error(`E-Hentai 请求失败：HTTP ${response.status}`);
+    if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`E-Hentai 请求失败：HTTP ${response.status}`); }
     if (!response.body) throw new Error('站点返回空内容');
-    if (Number(response.headers.get('content-length') || 0) > limit) throw new Error('站点返回内容超过大小上限');
+    if (Number(response.headers.get('content-length') || 0) > limit) { await response.body?.cancel().catch(() => {}); throw new Error('站点返回内容超过大小上限'); }
     const parts = []; let size = 0;
     for await (const part of response.body) {
       size += part.length;

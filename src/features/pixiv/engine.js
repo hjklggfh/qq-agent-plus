@@ -715,7 +715,7 @@ export function createPixivEngine(options) {
       await resp.body?.cancel();
       resp = await doFetch(url, 'application/json', s.timeoutMs, { minimal: true, controller });
     }
-    if (!resp.ok) throw new Error(searchHttpError(url, resp.status));
+    if (!resp.ok) { await resp.body?.cancel().catch(() => {}); throw new Error(searchHttpError(url, resp.status)); }
     noteNetSuccess();
     const chunks = []; let size = 0;
     for await (const chunk of resp.body || []) {

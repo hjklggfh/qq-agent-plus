@@ -64,6 +64,7 @@ export class EhentaiDirect {
         });
         stream.on('end', () => finish(null, new Response(Buffer.concat(chunks, length), { status: status || 502, headers: responseHeaders })));
         stream.on('error', (error) => finish(error));
+        stream.on('close', () => finish(new Error('E站直连流已关闭')));
         stream.end();
       } catch (error) { finish(error); }
     });

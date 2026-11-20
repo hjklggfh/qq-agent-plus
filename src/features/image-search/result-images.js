@@ -30,7 +30,7 @@ export async function searchResultNodes(reports, settings, options) {
               headers: { authorization: `Bearer ${settings.relayToken}`, 'content-type': 'application/json', 'x-image-max-bytes': String(remaining) },
               body: JSON.stringify({ key })
             });
-            if (!response.ok) throw new Error('图片不可用');
+            if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error('图片不可用'); }
             const buffer = await boundedBody(response, remaining, signal);
             if (!imageType(buffer)) throw new Error('非图片响应');
             remaining -= buffer.length;

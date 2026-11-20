@@ -114,6 +114,7 @@ export async function webSearch(query) {
   if (provider === 'baidu') return baiduSearch(clean);
   if (provider === 'metaso') return metasoSearch(clean);
   if (provider === 'doubao') return doubaoSearch(clean);
+  if (provider === 'tavily') return tavilySearch(clean);
   // 自定义：'custom'（旧单槽位）或 'custom:<id>'（设置页添加的多个之一）
   if (provider === 'custom' || provider.startsWith('custom:')) {
     return customSearch(clean, provider);

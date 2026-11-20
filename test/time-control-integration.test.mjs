@@ -239,3 +239,17 @@ test('config validation and override removal preserve the master-off default', (
   assert.throws(() => updateConfig({ timeControl: { schedule: { mode: 'typo' } } }));
   assert.equal(getConfig().timeControl.schedule.mode, 'deepseek-offpeak');
 });
+
+test('SendQueue honors bypassTimeControl=true during inactive time control window', async (t) => {
+  const { app } = fixture(t);
+  const sent = [];
+  app.onebot.sendText = async (kind, id, message) => {
+    sent.push({ kind, id, message });
+    return { message_id: 901 };
+  };
+  await assert.rejects(app.sender.sendTextBatch('group:1', ['blocked']), /非活跃/);
+  const result = await app.sender.sendTextBatch('group:1', ['bypassed'], { bypassTimeControl: true });
+  assert.equal(result.sent.length, 1);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].message, 'bypassed');
+});

@@ -47,7 +47,7 @@ export class ImageSearchManager {
     try {
       const signal = AbortSignal.timeout(5000);
       const res = await this.fetch(`${settings.relayUrl.replace(/\/$/, '')}/healthz`, { signal, redirect: 'error', headers: { authorization: `Bearer ${settings.relayToken}` } });
-      if (!res.ok) throw new Error('unavailable');
+      if (!res.ok) { await res.body?.cancel().catch(() => {}); throw new Error('unavailable'); }
       const data = JSON.parse((await boundedBody(res, 4096, signal)).toString('utf8'));
       if (data.ok !== true) throw new Error('invalid');
       return { ok: true, busy: data.busy === true, googleConfigured: data.googleConfigured === true, serpapiConfigured: data.serpapiConfigured === true };
@@ -123,7 +123,7 @@ export class ImageSearchManager {
             method: 'POST', redirect: 'error', signal: platformSignal,
             headers: { authorization: `Bearer ${settings.relayToken}`, 'content-type': image.type, 'x-search-platform': platform, 'x-search-limit': String(settings.limit), 'x-search-timeout': String(settings.timeoutSeconds), 'x-trace-min-similarity': String(settings.traceMinSimilarity) }, body: image.buffer
           });
-          if (!res.ok) throw new Error(`中转服务 HTTP ${res.status}`);
+          if (!res.ok) { await res.body?.cancel().catch(() => {}); throw new Error(`中转服务 HTTP ${res.status}`); }
           const report = JSON.parse((await boundedBody(res, 128 * 1024, platformSignal)).toString('utf8'));
           if (report.platform !== platform || !['ok', 'empty', 'blocked', 'error', 'unavailable'].includes(report.status) || !Array.isArray(report.results) || report.results.length > 20) throw new Error('中转返回格式无效');
           reports.push(report);

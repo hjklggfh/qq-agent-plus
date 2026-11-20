@@ -44,10 +44,10 @@ export async function openAiCompatibleTranscribe(wavBuffer, {
   form.append('model', model);
   if (language) form.append('language', language);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('语音识别请求超时')), timeoutMs);
   // 已经中止的 signal 要在发请求之前就退出：只挂监听的话，请求会照发（取消后仍计费）
   if (signal?.aborted) throw signal.reason ?? new Error('已中止');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error('语音识别请求超时')), timeoutMs);
   const onAbort = () => controller.abort(signal?.reason ?? new Error('已中止'));
   signal?.addEventListener('abort', onAbort, { once: true });
   try {

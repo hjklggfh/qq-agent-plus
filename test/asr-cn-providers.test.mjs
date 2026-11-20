@@ -363,3 +363,21 @@ test('讯飞：wp 保留字段里出现哨兵值时不能拼进正文', async ()
   assert.equal(iflytekTextOf({ data: { result: { ws: [{ cw: [{ w: '你好' }], wp: '-1' }] } } }), '你好');
   assert.equal(iflytekTextOf({ data: { result: { ws: [{ cw: [{ w: '你好' }], wp: '，' }] } } }), '你好，');
 });
+
+test('已中止的 signal 在云 ASR 调用中提前返回且不泄漏超时定时器', async (t) => {
+  const { openAiCompatibleTranscribe } = await import('../src/llm/asr-openai.js');
+  const origSetTimeout = globalThis.setTimeout;
+  let scheduled = 0;
+  globalThis.setTimeout = (...args) => { scheduled += 1; return origSetTimeout(...args); };
+  t.after(() => { globalThis.setTimeout = origSetTimeout; });
+
+  const c = new AbortController();
+  c.abort(new Error('cancelled'));
+  const wav = pcmToWav(Buffer.alloc(320));
+  await assert.rejects(() => openAiCompatibleTranscribe(wav, {
+    baseUrl: 'https://api.example/v1', apiKey: 'k', model: 'm', signal: c.signal
+  }), /cancelled/);
+  await assert.rejects(() => dashscopeTranscribe(wav, { apiKey: 'k', signal: c.signal }), /cancelled/);
+  await assert.rejects(() => tencentTranscribe(wav, { secretId: 'a', secretKey: 'b', signal: c.signal }), /cancelled/);
+  assert.equal(scheduled, 0, 'pre-aborted signal must return before scheduling timeout timers');
+});

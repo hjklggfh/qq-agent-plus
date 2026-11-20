@@ -89,7 +89,7 @@ export async function seedAsrTranscribe(pcmBuffer, { apiKey, signal, timeoutMs =
       let i = 0;
       const pump = () => {
         if (done) return;
-        signal?.throwIfAborted?.();
+        if (signal?.aborted) return finish(reject, signal.reason ?? new Error('已中止'));
         const chunk = pcmBuffer.subarray(i, Math.min(i + CHUNK, pcmBuffer.length));
         i += CHUNK;
         seq++;

@@ -217,7 +217,10 @@ export class SendQueue {
   async #deliver(chatKey, options, payload, send) {
     await this.#assertNotMuted(chatKey);
     // gameScoped：只由群游戏管理器对"本局在册玩家"设置（access.assertCanSend 里放宽 allow.private）
-    assertCanSend(chatKey, options.signal, { gameScoped: options.gameScoped === true });
+    assertCanSend(chatKey, options.signal, {
+      gameScoped: options.gameScoped === true,
+      bypassTimeControl: options.bypassTimeControl === true,
+    });
     const id = this.store.beginSend(chatKey, options.runId, payload);
     try {
       let data = null;

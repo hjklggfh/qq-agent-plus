@@ -165,3 +165,16 @@ test('webSearch：provider=aggregate 时走聚合分发，结果带 source', asy
   const r = await webSearch('测试');
   assert.equal(r.results[0].source, 'tavily');
 });
+
+test('webSearch：provider=tavily 时走 Tavily 而不是回退 Bing', async () => {
+  setWebSearch({ provider: 'tavily', tavily: { apiKey: 'tvly-direct', count: 2 } });
+  let seenUrl = '';
+  globalThis.fetch = async (url) => {
+    seenUrl = String(url);
+    return { ok: true, json: async () => ({ results: [{ title: 'T', url: 'https://t.example/', content: 'ok' }] }) };
+  };
+  const { webSearch } = await import('../src/llm/web-search.js');
+  const r = await webSearch('测试');
+  assert.equal(seenUrl, 'https://api.tavily.com/search');
+  assert.equal(r.results[0].title, 'T');
+});

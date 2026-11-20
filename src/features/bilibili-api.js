@@ -163,11 +163,15 @@ export async function expandShortLink(url, { timeoutMs = 10000 } = {}) {
   if (!/b23\.tv/i.test(s)) return { ok: true, url: s, expanded: false };
   try {
     const res = await fetch(s, { headers: apiHeaders(), redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
-    const loc = res.headers.get('location');
-    // 302/301/307 且 Location 里有 BV/av 才算成功
-    if (loc && /bilibili\.com\/(video|bangumi)/i.test(loc)) return { ok: true, url: loc, expanded: true };
-    if (loc) return { ok: true, url: loc, expanded: true };
-    return { ok: false, error: `短链未返回跳转（HTTP ${res.status}）` };
+    try {
+      const loc = res.headers.get('location');
+      // 302/301/307 且 Location 里有 BV/av 才算成功
+      if (loc && /bilibili\.com\/(video|bangumi)/i.test(loc)) return { ok: true, url: loc, expanded: true };
+      if (loc) return { ok: true, url: loc, expanded: true };
+      return { ok: false, error: `短链未返回跳转（HTTP ${res.status}）` };
+    } finally {
+      await res.body?.cancel().catch(() => {});
+    }
   } catch (error) {
     return { ok: false, error: `短链解析失败：${error?.message ?? error}` };
   }
@@ -320,10 +324,12 @@ export async function downloadVideo(urls, destPath, { maxBytes = 100 * 1024 * 10
         return { ok: false, error: `下载请求失败：${error?.message ?? error}` };
       }
       if (res.status !== 200 && res.status !== 206) {
+        await res.body?.cancel().catch(() => {});
         return { ok: false, error: `下载被拒（HTTP ${res.status}）—— Referer 可能没生效`, status: res.status };
       }
       const ctype = String(res.headers.get('content-type') || '');
       if (/text\/html|application\/json/i.test(ctype)) {
+        await res.body?.cancel().catch(() => {});
         return { ok: false, error: `下载到的不是视频（Content-Type: ${ctype}）` };
       }
       const reader = res.body?.getReader?.();
@@ -333,15 +339,19 @@ export async function downloadVideo(urls, destPath, { maxBytes = 100 * 1024 * 10
         if (written > maxBytes) return { ok: false, error: `视频超过体积上限（>${Math.round(maxBytes / 1048576)}MB），已放弃` };
         fs.writeSync(fh, buf);
       } else {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          written += value.length;
-          if (written > maxBytes) {
-            try { await reader.cancel(); } catch { /* ignore */ }
-            return { ok: false, error: `视频超过体积上限（>${Math.round(maxBytes / 1048576)}MB），已放弃`, tooLarge: true, sizeBytes: written };
+        let finished = false;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) { finished = true; break; }
+            written += value.length;
+            if (written > maxBytes) {
+              return { ok: false, error: `视频超过体积上限（>${Math.round(maxBytes / 1048576)}MB），已放弃`, tooLarge: true, sizeBytes: written };
+            }
+            fs.writeSync(fh, Buffer.from(value));
           }
-          fs.writeSync(fh, Buffer.from(value));
+        } finally {
+          if (!finished) { try { await reader.cancel(); } catch { /* ignore */ } }
         }
       }
       log(`分片 ${i + 1}/${list.length} 完成，累计 ${(written / 1048576).toFixed(1)}MB`);

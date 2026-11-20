@@ -322,6 +322,7 @@ async function loadSessionDetail(id, {
       renderSessionDetail(s, { scrollMode, scrollTop, timelineScrollLeft });
     }
   } catch (e) {
+    if (state.currentSessionId !== id) return;
     if (!quiet) $('#session-detail').innerHTML = `<div class="empty-hint">加载失败：${esc(e.message)}</div>`;
   }
 }
