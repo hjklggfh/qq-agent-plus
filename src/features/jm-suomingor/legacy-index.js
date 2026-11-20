@@ -494,7 +494,7 @@ function cfg() {
     rankCategoryTopN: num(c.rankCategoryTopN, 24, 4, 60),
     rankCacheTtlMinutes: num(c.rankCacheTtlMinutes, 60, 5, 1440),
     rankPushEnabled: c.rankPushEnabled === true,
-    rankPushTime: String(c.rankPushTime || '00:05').trim(),
+    rankPushTime: String(c.rankPushTime || '23:50').trim(),
     rankPushKinds: Array.isArray(c.rankPushKinds) ? c.rankPushKinds : ['daily', 'weekly'],
     rankPushChats: Array.isArray(c.rankPushChats) ? c.rankPushChats : [],
   };

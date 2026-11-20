@@ -127,9 +127,10 @@ test('rankings 本地持久化缓存：命中复用、跨天/超时刷新、失�
   assert.equal(fetchCount, 1);
   assert.equal(renderCount, 1);
 
-  // 3) 超过 60 分钟，拉取失败时保留旧缓存不被损坏
+  // 3) 超过 60 分钟，拉取失败时：allowStale=true 保留旧缓存，allowStale=false 直接拒绝不发旧图
   nowMs += 40 * 60 * 1000;
   mode = 'fetch-fail';
+  await assert.rejects(() => service.getRank('daily', { allowStale: false }), /上游榜单拉取失败/);
   const fallbackOnFetchFail = await service.getRank('daily');
   assert.equal(fallbackOnFetchFail.fromCache, true);
   assert.equal(fallbackOnFetchFail.stale, true);

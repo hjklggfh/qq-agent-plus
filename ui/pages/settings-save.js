@@ -96,7 +96,7 @@ async function saveConfig({ quiet = false } = {}) {
       rankCategoryTopN: clampInt(val('#cfg-jm-rank-cat-top-n', 24), 4, 60, 24),
       rankCacheTtlMinutes: clampInt(val('#cfg-jm-rank-ttl', 60), 5, 1440, 60),
       rankPushEnabled: chk('#cfg-jm-rank-push-enabled', false),
-      rankPushTime: val('#cfg-jm-rank-push-time', '00:05').trim() || '00:05',
+      rankPushTime: val('#cfg-jm-rank-push-time', '23:50').trim() || '23:50',
       rankPushKinds: rankPushKinds.length ? rankPushKinds : ['daily'],
       rankPushChats,
     };

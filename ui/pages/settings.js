@@ -213,7 +213,7 @@ function renderJmSection(c) {
     <h4 style="margin:14px 0 8px">每日榜单定时推送</h4>
     <div class="field-row">
       <div class="field"><label><input type="checkbox" id="cfg-jm-rank-push-enabled" ${checked('rankPushEnabled', false) ? 'checked' : ''}> 启用每日定时推送</label></div>
-      <div class="field"><label>推送时间（北京时间 HH:MM）</label><input type="text" id="cfg-jm-rank-push-time" value="${value('rankPushTime', '00:05')}" placeholder="00:05"></div>
+      <div class="field"><label>推送时间（北京时间 HH:MM）</label><input type="text" id="cfg-jm-rank-push-time" value="${value('rankPushTime', '23:50')}" placeholder="23:50"></div>
       <div class="field"><label>推送目标群号（逗号分隔）</label><input type="text" id="cfg-jm-rank-push-chats" value="${esc(pushChats)}" placeholder="747206342, 892485992"></div>
     </div>
     <div class="field-row">

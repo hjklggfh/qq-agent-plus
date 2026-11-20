@@ -12,6 +12,16 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function explainPushError(error) {
+  const raw = String(error?.message ?? error ?? '未知错误').trim();
+  if (/返回为空/.test(raw)) return '站点接口暂未返回数据（可能刚跨天重置或上游暂无榜单条目）';
+  if (/no message receipt|delivery was not confirmed|retcode=100/i.test(raw)) {
+    return 'QQ 服务端未确认消息回执（可能图片触发了风控拦截或群消息发送失败）';
+  }
+  if (/timeout|超时|fetch failed|econn/i.test(raw)) return `请求超时或网络波动（${raw.slice(0, 80)}）`;
+  return raw.slice(0, 120);
+}
+
 function minuteOfHHMM(hhmm) {
   const m = String(hhmm || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/);
   return m ? Number(m[1]) * 60 + Number(m[2]) : null;
@@ -91,7 +101,7 @@ export class JmRankPushManager {
       runtimePaused: root.runtime?.paused === true,
       jmEnabled: j.enabled !== false,
       enabled: j.enabled !== false && j.rankPushEnabled === true,
-      time: String(j.rankPushTime || '00:05'),
+      time: String(j.rankPushTime || '23:50'),
       kinds: kinds.length ? kinds : ['daily', 'weekly'],
       chats,
       topN: Math.min(60, Math.max(4, Number(j.rankTopN) || 48)),
@@ -214,19 +224,18 @@ export class JmRankPushManager {
       signal.throwIfAborted();
       const kind = normalizeRankKind(rawKind);
       try {
-        const res = await this.getRank(kind, { force: forceRefresh, category: 'all', topN: cfg.topN });
+        const res = await this.getRank(kind, {
+          force: forceRefresh,
+          category: 'all',
+          topN: cfg.topN,
+          allowStale: false,
+        });
         prepared.push(res);
       } catch (error) {
-        const msg = String(error?.message ?? error);
-        rankErrors.push({ kind, error: msg });
-        this.log(`[jm-rank-push] 获取 ${RANK_META[kind].label} 失败：${msg}`);
+        const msg = explainPushError(error);
+        rankErrors.push({ kind, label: RANK_META[kind].label, error: msg });
+        this.log(`[jm-rank-push] 获取 ${RANK_META[kind].label} 失败：${error?.message ?? error}`);
       }
-    }
-
-    if (!prepared.length) {
-      this.lastErrorAt = this.now();
-      this.lastRun = { at: this.now(), ok: false, rankErrors, results: [] };
-      return { ok: false, rankErrors, results: [] };
     }
 
     const results = [];
@@ -239,6 +248,7 @@ export class JmRankPushManager {
         continue;
       }
       let chatOk = true;
+      const sendFailures = [];
       for (let rIdx = 0; rIdx < prepared.length; rIdx++) {
         const rank = prepared[rIdx];
         if (signal.aborted) break;
@@ -255,28 +265,48 @@ export class JmRankPushManager {
           results.push({ chatKey, kind: rank.kind, ok: true });
         } catch (error) {
           chatOk = false;
-          const msg = String(error?.message ?? error).slice(0, 200);
-          results.push({ chatKey, kind: rank.kind, ok: false, error: msg });
-          this.log(`[jm-rank-push] 发送到 ${chatKey}（${rank.label}）失败：${msg}`);
+          const rawMsg = String(error?.message ?? error).slice(0, 200);
+          const friendly = explainPushError(error);
+          sendFailures.push({ kind: rank.kind, label: rank.label, error: friendly });
+          results.push({ chatKey, kind: rank.kind, ok: false, error: rawMsg });
+          this.log(`[jm-rank-push] 发送到 ${chatKey}（${rank.label}）失败：${rawMsg}`);
         }
         await sleep(800);
+      }
+      const chatErrors = [...rankErrors, ...sendFailures];
+      if (chatErrors.length && !signal.aborted) {
+        const noticeLines = [
+          `⚠️ 本次定时推送有 ${chatErrors.length} 项榜单未成功发出：`,
+          ...chatErrors.map((e) => `• ${e.label}：${e.error}`),
+          '可稍后发送「今日JM」「JM周榜」或「jm」手动获取。',
+        ];
+        try {
+          await this.onebot.sendSegments('group', groupId, [
+            { type: 'text', data: { text: noticeLines.join('\n') } },
+          ]);
+          results.push({ chatKey, kind: 'notice', ok: true });
+        } catch (noticeErr) {
+          chatOk = false;
+          this.log(`[jm-rank-push] 发送失败说明到 ${chatKey} 出错：${noticeErr?.message ?? noticeErr}`);
+        }
       }
       if (chatOk && i < cfg.chats.length - 1) await sleep(GROUP_INTERVAL_MS);
     }
 
-    const anySent = results.some((r) => r.ok);
+    const anyRankSent = results.some((r) => r.ok && r.kind !== 'notice');
+    const anyMessageSent = results.some((r) => r.ok);
     const nowMs = this.now();
-    if (anySent) this.lastSuccessAt = nowMs;
+    if (anyRankSent) this.lastSuccessAt = nowMs;
     else this.lastErrorAt = nowMs;
     const prev = this.#readState();
     this.#writeState({
       ...prev,
-      lastPushedDate: (scheduled || anySent) ? todayKey(nowMs) : (prev.lastPushedDate || ''),
+      lastPushedDate: (scheduled || anyMessageSent) ? todayKey(nowMs) : (prev.lastPushedDate || ''),
       lastAttemptAt: nowMs,
       lastResults: results,
       rankErrors,
     });
-    this.lastRun = { at: nowMs, ok: anySent, rankErrors, results };
-    return { ok: anySent, rankErrors, results };
+    this.lastRun = { at: nowMs, ok: anyRankSent, rankErrors, results };
+    return { ok: anyRankSent, rankErrors, results };
   }
 }

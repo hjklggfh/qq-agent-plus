@@ -77,7 +77,7 @@ export const DEFAULT_CONFIG = {
     rankCategoryTopN: 24,
     rankCacheTtlMinutes: 60,
     rankPushEnabled: false,
-    rankPushTime: '00:05',
+    rankPushTime: '23:50',
     rankPushKinds: ['daily', 'weekly'],
     rankPushChats: []
   },

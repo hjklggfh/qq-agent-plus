@@ -353,7 +353,7 @@ export function updateConfig(patch) {
     }
     if (Object.hasOwn(jmPatch, 'rankPushTime')
       && (typeof jmPatch.rankPushTime !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(jmPatch.rankPushTime))) {
-      throw new Error('JM 榜单推送时间须为 HH:MM（如 00:05）');
+      throw new Error('JM 榜单推送时间须为 HH:MM（如 23:50）');
     }
     if (Object.hasOwn(jmPatch, 'rankPushKinds')) {
       const kinds = jmPatch.rankPushKinds;

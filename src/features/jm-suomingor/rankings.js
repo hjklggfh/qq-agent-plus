@@ -243,7 +243,7 @@ export function createRankService(deps = {}) {
     };
   }
 
-  async function getRank(kind = 'daily', { force = false, category = 'all', topN, ttlMinutes } = {}) {
+  async function getRank(kind = 'daily', { force = false, category = 'all', topN, ttlMinutes, allowStale = true } = {}) {
     const k = normalizeRankKind(kind);
     const cat = normalizeRankCategory(category);
     const display = rankDisplayInfo(k, cat);
@@ -275,7 +275,7 @@ export function createRankService(deps = {}) {
     try {
       return await pending;
     } catch (error) {
-      if (existing) {
+      if (allowStale && existing) {
         deps.warn?.(`[jm-rank] 刷新 ${display.label} 失败，沿用旧缓存（${existing.fetchedAtText || '历史'}）：${error?.message ?? error}`);
         return {
           ...existing,
