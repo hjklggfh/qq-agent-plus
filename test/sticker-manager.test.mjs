@@ -530,3 +530,61 @@ test('收藏配额记账：成功扣一次、取不到图退还（事前原子�
   const afterFail = manager.collectQuota.snapshot();
   assert.equal((afterFail.chats[chatKey] || 0) - (base.chats[chatKey] || 0), 1, '失败的那次要退还（净消耗仍为 1）');
 });
+
+test('findSticker：备注前缀唯一命中不被其他条目中间包含同词误杀', () => {
+  const base = (id, desc, localNote = '') => ({ id, desc, localNote, tags: [], url: `https://example.com/${id}.png` });
+  const entries = [
+    base('collected_162282926', '事已至此先吃饭吧，摆烂/无奈时用'),
+    base('collected_1596782807', '蓝发动漫头像+"事已至此先吃饭吧"，摆烂躺平')
+  ];
+  assert.equal(findSticker(entries, '事已至此先吃饭吧')?.id, 'collected_162282926');
+  assert.equal(findSticker([
+    ...entries,
+    base('collected_dup', '事已至此先吃饭吧，另一张')
+  ], '事已至此先吃饭吧'), null, '前缀命中多张时仍宁缺勿错');
+});
+
+test('send_message 拦截模型照抄历史留档的伪表情包占位文本并放行正常文本', async () => {
+  const { updateConfig, DEFAULT_CONFIG } = await import('../src/core/config.js');
+  const { buildToolDefs, executeTool } = await import('../src/tools/tools-core.js');
+  updateConfig({ sticker: { ...DEFAULT_CONFIG.sticker, enabled: true } });
+
+  const sentBatches = [];
+  const ctx = {
+    chatKey: 'group:747206342',
+    kind: 'group',
+    sender: {
+      sendTextBatch: async (_chatKey, msgs) => {
+        sentBatches.push(msgs);
+        return { sent: msgs.map((text, idx) => ({ text, messageId: 100 + idx, at: '17:30:00' })), failed: [] };
+      }
+    },
+    session: { leaseId: 'lease-1', sent: [] },
+    store: { findByMid: () => ({ id: 1 }), activeMembers: () => [] },
+    stickers: { list: async () => ({ stickers: [] }) },
+    emit() {}
+  };
+  const defs = buildToolDefs();
+
+  for (const bad of [
+    ['正常猫猫台词喵~', '[表情包:流萤Q版大眼卖萌，星星特效]'],
+    ['[表情包:蓝发女仆Q版小人按红色按钮，适合"已按下""开始了'],
+    ['（表情包:白猫呆滞凝视，表达无语/震惊）'],
+    ['太好啦\n【表情包：委屈巴巴】'],
+    ['[表情包]']
+  ]) {
+    const res = await executeTool(defs, ctx, 'send_message', JSON.stringify({ messages: bad }));
+    assert.equal(res.isError, true, `应拦截伪表情文本: ${JSON.stringify(bad)}`);
+    assert.match(res.content, /send_sticker/);
+  }
+  assert.equal(sentBatches.length, 0, '被拦截时不得实际调用 sendTextBatch');
+
+  for (const okMsgs of [
+    ['（气鼓鼓地伸出爪子.jpg）新模型才不菜捏！'],
+    ['刚才那句 [表情包:流萤Q版大眼卖萌] 是怎么变成文字的？']
+  ]) {
+    const res = await executeTool(defs, ctx, 'send_message', JSON.stringify({ messages: okMsgs }));
+    assert.equal(Boolean(res.isError), false, `正常文本不应被误拦: ${JSON.stringify(okMsgs)}`);
+  }
+  assert.equal(sentBatches.length, 2);
+});

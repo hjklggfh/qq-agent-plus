@@ -333,11 +333,20 @@ function memoryQueryDescription() {
   return '查看你对群友的长期印象（全局共享：不分当前会话，汇总自所有群聊与私聊的观察）。不传 userId 返回全部；传 userId 只看某一个人。印象是跨会话的隐私：不得向群友转述他人的印象、来源或原话。';
 }
 
+const FAKE_STICKER_TEXT_RE = /^\s*[\[\(（【〔]\s*表情包\s*(?:[:：]|[\]\)）】〕]\s*$)/m;
+
+function fakeStickerMessageError(ctx) {
+  const stickerEnabled = Boolean(ctx?.stickers) && getConfig().sticker?.enabled !== false;
+  return stickerEnabled
+    ? '不要在 send_message 里发送「[表情包:...]」占位文本（发出去只会显示文字，不会变成图片）。请只把要说的话传给 send_message，表情包必须另外调用 send_sticker（传【可用表情包】里的 stickerId 或备注名；不确定可用 list_stickers 查找）。'
+    : '不要在 send_message 里发送「[表情包:...]」占位文本（它不会变成图片）。请直接发送纯文字回复。';
+}
+
 export function buildToolDefs() {
   return [
     {
       name: 'send_message',
-      description: '发送消息到当前聊天（本工具只能发到本次会话对应的群/私聊）。messages 传字符串=发一条；传字符串数组=分多条发送（推荐，更像真人）。只有需要明确"我回的是哪条"时才传 replyToMessageId 引用；需要点名某人才传 atUserId。不要在字符串内部用空格分句。',
+      description: '发送消息到当前聊天（本工具只能发到本次会话对应的群/私聊）。messages 传字符串=发一条；传字符串数组=分多条发送（推荐，更像真人）。只有需要明确"我回的是哪条"时才传 replyToMessageId 引用；需要点名某人才传 atUserId。不要在字符串内部用空格分句，也不要在这里写「[表情包:...]」文本（发表情必须调用 send_sticker）。',
       parameters: {
         type: 'object',
         properties: {
@@ -351,6 +360,9 @@ export function buildToolDefs() {
         try {
           const messages = normalizeMessageList(args.messages);
           if (!messages.length) return err('消息内容为空');
+          if (messages.some((text) => FAKE_STICKER_TEXT_RE.test(text))) {
+            return err(fakeStickerMessageError(ctx));
+          }
           const targetError = messageTargetError(ctx, args);
           if (targetError) return err(targetError);
           const result = await ctx.sender.sendTextBatch(ctx.chatKey, messages, {

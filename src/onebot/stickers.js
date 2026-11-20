@@ -196,6 +196,14 @@ export function findSticker(entries, ref) {
     if (exact.length === 1) return exact[0];
     if (exact.length > 1) continue;   // 同级重名：换一种形态再试，仍不行就 null（宁缺勿错）
     if (label.length < 2) continue;
+    // ①.5 备注以查询开头（只取前缀唯一命中，避免其他图备注中夹带该词导致主图被误判重名）
+    const noteStartsWith = visible.filter((entry) =>
+      [entry.desc, entry.localNote].some((value) => {
+        const text = String(value || '').trim().toLowerCase();
+        return text.length > 0 && text.startsWith(label);
+      }));
+    if (noteStartsWith.length === 1) return noteStartsWith[0];
+    if (noteStartsWith.length > 1) continue;
     // ② 备注包含查询（"只记得半句"）
     const noteHasQuery = visible.filter((entry) =>
       [entry.desc, entry.localNote].some((value) => {
@@ -355,7 +363,7 @@ export function buildStickerStrategyHint(level = 1, { vision = true } = {}) {
       : '- 清单里标「没用过」的挑有备注的用（清单里没备注的不会列出来）；看不到图，别对没把握的图硬发挥。',
     '- 发送：用 send_sticker；一条消息只能是一张表情，不能在同一气泡里附带文字；想说的话先用 send_message 作为单独气泡发出，再单独发表情。',
     '- 选图很简单：stickerId 直接填【可用表情包】里那行开头的备注名（不要背长 id），备注里独特的一小段也行，系统会自动匹配；命中不唯一时才需要完整 id（可用 list_stickers 看全库）。',
-    '- 不要：在严肃/正式/敏感话题硬塞表情；不要每次都用同一个；不要一条消息里塞多个表情；不要把文字和表情混在同一个气泡里。'
+    '- 不要：在严肃/正式/敏感话题硬塞表情；不要每次都用同一个；不要一条消息里塞多个表情；不要把文字和表情混在同一个气泡里；严禁在 send_message 里写「[表情包:...]」或「（表情包:...）」占位文本来假装发表情（历史记录里的 [表情包:...] 只是留档占位符，发出去只会变成纯文字）。'
   ].join('\n');
 }
 
