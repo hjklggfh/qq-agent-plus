@@ -873,12 +873,14 @@ test('媒体转发设置真实DOM渲染B站与抖音独立配置、无yt-dlp旧�
     assert.equal(doc.querySelector('#cfg-bili-keyword-completion')?.checked, false);
     assert.equal(doc.querySelector('#cfg-bili-collection-keywords')?.value, '合集, 歌单');
     assert.equal(doc.querySelector('#cfg-dy-enabled')?.checked, true);
+    assert.equal(doc.querySelector('#cfg-dy-quality')?.value, '720p');
     assert.equal(doc.querySelector('#cfg-dy-max-gallery-images')?.value, '8');
 
     doc.querySelector('#cfg-bili-enabled').checked = true;
     doc.querySelector('#cfg-bili-qn').value = '64';
     doc.querySelector('#cfg-bili-collection-keywords').value = '歌单, 白噪音';
     doc.querySelector('#cfg-bili-keyword-completion').checked = true;
+    doc.querySelector('#cfg-dy-quality').value = '540p';
     doc.querySelector('#cfg-dy-max-gallery-images').value = '15';
     doc.querySelector('#cfg-dy-author').value = '科技评测';
     doc.querySelector('#save-cfg-btn').click();
@@ -891,6 +893,7 @@ test('媒体转发设置真实DOM渲染B站与抖音独立配置、无yt-dlp旧�
     assert.deepEqual(savedPatches[0].bilibili.collectionKeywords, ['歌单', '白噪音']);
     assert.equal(savedPatches[0].bilibili.keywordCompletion, true);
     assert.equal(savedPatches[0].douyin.enabled, true);
+    assert.equal(savedPatches[0].douyin.preferredQuality, '540p');
     assert.equal(savedPatches[0].douyin.maxGalleryImages, 15);
     assert.equal(savedPatches[0].douyin.preferredAuthor, '科技评测');
 

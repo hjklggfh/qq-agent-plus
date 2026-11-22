@@ -310,6 +310,39 @@ function extractImageMirrors(img) {
   return { url: sorted[0], mirrors: sorted };
 }
 
+export function normalizeDouyinQuality(value) {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (raw === '540' || raw === '540p') return '540p';
+  if (raw === '720' || raw === '720p') return '720p';
+  if (raw === '1080' || raw === '1080p') return '1080p';
+  if (raw === 'highest' || raw === 'auto' || raw === 'max' || raw === 'original') return 'highest';
+  return '720p';
+}
+
+function targetResolutionPx(quality) {
+  const q = normalizeDouyinQuality(quality);
+  if (q === '540p') return 540;
+  if (q === '720p') return 720;
+  if (q === '1080p') return 1080;
+  return Infinity;
+}
+
+export function inferStreamResolution(stream) {
+  const gear = String(stream?.gear || '');
+  const gearMatch = gear.match(/(?:^|_)(2160|1440|1080|720|540|480|360)(?=_|$)/);
+  if (gearMatch) return Number(gearMatch[1]);
+  const w = Number(stream?.width) || 0;
+  const h = Number(stream?.height) || 0;
+  const shortEdge = w > 0 && h > 0 ? Math.min(w, h) : Math.max(w, h);
+  if (shortEdge >= 1900) return 2160;
+  if (shortEdge >= 1350) return 1440;
+  if (shortEdge >= 1000) return 1080;
+  if (shortEdge >= 680) return 720;
+  if (shortEdge >= 480) return 540;
+  if (shortEdge >= 320) return 360;
+  return 0;
+}
+
 export function selectVideoStreams(video) {
   if (!video || typeof video !== 'object') return [];
   const entries = Array.isArray(video.bit_rate) ? video.bit_rate : [];
@@ -326,10 +359,11 @@ export function selectVideoStreams(video) {
     const sizeBytes = Number(entry.play_addr?.data_size) || 0;
     const width = Number(entry.play_addr?.width) || Number(video.width) || 0;
     const height = Number(entry.play_addr?.height) || Number(video.height) || 0;
+    const resolution = inferStreamResolution({ gear, width, height });
     const dedup = urls[0];
     if (seenKey.has(dedup)) continue;
     seenKey.add(dedup);
-    streams.push({ gear, isHevc, bitRate, sizeBytes, width, height, urls });
+    streams.push({ gear, isHevc, bitRate, sizeBytes, width, height, resolution, urls });
   }
 
   const h264Streams = streams
@@ -341,14 +375,17 @@ export function selectVideoStreams(video) {
 
   const fallbackUrls = [...new Set((video.play_addr?.url_list || []).map(normalizePlayUrl).filter(Boolean))];
   const hasFallbackOnly = fallbackUrls.length && !fallbackUrls.every(u => seenKey.has(u));
+  const defaultWidth = Number(video.width) || 0;
+  const defaultHeight = Number(video.height) || 0;
   const defaultStream = hasFallbackOnly
     ? [{
         gear: 'default',
         isHevc: false,
         bitRate: 1,
         sizeBytes: Number(video.play_addr?.data_size) || 0,
-        width: Number(video.width) || 0,
-        height: Number(video.height) || 0,
+        width: defaultWidth,
+        height: defaultHeight,
+        resolution: inferStreamResolution({ gear: 'default', width: defaultWidth, height: defaultHeight }),
         urls: fallbackUrls
       }]
     : [];
@@ -356,18 +393,41 @@ export function selectVideoStreams(video) {
   return [...h264Streams, ...defaultStream, ...hevcStreams];
 }
 
-export function pickVideoStreamCandidates(streams, maxFileBytes) {
+function sortByTargetResolution(list, targetPx) {
+  if (!Number.isFinite(targetPx)) {
+    return [...list].sort((a, b) => (b.bitRate || 0) - (a.bitRate || 0) || (a.sizeBytes || 0) - (b.sizeBytes || 0));
+  }
+  const withRes = list.map(item => ({
+    item,
+    res: Number(item.resolution) || inferStreamResolution(item)
+  }));
+  const within = withRes.filter(x => x.res > 0 && x.res <= targetPx)
+    .sort((a, b) => b.res - a.res || (b.item.bitRate || 0) - (a.item.bitRate || 0) || (a.item.sizeBytes || 0) - (b.item.sizeBytes || 0));
+  const unknown = withRes.filter(x => x.res === 0)
+    .sort((a, b) => (b.item.bitRate || 0) - (a.item.bitRate || 0) || (a.item.sizeBytes || 0) - (b.item.sizeBytes || 0));
+  const above = withRes.filter(x => x.res > targetPx)
+    .sort((a, b) => a.res - b.res || (b.item.bitRate || 0) - (a.item.bitRate || 0) || (a.item.sizeBytes || 0) - (b.item.sizeBytes || 0));
+  return [...within, ...unknown, ...above].map(x => x.item);
+}
+
+export function pickVideoStreamCandidates(streams, maxFileBytes, options = {}) {
   const list = Array.isArray(streams) ? streams.filter(s => Array.isArray(s?.urls) && s.urls.length) : [];
   if (!list.length) return { ok: false, error: '未获取到可用视频播放地址' };
-  const candidates = list.filter(s => !s.sizeBytes || s.sizeBytes <= maxFileBytes);
-  if (candidates.length) return { ok: true, candidates };
-  const minSizeBytes = list.reduce((min, s) => (s.sizeBytes && s.sizeBytes < min ? s.sizeBytes : min), list[0].sizeBytes);
-  return {
-    ok: false,
-    tooLarge: true,
-    sizeBytes: minSizeBytes,
-    error: `视频最低码率体积仍超过 ${Math.round(maxFileBytes / 1048576)} MiB 限制`
-  };
+  const withinSize = list.filter(s => !s.sizeBytes || s.sizeBytes <= maxFileBytes);
+  if (!withinSize.length) {
+    const minSizeBytes = list.reduce((min, s) => (s.sizeBytes && s.sizeBytes < min ? s.sizeBytes : min), list[0].sizeBytes);
+    return {
+      ok: false,
+      tooLarge: true,
+      sizeBytes: minSizeBytes,
+      error: `视频最低码率体积仍超过 ${Math.round(maxFileBytes / 1048576)} MiB 限制`
+    };
+  }
+  const targetPx = targetResolutionPx(options.preferredQuality);
+  const h264 = sortByTargetResolution(withinSize.filter(s => !s.isHevc && s.gear !== 'default'), targetPx);
+  const defaults = withinSize.filter(s => s.gear === 'default');
+  const hevc = sortByTargetResolution(withinSize.filter(s => s.isHevc), targetPx);
+  return { ok: true, candidates: [...h264, ...defaults, ...hevc] };
 }
 
 function firstValidImageUrl(obj) {

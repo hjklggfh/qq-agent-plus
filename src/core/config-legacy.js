@@ -103,6 +103,7 @@ export const DEFAULT_CONFIG = {
   douyin: {
     enabled: false,
     allowPrivate: false,
+    preferredQuality: '720p',
     mediaDir: '',
     maxDurationSeconds: 900,
     maxFileBytes: 104857600,

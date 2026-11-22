@@ -71,6 +71,7 @@ test('抖音配置归一化默认值及上下界约束', () => {
   const defaults = normalizeDouyinConfig({});
   assert.equal(defaults.enabled, false);
   assert.equal(defaults.allowPrivate, false);
+  assert.equal(defaults.preferredQuality, '720p');
   assert.equal(defaults.forwardGallery, true);
   assert.equal(defaults.maxGalleryImages, 12);
   assert.equal(defaults.rejectCollections, false);
@@ -80,6 +81,7 @@ test('抖音配置归一化默认值及上下界约束', () => {
     douyin: {
       enabled: true,
       allowPrivate: true,
+      preferredQuality: 'invalid',
       forwardGallery: false,
       maxGalleryImages: 99,
       maxDurationSeconds: 1,
@@ -89,6 +91,7 @@ test('抖音配置归一化默认值及上下界约束', () => {
   });
   assert.equal(clamped.enabled, true);
   assert.equal(clamped.allowPrivate, true);
+  assert.equal(clamped.preferredQuality, '720p');
   assert.equal(clamped.forwardGallery, false);
   assert.equal(clamped.maxGalleryImages, 30);
   assert.equal(clamped.maxDurationSeconds, 30);
@@ -191,7 +194,7 @@ test('抖音高码率下载超限时自动降级备用码率；全部失败则�
   const feature = new DouyinAutoForward({
     dataDir: tmpDir,
     sender,
-    getConfig: () => ({ douyin: { enabled: true, maxFileBytes: 10 * 1024 * 1024 } }),
+    getConfig: () => ({ douyin: { enabled: true, preferredQuality: '1080p', maxFileBytes: 10 * 1024 * 1024 } }),
     downloadCover: async () => ({ contentType: 'image/jpeg', buffer: Buffer.from('jpg') }),
     api: {
       resolveDouyinLink: async () => ({ kind: 'video', awemeId: '99887766' }),
@@ -373,4 +376,55 @@ test('抖音视频发送failed允许重试，发送unknown保留去重并提示�
   assert.equal(feature.seen.size, 1);
   assert.equal(feature.seenCanonical.size, 1);
   assert.match(sender.calls.at(-1).messages[0], /结果未知/);
+});
+
+test('抖音默认优先下载720P清晰度，支持配置切换为1080P', async (t) => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dy-quality-'));
+  t.after(() => fs.rm(tmpDir, { recursive: true, force: true }));
+
+  const sender = makeFakeSender();
+  const downloadedUrls = [];
+  let currentCfg = { douyin: { enabled: true } };
+
+  const feature = new DouyinAutoForward({
+    dataDir: tmpDir,
+    sender,
+    getConfig: () => currentCfg,
+    downloadCover: async () => ({ contentType: 'image/jpeg', buffer: Buffer.from('jpg') }),
+    api: {
+      resolveDouyinLink: async () => ({ kind: 'video', awemeId: '77777777' }),
+      fetchDouyinInfo: async () => ({
+        ok: true,
+        kind: 'video',
+        awemeId: '77777777',
+        title: '清晰度切换测试',
+        author: '作者',
+        duration: 18,
+        cover: 'https://p3.douyinpic.com/c.jpeg',
+        streams: [
+          { gear: 'normal_1080_0', isHevc: false, bitRate: 3000000, sizeBytes: 5000, width: 1080, height: 1920, resolution: 1080, urls: ['https://cdn.example.com/1080.mp4'] },
+          { gear: 'normal_720_0', isHevc: false, bitRate: 1500000, sizeBytes: 3000, width: 720, height: 1280, resolution: 720, urls: ['https://cdn.example.com/720.mp4'] },
+          { gear: 'normal_540_0', isHevc: false, bitRate: 800000, sizeBytes: 2000, width: 576, height: 1024, resolution: 540, urls: ['https://cdn.example.com/540.mp4'] }
+        ]
+      }),
+      downloadDouyinVideo: async (urls, dest) => {
+        downloadedUrls.push(urls[0]);
+        await fs.writeFile(dest, Buffer.from('mp4'));
+        return { ok: true, bytes: 3 };
+      }
+    },
+    log: { info() {}, warn() {} }
+  });
+
+  // 默认配置应选 720P
+  feature.handleMessage({ chatKey: 'group:1', text: 'https://www.douyin.com/video/77777777', messageId: 1 });
+  await flushQueue(feature);
+  assert.deepEqual(downloadedUrls, ['https://cdn.example.com/720.mp4']);
+
+  // 改为 1080p 后应选 1080P
+  feature.seen.clear();
+  currentCfg = { douyin: { enabled: true, preferredQuality: '1080p' } };
+  feature.handleMessage({ chatKey: 'group:1', text: 'https://www.douyin.com/video/77777777', messageId: 2 });
+  await flushQueue(feature);
+  assert.deepEqual(downloadedUrls, ['https://cdn.example.com/720.mp4', 'https://cdn.example.com/1080.mp4']);
 });

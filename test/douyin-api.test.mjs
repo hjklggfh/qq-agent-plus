@@ -15,6 +15,8 @@ import {
   ensureDouyinSession,
   signDouyinDetailQuery,
   parseAwemeDetail,
+  normalizeDouyinQuality,
+  inferStreamResolution,
   selectVideoStreams,
   pickVideoStreamCandidates,
   fetchDouyinInfo,
@@ -307,4 +309,49 @@ test('抖音详情卡片未知统计标未知、真实0显示0且区分视频与
   });
   assert.match(galleryCaption, /图片：3 张/);
   assert.match(galleryCaption, /作者：未知/);
+});
+
+test('抖音首选画质归一化、分辨率识别及档位优先与缺失回退策略', () => {
+  assert.equal(normalizeDouyinQuality(), '720p');
+  assert.equal(normalizeDouyinQuality('540'), '540p');
+  assert.equal(normalizeDouyinQuality('1080P'), '1080p');
+  assert.equal(normalizeDouyinQuality('auto'), 'highest');
+  assert.equal(normalizeDouyinQuality('unknown'), '720p');
+
+  assert.equal(inferStreamResolution({ gear: 'normal_540_0', width: 576, height: 1024 }), 540);
+  assert.equal(inferStreamResolution({ gear: 'custom', width: 1920, height: 1080 }), 1080);
+  assert.equal(inferStreamResolution({ gear: 'custom', width: 720, height: 1280 }), 720);
+
+  const streams = selectVideoStreams({
+    play_addr: { data_size: 8000, width: 1080, height: 1920, url_list: ['https://cdn.example.com/default.mp4'] },
+    bit_rate: [
+      { gear_name: 'normal_1080_0', is_h265: 0, bit_rate: 2500000, play_addr: { data_size: 8000000, width: 1080, height: 1920, url_list: ['https://cdn.example.com/1080.mp4'] } },
+      { gear_name: 'normal_720_0', is_h265: 0, bit_rate: 1500000, play_addr: { data_size: 5000000, width: 720, height: 1280, url_list: ['https://cdn.example.com/720_hi.mp4'] } },
+      { gear_name: 'low_720_0', is_h265: 0, bit_rate: 1000000, play_addr: { data_size: 4000000, width: 720, height: 1280, url_list: ['https://cdn.example.com/720_lo.mp4'] } },
+      { gear_name: 'normal_540_0', is_h265: 0, bit_rate: 800000, play_addr: { data_size: 3000000, width: 576, height: 1024, url_list: ['https://cdn.example.com/540.mp4'] } }
+    ]
+  });
+
+  // 默认 720p：优先 normal_720_0 -> low_720_0 -> normal_540_0，若均失败可兜底 normal_1080_0
+  const q720 = pickVideoStreamCandidates(streams, 50 * 1024 * 1024);
+  assert.deepEqual(q720.candidates.map(s => s.gear), ['normal_720_0', 'low_720_0', 'normal_540_0', 'normal_1080_0', 'default']);
+
+  // 540p：优先 normal_540_0，缺失或超限时向上贴近选 low_720_0 / normal_720_0
+  const q540 = pickVideoStreamCandidates(streams, 50 * 1024 * 1024, { preferredQuality: '540p' });
+  assert.equal(q540.candidates[0].gear, 'normal_540_0');
+
+  // 1080p 与 highest：优先 normal_1080_0
+  const q1080 = pickVideoStreamCandidates(streams, 50 * 1024 * 1024, { preferredQuality: '1080p' });
+  assert.equal(q1080.candidates[0].gear, 'normal_1080_0');
+  const qMax = pickVideoStreamCandidates(streams, 50 * 1024 * 1024, { preferredQuality: 'highest' });
+  assert.equal(qMax.candidates[0].gear, 'normal_1080_0');
+
+  // 720p 且大小限 4.5MB：过滤掉 1080p 与 normal_720_0，自动降到 4MB 的 low_720_0
+  const qTight = pickVideoStreamCandidates(streams, Math.round(4.5 * 1024 * 1024), { preferredQuality: '720p' });
+  assert.deepEqual(qTight.candidates.map(s => s.gear), ['low_720_0', 'normal_540_0', 'default']);
+
+  // 只有 1080p 流时选 720p 仍可回退 1080p
+  const only1080 = streams.filter(s => s.gear === 'normal_1080_0');
+  const fallbackUp = pickVideoStreamCandidates(only1080, 50 * 1024 * 1024, { preferredQuality: '720p' });
+  assert.equal(fallbackUp.candidates[0].gear, 'normal_1080_0');
 });

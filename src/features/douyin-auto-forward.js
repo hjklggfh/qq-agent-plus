@@ -8,6 +8,7 @@ import {
   pickDouyinLinks,
   resolveDouyinLink,
   fetchDouyinInfo,
+  normalizeDouyinQuality,
   pickVideoStreamCandidates,
   downloadDouyinVideo,
   safeDouyinFileName,
@@ -65,6 +66,7 @@ function normalizeConfig(config = {}) {
   return {
     enabled: c.enabled === true,
     allowPrivate: c.allowPrivate === true,
+    preferredQuality: normalizeDouyinQuality(c.preferredQuality),
     mediaDir: String(c.mediaDir || '').trim(),
     maxDurationSeconds: Math.min(7200, Math.max(30, Number(c.maxDurationSeconds) || 900)),
     maxFileBytes: Math.min(1024 * 1024 * 1024, Math.max(10 * 1024 * 1024, Number(c.maxFileBytes) || 100 * 1024 * 1024)),
@@ -385,7 +387,7 @@ export class DouyinAutoForward {
     }
 
     const caption = douyinShareCaption(normalizedInfo, { link: pageUrl });
-    const picked = pickVideoStreamCandidates(info.streams, cfg.maxFileBytes);
+    const picked = pickVideoStreamCandidates(info.streams, cfg.maxFileBytes, { preferredQuality: cfg.preferredQuality });
     if (!picked.ok) {
       if (picked.tooLarge) {
         await this.sendCaption(chatKey, `${caption}\n视频大小超过 ${Math.round(cfg.maxFileBytes / 1048576)} MiB 限制，未下载。`);
@@ -395,7 +397,7 @@ export class DouyinAutoForward {
       return;
     }
 
-    this.log.info?.(`[douyin] 元信息成功：${awemeId}，${formatDouyinDuration(duration)}，${title}`);
+    this.log.info?.(`[douyin] 元信息成功：${awemeId}，${formatDouyinDuration(duration)}，${title}（首选画质：${cfg.preferredQuality}）`);
     const dir = cfg.mediaDir || this.tempRoot;
     await fs.promises.mkdir(dir, { recursive: true });
     await pruneMediaJobs(dir);
@@ -408,10 +410,11 @@ export class DouyinAutoForward {
     try {
       for (let i = 0; i < picked.candidates.length; i += 1) {
         const stream = picked.candidates[i];
+        const resLabel = stream.resolution ? `/${stream.resolution}P` : '';
         this.log.info?.(
           i === 0
-            ? `[douyin] 开始下载（${stream.gear || 'default'}）：${dest}`
-            : `[douyin] 尝试备用码率（${stream.gear || 'default'}）重新下载：${dest}`
+            ? `[douyin] 开始下载（${stream.gear || 'default'}${resLabel}）：${dest}`
+            : `[douyin] 尝试备用码率（${stream.gear || 'default'}${resLabel}）重新下载：${dest}`
         );
         dl = await this.api.downloadDouyinVideo(stream.urls, dest, {
           maxBytes: cfg.maxFileBytes,

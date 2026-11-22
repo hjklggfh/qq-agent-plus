@@ -64,6 +64,12 @@ function renderMediaSection(c = {}) {
     <div class="checkbox-row"><input type="checkbox" id="cfg-dy-private" ${d.allowPrivate === true ? 'checked' : ''} /><label for="cfg-dy-private">处理白名单私聊中的抖音链接</label></div>
     <div class="checkbox-row"><input type="checkbox" id="cfg-dy-forward-gallery" ${d.forwardGallery !== false ? 'checked' : ''} /><label for="cfg-dy-forward-gallery">启用抖音图文作品转发</label></div>
     <div class="field-row">
+      <div class="field"><label for="cfg-dy-quality">首选画质（超限时自动降级）</label><select id="cfg-dy-quality">
+        <option value="540p" ${d.preferredQuality === '540p' ? 'selected' : ''}>540P 流畅（省流快速）</option>
+        <option value="720p" ${(!d.preferredQuality || d.preferredQuality === '720p') ? 'selected' : ''}>720P 高清（推荐默认）</option>
+        <option value="1080p" ${d.preferredQuality === '1080p' ? 'selected' : ''}>1080P 原画</option>
+        <option value="highest" ${d.preferredQuality === 'highest' ? 'selected' : ''}>最高可用画质</option>
+      </select></div>
       <div class="field"><label for="cfg-dy-max-duration">最大时长（秒）</label><input type="number" id="cfg-dy-max-duration" min="30" max="7200" value="${esc(d.maxDurationSeconds ?? 900)}" /></div>
       <div class="field"><label for="cfg-dy-max-size">最大文件（MiB）</label><input type="number" id="cfg-dy-max-size" min="10" max="1024" value="${esc(Math.round((d.maxFileBytes || 104857600) / 1048576))}" /></div>
       <div class="field"><label for="cfg-dy-concurrent">并发下载数</label><input type="number" id="cfg-dy-concurrent" min="1" max="3" value="${esc(d.maxConcurrent ?? 1)}" /></div>
@@ -118,6 +124,9 @@ function collectMediaPatch(c = {}) {
       ...d,
       enabled: chk('#cfg-dy-enabled', d.enabled === true),
       allowPrivate: chk('#cfg-dy-private', d.allowPrivate === true),
+      preferredQuality: ['540p', '720p', '1080p', 'highest'].includes(val('#cfg-dy-quality', d.preferredQuality || '720p'))
+        ? val('#cfg-dy-quality', d.preferredQuality || '720p')
+        : '720p',
       forwardGallery: chk('#cfg-dy-forward-gallery', d.forwardGallery !== false),
       maxGalleryImages: Math.round(clamp(val('#cfg-dy-max-gallery-images', d.maxGalleryImages ?? 12), 1, 30, 12)),
       maxDurationSeconds: Math.round(clamp(val('#cfg-dy-max-duration', d.maxDurationSeconds ?? 900), 30, 7200, 900)),
@@ -136,6 +145,7 @@ function collectMediaPatch(c = {}) {
 function bindMediaSection(c = {}) {
   if (typeof document === 'undefined') return;
   const b = c?.bilibili || {};
+  const d = c?.douyin || {};
   const qnEl = document.querySelector('#cfg-bili-qn');
   if (qnEl) {
     const qnStr = String(Number(b.qn) || 16);
@@ -145,6 +155,11 @@ function bindMediaSection(c = {}) {
   if (sortEl) {
     const sortStr = String(b.searchSort || 'relevance');
     sortEl.value = ['relevance', 'date', 'views', 'duration'].includes(sortStr) ? sortStr : 'relevance';
+  }
+  const dyQualityEl = document.querySelector('#cfg-dy-quality');
+  if (dyQualityEl) {
+    const dyQ = String(d.preferredQuality || '720p');
+    dyQualityEl.value = ['540p', '720p', '1080p', 'highest'].includes(dyQ) ? dyQ : '720p';
   }
 }
 

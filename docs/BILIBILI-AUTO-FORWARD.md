@@ -32,6 +32,7 @@ B 站与抖音自动转发是宿主内置的扩展能力，统一归口在设置
 
 - `enabled`：是否启用抖音自动转发（默认 `false`）
 - `allowPrivate`：是否处理白名单私聊中的抖音链接（默认 `false`）
+- `preferredQuality`：首选视频画质（`'540p'` / `'720p'` / `'1080p'` / `'highest'`，默认 `'720p'`；超限或无该档位时自动回退可用码率）
 - `forwardGallery` / `maxGalleryImages`：是否转发抖音图文作品（默认 `true`）与单条图文最多转发张数（默认 `12`，上限 `30`）
 - `maxDurationSeconds` / `maxFileBytes` / `maxConcurrent`：最大时长（默认 `900` 秒）、最大视频体积（默认 `100 MiB`）与并发下载数（`1~3`）
 - `rejectCollections` / `collectionKeywords` / `preferredAuthor`：合集/歌单过滤开关、屏蔽关键词与作者筛选
