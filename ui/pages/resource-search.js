@@ -33,7 +33,8 @@ function renderResourceSearchSection(config) {
     </div>
     <div class="field"><label>允许使用的群号（每行一个，空名单表示所有群均不允许）</label><textarea id="resource-search-groups" rows="3" placeholder="每行一个群号">${esc((s.allowedGroups || []).join('\n'))}</textarea></div>
     <div class="field"><label><input id="resource-search-private" type="checkbox" ${s.allowPrivate ? 'checked' : ''}> 允许私聊使用资源检索（仍受宿主私聊白名单限制）</label></div>
-    <div class="field"><label><input id="resource-search-images" type="checkbox" ${s.includeImages !== false ? 'checked' : ''}> 合并转发卡片内附带作品封面预览图</label></div>
+    <div class="field"><label><input id="resource-search-images" type="checkbox" ${s.includeImages !== false ? 'checked' : ''}> 合并转发卡片内附带作品封面预览图（已自动压缩转码；如某群图片风控严可关闭）</label></div>
+    <div class="field"><label><input id="resource-search-safe-group-links" type="checkbox" ${s.safeGroupLinks !== false ? 'checked' : ''}> 群聊链接防风控断链（推荐开启：群内自动将网址转为 域名[.]后缀 并合并为 3 条气泡防 QQ 吞消息，私聊仍发完整链接）</label></div>
     <div class="field-row">
       <div class="field"><label>检索总超时（秒，15—120）</label><input id="resource-search-timeout" type="number" min="15" max="120" value="${esc(s.timeoutSeconds ?? 60)}"></div>
       <div class="field"><label>最多展示免费资源条数（1—10）</label><input id="resource-search-max-results" type="number" min="1" max="10" value="${esc(s.maxResults ?? 5)}"></div>
@@ -71,6 +72,7 @@ async function saveResourceSearchSettings() {
     enabled: $('#resource-search-enabled').checked,
     allowPrivate: $('#resource-search-private').checked,
     includeImages: $('#resource-search-images').checked,
+    safeGroupLinks: $('#resource-search-safe-group-links') ? $('#resource-search-safe-group-links').checked : true,
     allowedGroups: [...new Set($('#resource-search-groups').value.split(/[\s,，]+/).filter(Boolean))],
     sources: Object.fromEntries(Object.keys(RESOURCE_SOURCE_LABELS).map((key) => [key, $(`#resource-search-source-${key}`).checked])),
     timeoutSeconds: Number($('#resource-search-timeout').value),
@@ -126,7 +128,7 @@ function bindResourceSearchSection() {
         failed: '失败',
         'send-unknown': '发送结果未确认，请检查会话'
       };
-      box.innerHTML = `<p>${data.running ? '正在后台检索资源' : '当前空闲'}</p>${(data.history || []).slice(0, 20).map((row) => `<p>${esc(row.startedAt)} · ${esc(row.chatKey)} · 关键词：${esc(row.query || '')} · ${esc(statusText[row.status] || row.status)}${(row.sources || []).map((s) => ` · ${esc(s.source)}:${esc(s.count)}条`).join('')}</p>`).join('') || '<p class="muted">暂无资源检索记录</p>'}`;
+      box.innerHTML = `<p>${data.running ? '正在后台检索资源' : '当前空闲'}</p>${(data.history || []).slice(0, 20).map((row) => `<p>${esc(row.startedAt)} · ${esc(row.chatKey)} · 关键词：${esc(row.query || '')} · ${esc(statusText[row.status] || row.status)}${row.error ? `（${esc(row.error)}）` : ''}${(row.sources || []).map((s) => ` · ${esc(s.source)}:${esc(s.count)}条`).join('')}</p>`).join('') || '<p class="muted">暂无资源检索记录</p>'}`;
     } catch (error) {
       if ($('#resource-search-history') === box) box.textContent = error.message;
     }

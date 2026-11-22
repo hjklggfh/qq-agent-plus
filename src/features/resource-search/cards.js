@@ -1,8 +1,81 @@
+import sharp from 'sharp';
 import { boundedBody, cleanTitle, publicLink } from '../image-search/common.js';
 import { imageType } from '../../core/image-type.js';
 import { getOverseasFetch, matchesWorkTitle, normalizeTitleForMatch } from './sources.js';
 
 const MAX_COVER_BYTES = 4 * 1024 * 1024;
+const MAX_NORMALIZED_COVER_BYTES = 320 * 1024;
+
+const SITE_DISPLAY_NAMES = Object.freeze({
+  'vikacg.com': '维卡ACG',
+  'acggw.me': 'ACG港湾',
+  'workupload.com': 'Workupload 网盘',
+  'f95zone.to': 'F95zone',
+  'ryuugames.com': 'RyuuGames',
+  'xsharing.org': 'XSharing',
+  'v2dao.com': 'V2Dao',
+  'anime-sharing.com': 'Anime-Sharing',
+  'south-plus.net': '南+ (South Plus)',
+  'kungal.com': '鲲 Galgame',
+  'shionlib.com': '书音的图书馆',
+  'shinnku.com': '真红小站',
+  'dlsite.com': 'DLsite'
+});
+
+const WEB_DOMAIN_RE = /\b([a-z][a-z0-9-]*(?:\.[a-z0-9-]+)*)\.(com|net|org|me|to|cc|tv|jp|cn|ink|moe|io|xyz|vip|top|club|site|info|link|pw|gg|ru|co|la|sh|cx|sx|ai|app|dev|pro|icu|fun|work|online|store|blog|wiki|tw|hk|uk|de|fr|eu|us|ca|kr|im|ly|gl|st|ac)\b/gi;
+const SENSITIVE_TERMS_RE = /(妓院|游女|步兵|无修正|无码|色情|黄油|18禁|R18|工口|肉番|同人本|调教|强奸|催眠|性爱|做爱|口交|乳交|肉便器|H游戏)/gi;
+
+export function defangUrlForGroup(rawUrl) {
+  const s = String(rawUrl || '').trim();
+  if (!s) return '';
+  try {
+    const parsed = new URL(s);
+    const host = parsed.hostname.replace(/^www\./i, '').replace(/\./g, '[.]');
+    const port = parsed.port ? `:${parsed.port}` : '';
+    const pathPart = `${parsed.pathname || ''}${parsed.search || ''}${parsed.hash || ''}`.replace(/^\/$/, '');
+    return `${host}${port}${pathPart}`;
+  } catch {
+    return s.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(WEB_DOMAIN_RE, '$1[.]$2');
+  }
+}
+
+export function sanitizeGroupText(text, { stripUrls = false, softenSensitive = false } = {}) {
+  let out = String(text || '');
+  if (!out) return '';
+  if (stripUrls) {
+    out = out.replace(/https?:\/\/[^\s)）\]】]+/gi, '');
+  } else {
+    out = out.replace(/https?:\/\/[^\s)）\]】]+/gi, (match) => defangUrlForGroup(match));
+  }
+  out = out.replace(WEB_DOMAIN_RE, '$1[.]$2');
+  if (softenSensitive) {
+    out = out.replace(SENSITIVE_TERMS_RE, (m) => (m.length >= 2 ? `${m.slice(0, 1)}·${m.slice(1)}` : m));
+  }
+  return out.replace(/\s{2,}/g, ' ').trim();
+}
+
+function friendlySiteName(rawName, safeGroup = false) {
+  const clean = cleanTitle(rawName, 60);
+  const key = clean.toLowerCase().replace(/^www\./, '');
+  if (SITE_DISPLAY_NAMES[key]) return SITE_DISPLAY_NAMES[key];
+  return safeGroup ? sanitizeGroupText(clean) : clean;
+}
+
+async function normalizeCoverImage(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length || buffer.length > MAX_COVER_BYTES) return null;
+  try {
+    const jpeg = await sharp(buffer, { limitInputPixels: 24_000_000 })
+      .rotate()
+      .resize({ width: 512, height: 768, fit: 'inside', withoutEnlargement: true })
+      .flatten({ background: '#ffffff' })
+      .toColourspace('srgb')
+      .jpeg({ quality: 80, progressive: false })
+      .toBuffer();
+    return jpeg.length <= MAX_NORMALIZED_COVER_BYTES ? jpeg : null;
+  } catch {
+    return null;
+  }
+}
 
 function normalizeCodeLabel(raw) {
   const s = cleanTitle(raw, 40);
@@ -263,7 +336,7 @@ function collectResourceLists(agentResult, work, query, maxResults = 5) {
   };
 }
 
-function formatWorkHeader(work) {
+function formatWorkHeader(work, safeGroup = false) {
   const lines = ['🎮 作品识别与档案'];
   lines.push(`名称：${work.titleZh}`);
   if (work.titleJp && work.titleJp !== work.titleZh) lines.push(`原名：${work.titleJp}`);
@@ -274,57 +347,88 @@ function formatWorkHeader(work) {
   if (work.developers.length) lines.push(`社团/厂商：${work.developers.join('、')}`);
   if (work.codes.length) lines.push(`识别编号：${work.codes.join(' · ')}`);
   if (work.tags.length) lines.push(`标签：${work.tags.join(' / ')}`);
-  if (work.summary) lines.push(`简介与结论：${work.summary}`);
-  return lines.join('\n');
-}
-
-function formatFreeResourceBlock(item, index) {
-  const lines = [`📦 免费资源渠道 #${index + 1} · ${item.siteName}`];
-  lines.push(`标题：${item.title}`);
-  if (item.note) lines.push(`说明：${item.note}`);
-  lines.push(`主页：${item.url}`);
-  if (Array.isArray(item.downloads) && item.downloads.length) {
-    lines.push('── 收录版本与下载入口 ──');
-    for (const dl of item.downloads.slice(0, 4)) {
-      lines.push(`• ${dl.name}`);
-      if (dl.url && dl.url !== item.url) lines.push(`  链接：${dl.url}`);
-      const meta = [
-        dl.code ? `提取码：${dl.code}` : '',
-        dl.password ? `解压密码：${dl.password}` : '',
-        dl.note ? `${dl.note}` : ''
-      ].filter(Boolean).join(' | ');
-      if (meta) lines.push(`  (${meta})`);
-    }
+  if (work.summary) {
+    const summaryText = safeGroup
+      ? sanitizeGroupText(work.summary, { stripUrls: true, softenSensitive: true })
+      : work.summary;
+    if (summaryText) lines.push(`简介与结论：${summaryText}`);
   }
   return lines.join('\n');
 }
 
-function formatOfficialListBlock(officialResources) {
+function formatLinkValue(url, safeGroup) {
+  return safeGroup ? defangUrlForGroup(url) : url;
+}
+
+function formatFreeResourcesList(freeResources, safeGroup = false) {
+  const lines = [`📦 免费资源渠道（共 ${freeResources.length} 条）`];
+  for (const [idx, item] of freeResources.entries()) {
+    const site = friendlySiteName(item.siteName, safeGroup);
+    const title = safeGroup
+      ? sanitizeGroupText(item.title, { stripUrls: true, softenSensitive: true })
+      : item.title;
+    lines.push(`${idx + 1}. [${site}] ${title}`);
+    if (item.note) {
+      const note = safeGroup
+        ? sanitizeGroupText(item.note, { stripUrls: true, softenSensitive: true }).slice(0, 90).replace(/\[[^\]]*$/, '').trim()
+        : item.note;
+      if (note) lines.push(`   说明：${note}`);
+    }
+    lines.push(`   地址：${formatLinkValue(item.url, safeGroup)}`);
+    if (Array.isArray(item.downloads) && item.downloads.length) {
+      for (const dl of item.downloads.slice(0, 4)) {
+        const dlName = safeGroup ? sanitizeGroupText(dl.name, { stripUrls: true, softenSensitive: true }) : dl.name;
+        lines.push(`   • ${dlName}`);
+        if (dl.url && dl.url !== item.url) {
+          lines.push(`     直达：${formatLinkValue(dl.url, safeGroup)}`);
+        }
+        const meta = [
+          dl.code ? `提取码：${dl.code}` : '',
+          dl.password ? `解压密码：${dl.password}` : '',
+          dl.note ? (safeGroup ? sanitizeGroupText(dl.note, { stripUrls: true }) : dl.note) : ''
+        ].filter(Boolean).join(' | ');
+        if (meta) lines.push(`     (${meta})`);
+      }
+    }
+  }
+  if (safeGroup) {
+    lines.push('💡 群聊已对网址做防风控断链，复制后去掉 [ ] 即可浏览器打开；私聊可直出完整链接。');
+  }
+  return lines.join('\n');
+}
+
+function formatOfficialListBlock(officialResources, safeGroup = false) {
   const lines = ['🛒 正版与权威数据库参考'];
   for (const [idx, item] of officialResources.entries()) {
-    lines.push(`${idx + 1}. [${item.siteName}] ${item.title}`);
-    if (item.note) lines.push(`   ${item.note}`);
-    lines.push(`   ${item.url}`);
+    const site = friendlySiteName(item.siteName, safeGroup);
+    const title = safeGroup
+      ? sanitizeGroupText(item.title, { stripUrls: true, softenSensitive: true })
+      : item.title;
+    lines.push(`${idx + 1}. [${site}] ${title}`);
+    if (item.note) {
+      const note = safeGroup ? sanitizeGroupText(item.note, { stripUrls: true }) : item.note;
+      if (note) lines.push(`   ${note}`);
+    }
+    lines.push(`   ${formatLinkValue(item.url, safeGroup)}`);
   }
   return lines.join('\n');
 }
 
-export function formatResourceSearchReply(agentResult, settings = {}, query = '') {
+export function formatResourceSearchReply(agentResult, settings = {}, query = '', options = {}) {
   const maxResults = Number(settings.maxResults) || 5;
+  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks !== false;
   const work = resolveWorkProfile(agentResult, query);
   const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
-  const blocks = [formatWorkHeader(work)];
+  const blocks = [formatWorkHeader(work, safeGroup)];
 
   if (freeResources.length) {
-    for (const [i, item] of freeResources.entries()) {
-      blocks.push(formatFreeResourceBlock(item, i));
-    }
+    blocks.push(formatFreeResourcesList(freeResources, safeGroup));
   } else {
     blocks.push('📦 免费资源渠道\n本次在已启用站点中暂未检出可直接确认的免费下载页，可参考下方正版/数据库原名或编号进一步搜索。');
   }
 
   if (officialResources.length) {
-    blocks.push(formatOfficialListBlock(officialResources));
+    blocks.push(formatOfficialListBlock(officialResources, safeGroup));
   }
   return blocks.join('\n\n');
 }
@@ -332,6 +436,7 @@ export function formatResourceSearchReply(agentResult, settings = {}, query = ''
 export async function buildResourceSearchNodes(agentResult, settings = {}, options = {}) {
   const maxResults = Number(settings.maxResults) || 5;
   const query = options.query || '';
+  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks !== false;
   const work = resolveWorkProfile(agentResult, query);
   const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
   if (!freeResources.length && !officialResources.length && !work.summary && !work.characters.length) {
@@ -348,13 +453,25 @@ export async function buildResourceSearchNodes(agentResult, settings = {}, optio
   });
   const text = (value) => ({ type: 'text', data: { text: value } });
 
-  const headerContent = [text(formatWorkHeader(work))];
+  const headerContent = [text(formatWorkHeader(work, safeGroup))];
   if (settings.includeImages !== false && work.coverCandidates?.length && !options.signal?.aborted) {
     const fetchFn = getOverseasFetch(settings, options);
     const relay = options.imageSearchSettings;
     const relayUrl = typeof relay?.relayUrl === 'string' ? relay.relayUrl.trim().replace(/\/+$/, '') : '';
     const relayToken = typeof relay?.relayToken === 'string' ? relay.relayToken.trim() : '';
     const relayFetch = options.fetchImpl || globalThis.fetch;
+
+    const attachNormalized = async (rawBuf) => {
+      if (!imageType(rawBuf)) return false;
+      const jpeg = await normalizeCoverImage(rawBuf);
+      if (!jpeg) return false;
+      headerContent.push(text('\n作品封面预览：'));
+      headerContent.push({
+        type: 'image',
+        data: { file: `base64://${jpeg.toString('base64')}` }
+      });
+      return true;
+    };
 
     for (const candidateUrl of work.coverCandidates.slice(0, 3)) {
       if (options.signal?.aborted) break;
@@ -378,14 +495,7 @@ export async function buildResourceSearchNodes(agentResult, settings = {}, optio
           });
           if (rRes.ok) {
             const buffer = await boundedBody(rRes, MAX_COVER_BYTES, imgSignal);
-            if (imageType(buffer)) {
-              headerContent.push(text('\n作品封面预览：'));
-              headerContent.push({
-                type: 'image',
-                data: { file: `base64://${buffer.toString('base64')}` }
-              });
-              attached = true;
-            }
+            attached = await attachNormalized(buffer);
           } else {
             await rRes.body?.cancel().catch(() => {});
           }
@@ -401,14 +511,7 @@ export async function buildResourceSearchNodes(agentResult, settings = {}, optio
         });
         if (res.ok) {
           const buffer = await boundedBody(res, MAX_COVER_BYTES, imgSignal);
-          if (imageType(buffer)) {
-            headerContent.push(text('\n作品封面预览：'));
-            headerContent.push({
-              type: 'image',
-              data: { file: `base64://${buffer.toString('base64')}` }
-            });
-            break;
-          }
+          if (await attachNormalized(buffer)) break;
         } else {
           await res.body?.cancel().catch(() => {});
         }
@@ -421,15 +524,13 @@ export async function buildResourceSearchNodes(agentResult, settings = {}, optio
   const nodes = [node(headerContent)];
 
   if (freeResources.length) {
-    for (const [i, item] of freeResources.entries()) {
-      nodes.push(node([text(formatFreeResourceBlock(item, i))]));
-    }
+    nodes.push(node([text(formatFreeResourcesList(freeResources, safeGroup))]));
   } else {
     nodes.push(node([text('📦 免费资源渠道\n本次在已启用站点中暂未检出可直接确认的免费下载页，建议复制上方日文原名或 RJ/VNDB 编号检索。')]));
   }
 
   if (officialResources.length) {
-    nodes.push(node([text(formatOfficialListBlock(officialResources))]));
+    nodes.push(node([text(formatOfficialListBlock(officialResources, safeGroup))]));
   }
 
   return nodes;

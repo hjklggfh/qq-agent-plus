@@ -205,10 +205,12 @@ export class ResourceSearchManager {
         }
       );
 
+      const chatKind = String(chatKey || '').startsWith('private:') ? 'private' : 'group';
       record.sources = agentResult.sources || [];
       const nodes = this.forward
         ? await buildResourceSearchNodes(agentResult, settings, {
             query,
+            chatKind,
             signal,
             getConfig: this.getConfig,
             imageSearchSettings,
@@ -228,10 +230,14 @@ export class ResourceSearchManager {
         try {
           const sent = nodes
             ? await this.forward(chatKey, { nodes, label: '资源检索结果' }, { runId, signal })
-            : await this.send(chatKey, [formatResourceSearchReply(agentResult, settings, query)], { runId, preserveCode: false, signal });
+            : await this.send(chatKey, [formatResourceSearchReply(agentResult, settings, query, { chatKind })], { runId, preserveCode: false, signal });
           if (sent?.failed?.length) throw new Error('部分发送未确认');
-        } catch {
+        } catch (sendErr) {
           record.status = 'send-unknown';
+          const rawMsg = String(sendErr?.message ?? sendErr ?? '');
+          record.error = /no message receipt|delivery was not confirmed|retcode=100/i.test(rawMsg)
+            ? 'QQ 未返回回执（疑似群聊外链或封面触发风控拦截）'
+            : rawMsg.slice(0, 120);
           try { this.save(); } catch { /* 不重试外发。 */ }
         }
       }

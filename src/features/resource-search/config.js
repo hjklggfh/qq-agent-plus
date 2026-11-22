@@ -21,6 +21,7 @@ export const DEFAULT_RESOURCE_SEARCH_CONFIG = Object.freeze({
   timeoutSeconds: 60,
   maxResults: 5,
   includeImages: true,
+  safeGroupLinks: true,
   deepseekBaseUrl: 'https://api.deepseek.com/v1',
   deepseekModel: 'deepseek-chat',
   deepseekApiKey: '',
@@ -76,7 +77,7 @@ export function validateResourceSearchPatch(raw) {
       throw new Error(`未知资源检索设置：${key}`);
     }
   }
-  for (const key of ['enabled', 'allowPrivate', 'includeImages']) {
+  for (const key of ['enabled', 'allowPrivate', 'includeImages', 'safeGroupLinks']) {
     if (Object.hasOwn(raw, key) && typeof raw[key] !== 'boolean') {
       throw new Error('资源检索开关必须为布尔值');
     }
@@ -143,6 +144,7 @@ export function resourceSearchConfig(raw = {}) {
     enabled: input.enabled === true,
     allowPrivate: input.allowPrivate === true,
     includeImages: input.includeImages !== false,
+    safeGroupLinks: input.safeGroupLinks !== false,
     allowedGroups: Array.isArray(input.allowedGroups)
       ? [...new Set(input.allowedGroups.map(String).filter((id) => /^\d{5,15}$/.test(id)))].slice(0, 500)
       : [],

@@ -28,7 +28,12 @@ import {
   searchVndb,
   searchWebResources
 } from '../src/features/resource-search/sources.js';
-import { buildResourceSearchNodes } from '../src/features/resource-search/cards.js';
+import {
+  buildResourceSearchNodes,
+  defangUrlForGroup,
+  formatResourceSearchReply,
+  sanitizeGroupText
+} from '../src/features/resource-search/cards.js';
 import { ResourceSearchManager } from '../src/features/resource-search/manager.js';
 import { createImageSearchRelay } from '../src/features/image-search/relay.js';
 
@@ -394,12 +399,14 @@ test('后台 DeepSeek 独立检索循环与 ResourceSearchManager 完整流程�
     // 验证厂商去重且剔除汉化组
     assert.match(cardTexts, /社团\/厂商：ゆずソフト \(Yuzusoft\)/);
     assert.doesNotMatch(cardTexts, /社团\/厂商：.*心愿屋汉化组/);
-    // 验证书音、鲲Gal、真红小站全部出现在免费卡片里
+    // 验证书音、鲲Gal、真红小站全部合并进 3 条气泡且群聊自动防风控断链
+    assert.equal(forwardedCards[0].payload.nodes.length, 3);
     assert.match(cardTexts, /书音的图书馆/);
     assert.match(cardTexts, /鲲 Galgame/);
     assert.match(cardTexts, /真红小站/);
-    assert.match(cardTexts, /kungal\.com\/galgame\/resource\/78093/);
-    assert.match(cardTexts, /shinnku\.com\/files\/shinnku/);
+    assert.match(cardTexts, /kungal\[\.\]com\/galgame\/resource\/78093/);
+    assert.match(cardTexts, /shinnku\[\.\]com\/files\/shinnku/);
+    assert.doesNotMatch(cardTexts, /https?:\/\//i, '群聊开启防风控断链时不应输出原始 https:// 裸链');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -553,16 +560,45 @@ test('东京搜图中转 /v1/resource-search 代查 DLsite / Yahoo 日本及本�
   assert.equal(webReportWithYahoo.results.some((r) => r.url.includes('vikacg.com')), true);
   assert.deepEqual(relayCalls.map((c) => c.source), ['dlsite', 'yahoo']);
 
-  // 验证合并卡片可通过东京中转 coverKey 拉取海外 DLsite 封面图
+  // 验证合并卡片可通过东京中转 coverKey 拉取海外 DLsite 封面图，并经 sharp 转码为 JPEG
   const nodes = await buildResourceSearchNodes(
     {
       parsed: null,
       crawledItems: [...dlReport.results, ...webReportWithYahoo.results]
     },
-    { includeImages: true, maxResults: 5 },
-    { query: '梦吉原的妖怪妓楼', imageSearchSettings, selfId: '10001' }
+    { includeImages: true, maxResults: 5, safeGroupLinks: true },
+    { query: '梦吉原的妖怪妓楼', chatKind: 'group', imageSearchSettings, selfId: '10001' }
   );
   assert.ok(nodes);
-  assert.equal(nodes[0].data.content.some((part) => part.type === 'image'), true);
+  assert.equal(nodes.length, 3);
+  const imgSeg = nodes[0].data.content.find((part) => part.type === 'image');
+  assert.ok(imgSeg);
+  assert.ok(imgSeg.data.file.startsWith('base64:///9j/'), '封面图应经 sharp 统一规范化为标准 JPEG');
+
+  // 群聊防风控断链、去内嵌垃圾链接与敏感词柔化验证
+  assert.equal(defangUrlForGroup('https://www.vikacg.com/p/303251'), 'vikacg[.]com/p/303251');
+  assert.equal(
+    sanitizeGroupText('解压工具：https://share.weiyun.com/abc v1.03 (1.93 GB) file.rar 步兵 妓院', { stripUrls: true, softenSensitive: true }),
+    '解压工具： v1.03 (1.93 GB) file.rar 步·兵 妓·院'
+  );
+  const groupText = formatResourceSearchReply(
+    { parsed: null, crawledItems: [...dlReport.results, ...webReportWithYahoo.results] },
+    { maxResults: 5, safeGroupLinks: true },
+    '梦吉原的妖怪妓楼',
+    { chatKind: 'group' }
+  );
+  assert.match(groupText, /vikacg\[\.\]com\/post\/41095/);
+  assert.match(groupText, /dlsite\[\.\]com\/maniax\/work\/=\/product_id\/RJ01208749\.html/);
+  assert.doesNotMatch(groupText, /https?:\/\//i);
+
+  const privateText = formatResourceSearchReply(
+    { parsed: null, crawledItems: [...dlReport.results, ...webReportWithYahoo.results] },
+    { maxResults: 5, safeGroupLinks: true },
+    '梦吉原的妖怪妓楼',
+    { chatKind: 'private' }
+  );
+  assert.match(privateText, /https:\/\/www\.vikacg\.com\/post\/41095/);
+  assert.match(privateText, /https:\/\/www\.dlsite\.com\/maniax\/work\/=\/product_id\/RJ01208749\.html/);
 });
+
 
