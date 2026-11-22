@@ -1,7 +1,10 @@
 export const RESOURCE_SEARCH_SOURCES = Object.freeze([
   'shionlib',
+  'kungal',
+  'shinnku',
   'touchgal',
   'vndb',
+  'bangumi',
   'dlsite',
   'steam',
   'animetrace',
@@ -26,8 +29,11 @@ export const DEFAULT_RESOURCE_SEARCH_CONFIG = Object.freeze({
   shionlibDomain: 'shionlib.com',
   sources: Object.freeze({
     shionlib: true,
+    kungal: true,
+    shinnku: true,
     touchgal: true,
     vndb: true,
+    bangumi: true,
     dlsite: true,
     steam: true,
     animetrace: true,

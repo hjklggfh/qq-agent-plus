@@ -4,8 +4,11 @@ import { state } from '../core/state.js';
 
 const RESOURCE_SOURCE_LABELS = {
   shionlib: '书音的图书馆（免费 Gal 库）',
+  kungal: '鲲 Galgame（公开资源与网盘库）',
+  shinnku: '真红小站（失落小站直链归档库）',
   touchgal: 'TouchGal 资源站（直链/网盘）',
   vndb: 'VNDB（权威原名/别名库）',
+  bangumi: 'Bangumi 番组计划（中文资料/封面）',
   dlsite: 'DLsite（同人黄油 RJ 库）',
   steam: 'Steam 商店',
   animetrace: 'AnimeTrace（Galgame 截图识作品）',

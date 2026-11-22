@@ -1,42 +1,77 @@
 import { boundedBody, cleanTitle, publicLink } from '../image-search/common.js';
 import { imageType } from '../../core/image-type.js';
+import { matchesWorkTitle, normalizeTitleForMatch } from './sources.js';
 
 const MAX_COVER_BYTES = 4 * 1024 * 1024;
+
+function normalizeCodeLabel(raw) {
+  const s = cleanTitle(raw, 40);
+  if (!s) return '';
+  if (/^(?:vndb:)?v\d+$/i.test(s)) return `VNDB:${s.replace(/^vndb:/i, '').toLowerCase()}`;
+  if (/^[rvb]j\d{6,8}$/i.test(s)) return s.toUpperCase();
+  if (/^(?:bgm|bangumi:)\d+$/i.test(s)) return `Bangumi:${s.replace(/^(?:bgm|bangumi:)/i, '')}`;
+  if (/^steam:\d+$/i.test(s)) return `Steam:${s.replace(/^steam:/i, '')}`;
+  return s;
+}
+
+function deduplicateDevelopers(list) {
+  const raw = list.map((d) => cleanTitle(d, 60)).filter(Boolean);
+  const nonTranslation = raw.filter((d) => !/汉化组|翻译组/.test(d));
+  const pool = nonTranslation.length ? nonTranslation : raw;
+  const out = [];
+  const seenBase = new Set();
+  for (const item of pool) {
+    const base = normalizeTitleForMatch(item.replace(/\([^)]*\)|（[^）]*）/g, ''));
+    const full = normalizeTitleForMatch(item);
+    if (!full) continue;
+    if (base && seenBase.has(base)) continue;
+    if (base) seenBase.add(base);
+    seenBase.add(full);
+    out.push(item);
+  }
+  return out.slice(0, 4);
+}
 
 function resolveWorkProfile(agentResult, query) {
   const parsedWork = agentResult?.parsed?.work || {};
   const items = Array.isArray(agentResult?.crawledItems) ? agentResult.crawledItems : [];
   const shion = items.find((i) => i.source === 'shionlib');
+  const kungal = items.find((i) => i.source === 'kungal');
   const vndb = items.find((i) => i.source === 'vndb');
+  const bangumi = items.find((i) => i.source === 'bangumi');
   const dlsite = items.find((i) => i.source === 'dlsite');
   const touchgal = items.find((i) => i.source === 'touchgal');
   const steam = items.find((i) => i.source === 'steam');
   const animeWorks = agentResult?.imageClues?.animetrace?.works || [];
   const animeChars = agentResult?.imageClues?.animetrace?.characters || [];
 
-  const titleZh = cleanTitle(parsedWork.titleZh || shion?.titleZh || touchgal?.title || animeWorks[0] || query, 120);
-  const titleJp = cleanTitle(parsedWork.titleJp || shion?.titleJp || vndb?.titleJp || dlsite?.title, 120);
-  const titleEn = cleanTitle(parsedWork.titleEn || shion?.titleEn || vndb?.titleRomaji || steam?.title, 120);
+  const titleZh = cleanTitle(
+    parsedWork.titleZh || shion?.titleZh || kungal?.titleZh || bangumi?.titleZh || touchgal?.title || animeWorks[0] || query,
+    120
+  );
+  const titleJp = cleanTitle(
+    parsedWork.titleJp || shion?.titleJp || kungal?.titleJp || vndb?.titleJp || bangumi?.titleJp || dlsite?.title,
+    120
+  );
+  const titleEn = cleanTitle(
+    parsedWork.titleEn || shion?.titleEn || kungal?.titleEn || vndb?.titleRomaji || steam?.title,
+    120
+  );
 
   const codeSet = new Set();
   for (const c of Array.isArray(parsedWork.codes) ? parsedWork.codes : []) {
-    const clean = cleanTitle(c, 30);
-    if (clean) codeSet.add(clean);
+    const norm = normalizeCodeLabel(c);
+    if (norm) codeSet.add(norm);
   }
-  if (vndb?.id) codeSet.add(`VNDB:${vndb.id}`);
-  if (dlsite?.id) codeSet.add(dlsite.id);
-  if (steam?.id) codeSet.add(`Steam:${steam.id}`);
+  if (vndb?.id) codeSet.add(normalizeCodeLabel(`VNDB:${vndb.id}`));
+  if (dlsite?.id) codeSet.add(normalizeCodeLabel(dlsite.id));
+  if (steam?.id) codeSet.add(normalizeCodeLabel(`Steam:${steam.id}`));
+  if (bangumi?.id) codeSet.add(normalizeCodeLabel(bangumi.id));
 
-  const devSet = new Set();
-  for (const d of [
-    ...(Array.isArray(parsedWork.developers) ? parsedWork.developers : []),
-    ...(shion?.developers || []),
-    ...(vndb?.developers || []),
-    ...(dlsite?.developers || [])
-  ]) {
-    const clean = cleanTitle(d, 60);
-    if (clean) devSet.add(clean);
-  }
+  const devCandidates = Array.isArray(parsedWork.developers) && parsedWork.developers.length
+    ? [...parsedWork.developers, ...(vndb?.developers || []), ...(dlsite?.developers || []), ...(shion?.developers || [])]
+    : [...(vndb?.developers || []), ...(dlsite?.developers || []), ...(shion?.developers || [])];
+  const developers = deduplicateDevelopers(devCandidates);
 
   const tagSet = new Set();
   for (const t of [
@@ -50,6 +85,8 @@ function resolveWorkProfile(agentResult, query) {
   const coverCandidates = [
     parsedWork.cover,
     shion?.cover,
+    kungal?.cover,
+    bangumi?.cover,
     vndb?.cover,
     dlsite?.cover,
     touchgal?.cover,
@@ -69,7 +106,7 @@ function resolveWorkProfile(agentResult, query) {
     titleJp,
     titleEn,
     codes: [...codeSet].slice(0, 5),
-    developers: [...devSet].slice(0, 4),
+    developers,
     tags: [...tagSet].slice(0, 8),
     characters: animeChars.slice(0, 3),
     cover: coverCandidates[0] || '',
@@ -77,30 +114,39 @@ function resolveWorkProfile(agentResult, query) {
   };
 }
 
-function collectResourceLists(agentResult, maxResults = 5) {
+function collectResourceLists(agentResult, work, query, maxResults = 5) {
   const items = Array.isArray(agentResult?.crawledItems) ? agentResult.crawledItems : [];
   const parsedFree = Array.isArray(agentResult?.parsed?.freeResources) ? agentResult.parsed.freeResources : [];
   const parsedOfficial = Array.isArray(agentResult?.parsed?.officialResources) ? agentResult.parsed.officialResources : [];
 
+  const targetTitles = [work.titleZh, work.titleJp, work.titleEn, query].filter((t) => t && t !== '未确认作品名');
+  const isItemRelevant = (item) => {
+    if (!targetTitles.length) return true;
+    const itemTitles = [item?.title, item?.titleZh, item?.titleJp, item?.titleEn, ...(Array.isArray(item?.aliases) ? item.aliases : [])].filter(Boolean);
+    return matchesWorkTitle(targetTitles, itemTitles);
+  };
+
   const freeList = [];
   const seenFreeUrls = new Set();
 
-  // 1. 优先放 TouchGal 和 书音的图书馆 的结构化免费资源（含直链、提取码、解压密码）
+  // 1. 优先放结构化免费资源站（书音的图书馆、鲲 Galgame、真红小站、TouchGal）且必须与目标作品匹配
+  const freeSources = ['touchgal', 'shionlib', 'kungal', 'shinnku'];
   for (const item of items) {
-    if (item.source !== 'touchgal' && item.source !== 'shionlib') continue;
+    if (!freeSources.includes(item.source)) continue;
+    if (!isItemRelevant(item)) continue;
     const url = publicLink(item.url);
     if (!url || seenFreeUrls.has(url)) continue;
     seenFreeUrls.add(url);
     freeList.push({
-      siteName: item.siteName || (item.source === 'touchgal' ? 'TouchGal 资源站' : '书音的图书馆'),
+      siteName: item.siteName || item.source,
       title: cleanTitle(item.title, 120),
       url,
-      note: cleanTitle(item.note, 160),
+      note: cleanTitle(item.note, 180),
       downloads: Array.isArray(item.downloads) ? item.downloads : []
     });
   }
 
-  // 2. 合并 DeepSeek 筛选出的免费资源渠道
+  // 2. 合并 DeepSeek 筛选出的免费资源渠道（若与已有站点同 URL，则补充 note；若新 URL 则加入）
   for (const row of parsedFree) {
     const url = publicLink(row?.url);
     if (!url || seenFreeUrls.has(url)) continue;
@@ -114,9 +160,10 @@ function collectResourceLists(agentResult, maxResults = 5) {
     });
   }
 
-  // 3. 若免费列表不足，把全网搜索命中的资源页补进来
+  // 3. 若免费列表不足，把全网搜索命中的相关资源页补进来
   for (const item of items) {
     if (item.source !== 'web' || freeList.length >= maxResults) break;
+    if (!isItemRelevant(item)) continue;
     const url = publicLink(item.url);
     if (!url || seenFreeUrls.has(url)) continue;
     seenFreeUrls.add(url);
@@ -129,11 +176,12 @@ function collectResourceLists(agentResult, maxResults = 5) {
     });
   }
 
-  // 4. 正版与权威数据库参考（DLsite / Steam / VNDB）
+  // 4. 正版与权威数据库参考（DLsite / Steam / VNDB / Bangumi）
   const officialList = [];
   const seenOfficialUrls = new Set();
   for (const item of items) {
-    if (!['dlsite', 'steam', 'vndb'].includes(item.source)) continue;
+    if (!['dlsite', 'steam', 'vndb', 'bangumi'].includes(item.source)) continue;
+    if (!isItemRelevant(item)) continue;
     const url = publicLink(item.url);
     if (!url || seenOfficialUrls.has(url)) continue;
     seenOfficialUrls.add(url);
@@ -186,15 +234,16 @@ function formatFreeResourceBlock(item, index) {
   const lines = [`📦 免费资源渠道 #${index + 1} · ${item.siteName}`];
   lines.push(`标题：${item.title}`);
   if (item.note) lines.push(`说明：${item.note}`);
-  lines.push(`页面：${item.url}`);
+  lines.push(`主页：${item.url}`);
   if (Array.isArray(item.downloads) && item.downloads.length) {
-    lines.push('── 直链与网盘分流 ──');
+    lines.push('── 收录版本与下载入口 ──');
     for (const dl of item.downloads.slice(0, 4)) {
-      lines.push(`• ${dl.name}：${dl.url}`);
+      lines.push(`• ${dl.name}`);
+      if (dl.url && dl.url !== item.url) lines.push(`  链接：${dl.url}`);
       const meta = [
         dl.code ? `提取码：${dl.code}` : '',
         dl.password ? `解压密码：${dl.password}` : '',
-        dl.note ? `备注：${dl.note}` : ''
+        dl.note ? `${dl.note}` : ''
       ].filter(Boolean).join(' | ');
       if (meta) lines.push(`  (${meta})`);
     }
@@ -215,7 +264,7 @@ function formatOfficialListBlock(officialResources) {
 export function formatResourceSearchReply(agentResult, settings = {}, query = '') {
   const maxResults = Number(settings.maxResults) || 5;
   const work = resolveWorkProfile(agentResult, query);
-  const { freeResources, officialResources } = collectResourceLists(agentResult, maxResults);
+  const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
   const blocks = [formatWorkHeader(work)];
 
   if (freeResources.length) {
@@ -234,8 +283,9 @@ export function formatResourceSearchReply(agentResult, settings = {}, query = ''
 
 export async function buildResourceSearchNodes(agentResult, settings = {}, options = {}) {
   const maxResults = Number(settings.maxResults) || 5;
-  const work = resolveWorkProfile(agentResult, options.query || '');
-  const { freeResources, officialResources } = collectResourceLists(agentResult, maxResults);
+  const query = options.query || '';
+  const work = resolveWorkProfile(agentResult, query);
+  const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
   if (!freeResources.length && !officialResources.length && !work.summary && !work.characters.length) {
     return null;
   }
