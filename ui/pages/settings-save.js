@@ -27,6 +27,7 @@ import { saveDailyReportSettings } from './daily-report.js';
 import { readRecallRules } from './cross-chat-recall.js';
 import { saveEhentaiSettings } from './ehentai.js';
 import { saveHaiguiTangSettings } from './haigui-tang.js';
+import { collectMediaPatch } from './media.js';
 async function saveConfig({ quiet = false } = {}) {
   const c = state.config;
   // 只在当前区块的元素存在时才读取，避免“每个区块保存时读取其他区块元素”导致的 null 报错。
@@ -655,21 +656,7 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'media') {
-    patch.bilibili = {
-      ...(c.bilibili || {}),
-      enabled: chk('#cfg-bili-enabled', c.bilibili?.enabled === true),
-      allowPrivate: chk('#cfg-bili-private', c.bilibili?.allowPrivate === true),
-      downloader: val('#cfg-bili-downloader', c.bilibili?.downloader || 'yt-dlp').trim() || 'yt-dlp',
-      ffmpeg: val('#cfg-bili-ffmpeg', c.bilibili?.ffmpeg || 'ffmpeg').trim() || 'ffmpeg',
-      maxDurationSeconds: Math.max(30, Number(val('#cfg-bili-max-duration', c.bilibili?.maxDurationSeconds || 900)) || 900),
-      maxFileBytes: Math.max(20, Number(val('#cfg-bili-max-size', '300')) || 300) * 1048576,
-      maxConcurrent: Math.min(3, Math.max(1, Number(val('#cfg-bili-concurrent', c.bilibili?.maxConcurrent || 1)) || 1)),
-      rejectCollections: chk('#cfg-bili-reject-collections', c.bilibili?.rejectCollections !== false),
-      preferredUploader: val('#cfg-bili-uploader', c.bilibili?.preferredUploader || '').trim(),
-      searchLimit: Math.min(10, Math.max(1, Number(val('#cfg-bili-search-limit', c.bilibili?.searchLimit || 5)) || 5)),
-      searchMaxDurationSeconds: Math.max(30, Number(val('#cfg-bili-search-duration', c.bilibili?.searchMaxDurationSeconds || 900)) || 900),
-      searchSort: val('#cfg-bili-sort', c.bilibili?.searchSort || 'relevance')
-    };
+    Object.assign(patch, collectMediaPatch(c));
   }
 
   if (sec === 'persona') {

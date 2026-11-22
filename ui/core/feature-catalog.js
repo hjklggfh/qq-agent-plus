@@ -6,7 +6,7 @@ const FEATURE_CATALOG = Object.freeze([
   { id: 'pixiv', name: 'PID 搜索', category: '检索与媒体', configKey: 'pixiv', description: '查询作品并投递图片或 PDF。' },
   { id: 'x-search', name: 'X 账号检索', category: '检索与媒体', configKey: 'xSearch', description: '读取公开账号近期帖子与原图。' },
   { id: 'ehentai', name: 'E站检索', category: '检索与媒体', configKey: 'ehentai', description: '搜索、翻页与下载投递。' },
-  { id: 'media', name: 'B站媒体', category: '检索与媒体', configKey: 'bilibili', description: '识别视频链接并下载转发。' },
+  { id: 'media', name: '媒体转发', category: '检索与媒体', configKey: 'bilibili', description: '识别 B 站与抖音视频、图文及分享卡片并自动转发。' },
   { id: 'jm', name: 'JM 禁漫下载', category: '检索与媒体', configKey: 'jm', description: '管理现有下载与文件投递设置。' },
   { id: 'asr', name: '语音转文字', category: '检索与媒体', configKey: 'asr', description: '接入语音消息转写。' },
   { id: 'daily-report', name: '每晚汇报', category: '定时与社交', configKey: 'dailyReport', description: '定时向管理员汇报用量、费用和主机状态。' },

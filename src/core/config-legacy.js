@@ -100,6 +100,20 @@ export const DEFAULT_CONFIG = {
     searchSort: 'relevance',
     keywordCompletion: true
   },
+  douyin: {
+    enabled: false,
+    allowPrivate: false,
+    mediaDir: '',
+    maxDurationSeconds: 900,
+    maxFileBytes: 104857600,
+    timeoutMs: 180000,
+    maxConcurrent: 1,
+    forwardGallery: true,
+    maxGalleryImages: 12,
+    rejectCollections: false,
+    collectionKeywords: ['合集', '歌单', '循环', '助眠', '白噪音', 'playlist', 'mix'],
+    preferredAuthor: ''
+  },
   // OpenAI 兼容 API（必填才能跑）
   api: {
     // 每日花费上限（改进方案 #8，默认关闭＝升级不改变任何行为）。按**估算价**累计当日用量，

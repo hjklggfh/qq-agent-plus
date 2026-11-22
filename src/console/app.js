@@ -38,6 +38,7 @@ import { QzoneInteractionManager } from '../features/qzone-interactions.js';
 import { GroupDigestManager } from '../features/group-digest.js';
 import { GroupGameManager } from '../features/group-game.js';
 import { BilibiliAutoForward } from '../features/bilibili-auto-forward.js';
+import { DouyinAutoForward } from '../features/douyin-auto-forward.js';
 import { ImageSearchManager } from '../features/image-search/manager.js';
 import { imageSearchCommand } from '../features/image-search/command.js';
 import { installImageSearchRoutes } from '../features/image-search/routes.js';
@@ -608,6 +609,13 @@ export function createApp({
     getConfig,
     sender,
     log: { info: (...args) => log(...args), warn: moduleLog('bilibili') }
+  });
+  const douyinAutoForward = new DouyinAutoForward({
+    dataDir: DATA_DIR,
+    getConfig,
+    sender,
+    selfId: () => onebot.selfId,
+    log: { info: (...args) => log(...args), warn: moduleLog('douyin') }
   });
   const imageSearch = new ImageSearchManager({
     dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, onebot, store,
@@ -1354,8 +1362,11 @@ export function createApp({
         return;
       }
     }
-    // B站自动转发是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
-    if (!isSelf) bilibiliAutoForward.handleMessage({ chatKey, text, segments, messageId: event.message_id, isSelf });
+    // 媒体自动转发（B站 / 抖音）是宿主事件功能：在入库后异步处理，不唤醒模型，也不占用 token。
+    if (!isSelf) {
+      bilibiliAutoForward.handleMessage({ chatKey, text, segments, messageId: event.message_id, isSelf });
+      douyinAutoForward.handleMessage({ chatKey, text, segments, messageId: event.message_id, isSelf });
+    }
     if (
       !isSelf
       && (
@@ -3587,7 +3598,11 @@ export function createApp({
     const cfg = getConfig();
     return json(res, 200, {
       features: FEATURE_CATALOG.map(feature => ({ ...feature,
-        enabled: feature.id === 'reminders' ? cfg.reminders?.enabled !== false : cfg[feature.configKey]?.enabled === true })),
+        enabled: feature.id === 'reminders'
+          ? cfg.reminders?.enabled !== false
+          : (feature.id === 'media'
+            ? (cfg.bilibili?.enabled === true || cfg.douyin?.enabled === true)
+            : cfg[feature.configKey]?.enabled === true) })),
       tasks: backgroundTasks.snapshot(),
       runtime: { mode: cfg.runtime?.mode || 'observe', paused: cfg.runtime?.paused === true },
       external: ['数据备份、健康巡检、进程保护和审计清理由 systemd 定时器管理',

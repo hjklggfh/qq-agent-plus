@@ -93,10 +93,10 @@ const AV_RE = /av(\d{3,})/i;
  */
 export function pickBiliLink(text) {
   const s = String(text || '');
-  const withProto = s.match(/https?:\/\/(?:www\.|m\.|t\.)?(?:bilibili\.com|b23\.tv)\/[^\s"'<>，。！？）)】]+/i);
+  const withProto = s.match(/https?:\/\/(?:www\.|m\.|t\.)?(?:bilibili\.com|b23\.tv)\/[^\s"'<>“”‘’【】「」『』《》（）()[\]`\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]+/i);
   if (withProto) return withProto[0].replace(/[.,;:]+$/, '').replace(/\/+$/, '');
-  const bare = s.match(/(?:b23\.tv|(?:www\.|m\.)?bilibili\.com)\/[A-Za-z0-9_\-/?=&.%]+/i);
-  return bare ? `https://${bare[0]}`.replace(/[.,;:]+$/, '') : '';
+  const bare = s.match(/(?<![A-Za-z0-9._-])(?:b23\.tv|(?:www\.|m\.)?bilibili\.com)\/[A-Za-z0-9_\-/?=&.%]+/i);
+  return bare ? `https://${bare[0]}`.replace(/[.,;:]+$/, '').replace(/\/+$/, '') : '';
 }
 
 /**
@@ -181,6 +181,7 @@ export async function expandShortLink(url, { timeoutMs = 10000 } = {}) {
 export async function resolveLink(rawUrl) {
   const first = parseBiliUrl(rawUrl);
   if (first.kind === 'video' && (first.bvid || first.aid)) return first;
+  if (first.kind === 'bangumi' && first.epId) return first;
   const ex = await expandShortLink(rawUrl);
   if (!ex.ok) return { ...first, error: ex.error };
   const second = parseBiliUrl(ex.url);
@@ -234,6 +235,7 @@ export async function fetchVideoInfo(link, { timeoutMs = 15000 } = {}) {
       // duration 是**毫秒**（598000 = 598 秒），其它接口都是秒
       duration: Number(ep.duration) ? Number(ep.duration) / 1000 : 0,
       cover: String(ep.cover || r.data?.cover || ''),
+      epId: Number(ep.ep_id || epId) || 0,
       bvid: ep.bvid || '', aid: Number(ep.aid) || 0, cid: Number(ep.cid) || 0,
       page: 1, pageTotal: 1, pageTitle: epLabel
     };
@@ -336,7 +338,9 @@ export async function downloadVideo(urls, destPath, { maxBytes = 100 * 1024 * 10
       if (!reader) {
         const buf = Buffer.from(await res.arrayBuffer());
         written += buf.length;
-        if (written > maxBytes) return { ok: false, error: `视频超过体积上限（>${Math.round(maxBytes / 1048576)}MB），已放弃` };
+        if (written > maxBytes) {
+          return { ok: false, error: `视频超过体积上限（>${Math.round(maxBytes / 1048576)}MB），已放弃`, tooLarge: true, sizeBytes: written };
+        }
         fs.writeSync(fh, buf);
       } else {
         let finished = false;

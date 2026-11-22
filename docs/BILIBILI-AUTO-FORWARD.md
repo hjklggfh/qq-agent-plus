@@ -1,54 +1,42 @@
-# B 站视频自动转发
+# 媒体自动转发（B 站 / 抖音）
 
-该功能由宿主入站事件直接处理，不调用模型，也不消耗模型 token。默认关闭。
+B 站与抖音自动转发是宿主内置的扩展能力，统一归口在设置页 **「媒体转发」**（`id: 'media'`）下，各自提供独立启用开关，均无需安装 `yt-dlp`、`ffmpeg` 或登录 Cookie。
 
-## 依赖
+## 工作方式
 
-使用 B 站公开 API 和 Node 下载单文件 MP4，需要服务器能访问 B 站 API 与视频 CDN；不依赖 yt-dlp 或 ffmpeg。
+收到聊天消息后（入库之后、不触发大模型，不消耗 token）：
 
-## 配置
+1. **B 站**：识别文本或 QQ `json` / `xml` / `share` / `link` 卡片中的 B 站链接（`bilibili.com/video/BV...`、`av...`、番剧单集 `/bangumi/play/ep...`、`b23.tv/...` 短链及不带协议头的裸链接），自动展开短链并剥离追踪参数（如 `spm_id_from`、`vd_source`）。
+2. **抖音**：识别文本、口令文案与 QQ 分享卡片中的抖音链接（`v.douyin.com/...`、`/video/<id>`、`/note/<id>`、`/slides/<id>`、`?modal_id=<id>`、`iesdouyin.com/share/...` 及裸链接）。
+3. **匿名会话与元信息校验**：
+   - B 站优先通过 `/x/frontend/finger/spi` 领取匿名指纹校验视频/番剧元信息与直链流，遇到画质超限时自动向下尝试更低清晰度（`32 -> 16 -> 6`）。
+   - 抖音通过 `www.douyin.com/ttwid/register` 与首页 `uifid` 签名调用公开详情接口，并在网络或风控异常时回退到 `iesdouyin.com` 分享页解析；同时优先识别 `images` 图文字段，防止将图文作品附带的背景音乐当作视频发送。
+4. **先下载、后投递与防重复**：
+   - 视频先按大小与时长阈值校验并下载到临时目录（自动挑选优先 H.264、兼容 QQ 播放的码率），下载成功后再引用原消息发送封面与详情，随后投递本地视频文件；下载或元信息失败时仅给出明确失败提示。
+   - 抖音图文作品会先下载全部无水印图片（受 `maxGalleryImages` 上限约束）：单张直接以图文卡片发送，多张先发送详情卡片再通过合并转发（失败时按确认边界安全回退为逐张图片）发出。
+   - 同一会话 6 小时内同时按**链接去重**与**规范作品 ID（BVID/aid/epId、aweme_id）二级去重**，并通过基于规范 ID 的稳定 `runId` 避免 outbox 在结果未知（`unknown`）时重复写入。
 
-在控制台保存配置（或编辑数据目录中的 `config.json`）的 `bilibili` 段：
+## 主要配置项
 
-```json
-{
-  "bilibili": {
-    "enabled": true,
-    "maxDurationSeconds": 900,
-    "maxFileBytes": 314572800,
-    "maxConcurrent": 1,
-    "rejectCollections": true,
-    "preferredUploader": "",
-    "searchMaxDurationSeconds": 900,
-    "searchLimit": 5,
-    "searchSort": "relevance",
-    "keywordCompletion": true
-  }
-}
-```
+### `bilibili`（默认关闭）
 
-收到群消息中的 `bilibili.com`、`www.bilibili.com` 或 `b23.tv` 链接（包括 QQ 的 JSON/XML 分享卡片）后，先下载视频；下载成功后，引用原消息发送一条图文详情（封面、标题、原视频链接、作者，以及播放/弹幕、点赞/投币、收藏/评论），紧接着发送可播放视频，不等待下一轮消息。下载失败只提示原因，不提前发送详情卡片。统计来自本次 API 返回，缺失标为“未知”；封面获取失败时退回引用文字详情，随后仍发送视频。QQ 客户端决定具体气泡样式和两条消息的显示间隔。
+- `enabled`：是否启用 B 站自动转发（默认 `false`）
+- `allowPrivate`：是否处理白名单私聊中的链接（默认 `false`）
+- `qn`：首选清晰度（`6` / `16` / `32` / `64` / `80`，默认 `16` = 360P；超出体积上限时自动降级）
+- `maxDurationSeconds` / `maxFileBytes` / `maxConcurrent`：最大时长（秒，默认 `900`）、最大体积（默认 `300 MiB`）与并发下载数（`1~3`）
+- `rejectCollections` / `collectionKeywords`：是否跳过合集、歌单、助眠等关键词内容及自定义关键词列表
+- `preferredUploader`：仅转发包含该 UP 主关键字的视频（留空不限）
+- `keywordCompletion` / `searchLimit` / `searchMaxDurationSeconds` / `searchSort`：群内 B 站关键词搜索配置
 
-任务受全局并发上限约束，发送由宿主队列按会话串行；同一会话里正在处理的链接不会重复入队，发送成功的同一链接六小时内防重。下载或明确发送失败后可重新提交；图文或视频发送结果未知时不自动重发，稳定的视频/会话外发 ID 与 outbox 会在进程重启后继续阻止未知写入重放。
+### `douyin`（默认关闭）
 
-私聊默认不处理，设置 `allowPrivate: true` 后才会处理白名单私聊。
+- `enabled`：是否启用抖音自动转发（默认 `false`）
+- `allowPrivate`：是否处理白名单私聊中的抖音链接（默认 `false`）
+- `forwardGallery` / `maxGalleryImages`：是否转发抖音图文作品（默认 `true`）与单条图文最多转发张数（默认 `12`，上限 `30`）
+- `maxDurationSeconds` / `maxFileBytes` / `maxConcurrent`：最大时长（默认 `900` 秒）、最大视频体积（默认 `100 MiB`）与并发下载数（`1~3`）
+- `rejectCollections` / `collectionKeywords` / `preferredAuthor`：合集/歌单过滤开关、屏蔽关键词与作者筛选
 
-## 搜索
+## 临时文件与权限
 
-在群里发送：
-
-```text
-b站搜索 初音未来现场
-```
-
-或 `bilibili 搜索 <关键词>`。搜索使用 B 站 API，受最大时长、结果数量和排序设置限制；关键词补全开启时会自动补充 B 站语境。搜索只回复文本结果，不调用模型。
-
-疑似“合集、歌单、循环、助眠、白噪音、playlist、mix”的内容默认跳过，可通过 `collectionKeywords` 调整。
-
-### API 下载链路说明
-
-当前自动转发使用 B 站公开 API 获取视频元信息和单文件 MP4 播放地址，再由 Node 在本机带视频页 Referer 下载。普通视频不需要 yt-dlp 或 ffmpeg，也不消耗模型 token。服务器需要能访问 `api.bilibili.com` 和 API 返回的 B 站 CDN。
-
-配置中的 `qn` 默认是 `16`（360P）。未登录时 B 站通常只提供 360P 或 480P；请求更高画质时会使用接口实际返回的档位。图文详情与视频分开发送，以兼容 OneBot 对 video 段的限制。封面经公共地址安全校验下载，上限 2 MiB、超时 10 秒；图片内容不写入 outbox，只记录大小与说明。`mediaDir` 留空时使用数据目录下的 `bilibili` 临时目录；临时目录和文件会设置为 OneBot 进程可读取的权限。考虑到 OneBot 可能异步读取本地媒体，视频发送成功后会保留 10 分钟再删除；每次新任务会清理超过 2 小时的残留目录。
-
-元信息、播放和搜索接口复用匿名指纹 Cookie，不读取用户登录 Cookie；遇到 HTTP 412/-412 最多刷新指纹重试一次。持续拒绝会明确提示失败，用户稍后可重新提交，不进行后台循环重试。视频及失败说明均经宿主发送队列发送，日志记录处理阶段；视频已发出但说明失败不会释放视频防重。
+- 媒体下载任务目录默认位于 `<dataDir>/bilibili/job-*` 与 `<dataDir>/douyin/job-*`（权限 `0755` / 文件 `0644`，适配容器或独立用户运行的 NapCat/OneBot）。
+- 发送成功或投递结束后延迟 10 分钟清理临时目录，超期 2 小时未清理的残留 `job-*` 目录会在新任务开始前自动回收。

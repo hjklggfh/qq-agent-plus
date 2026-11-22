@@ -812,3 +812,95 @@ test('设置页数值 0 保留、会话切走后旧请求报错不覆盖新详�
     assert.ok(detailEl.querySelector('#new-session-b'), '切走后旧请求的报错不应覆盖新会话内容');
   } finally { window.happyDOM?.abort?.(); }
 });
+
+test('媒体转发设置真实DOM渲染B站与抖音独立配置、无yt-dlp旧字段且正确保存与展示总览状态', async () => {
+  const { window, ctx } = loadPage();
+  const doc = window.document;
+  try {
+    await settle(150);
+    const savedPatches = [];
+    const mediaCfg = {
+      api: { provider: '', model: '', baseUrl: '', apiKey: '' },
+      onebot: {},
+      runtime: { mode: 'observe' },
+      safety: {},
+      bilibili: {
+        enabled: false,
+        allowPrivate: true,
+        qn: 32,
+        maxDurationSeconds: 600,
+        maxFileBytes: 200 * 1048576,
+        maxConcurrent: 2,
+        rejectCollections: true,
+        collectionKeywords: ['合集', '歌单'],
+        preferredUploader: '原UP',
+        keywordCompletion: false,
+        searchLimit: 4,
+        searchMaxDurationSeconds: 500,
+        searchSort: 'views'
+      },
+      douyin: {
+        enabled: true,
+        allowPrivate: false,
+        forwardGallery: true,
+        maxGalleryImages: 8,
+        maxDurationSeconds: 480,
+        maxFileBytes: 80 * 1048576,
+        maxConcurrent: 1,
+        rejectCollections: true,
+        collectionKeywords: ['循环', '白噪音'],
+        preferredAuthor: ''
+      }
+    };
+    window.fetch = async (url, opts = {}) => {
+      if (String(url) === '/api/config' && opts.method === 'POST') {
+        const body = JSON.parse(opts.body);
+        savedPatches.push(body);
+        return { ok: true, status: 200, json: async () => ({ config: { ...mediaCfg, ...body } }) };
+      }
+      if (String(url).includes('/api/config')) {
+        return { ok: true, status: 200, json: async () => ({ config: mediaCfg }) };
+      }
+      return { ok: true, status: 200, json: async () => ({}) };
+    };
+    ctx.__mediaCfg = mediaCfg;
+    vm.runInContext('state.tab = "settings"; state.settingsSection = "media"; state.config = Object.assign({}, __mediaCfg, state.config, __mediaCfg); renderSettings();', ctx);
+    await settle(40);
+
+    assert.equal(doc.querySelector('#cfg-bili-downloader'), null, '应清理过时的 yt-dlp 输入框');
+    assert.equal(doc.querySelector('#cfg-bili-ffmpeg'), null, '应清理过时的 ffmpeg 输入框');
+    assert.equal(doc.querySelector('#cfg-bili-qn')?.value, '32');
+    assert.equal(doc.querySelector('#cfg-bili-keyword-completion')?.checked, false);
+    assert.equal(doc.querySelector('#cfg-bili-collection-keywords')?.value, '合集, 歌单');
+    assert.equal(doc.querySelector('#cfg-dy-enabled')?.checked, true);
+    assert.equal(doc.querySelector('#cfg-dy-max-gallery-images')?.value, '8');
+
+    doc.querySelector('#cfg-bili-enabled').checked = true;
+    doc.querySelector('#cfg-bili-qn').value = '64';
+    doc.querySelector('#cfg-bili-collection-keywords').value = '歌单, 白噪音';
+    doc.querySelector('#cfg-bili-keyword-completion').checked = true;
+    doc.querySelector('#cfg-dy-max-gallery-images').value = '15';
+    doc.querySelector('#cfg-dy-author').value = '科技评测';
+    doc.querySelector('#save-cfg-btn').click();
+    await settle(60);
+
+    assert.equal(savedPatches.length, 1);
+    assert.equal(savedPatches[0].bilibili.enabled, true);
+    assert.equal(savedPatches[0].bilibili.downloader, 'bilibili-api');
+    assert.equal(savedPatches[0].bilibili.qn, 64);
+    assert.deepEqual(savedPatches[0].bilibili.collectionKeywords, ['歌单', '白噪音']);
+    assert.equal(savedPatches[0].bilibili.keywordCompletion, true);
+    assert.equal(savedPatches[0].douyin.enabled, true);
+    assert.equal(savedPatches[0].douyin.maxGalleryImages, 15);
+    assert.equal(savedPatches[0].douyin.preferredAuthor, '科技评测');
+
+    // 验证仅启用抖音时功能总览回退状态也为“已启用”
+    ctx.__dyOnly = { bilibili: { enabled: false }, douyin: { enabled: true } };
+    vm.runInContext('state.settingsSection = "feature-center"; state.featureCenterData = null; state.config = Object.assign({}, state.config, __dyOnly); renderSettings();', ctx);
+    await settle(40);
+    const cards = [...doc.querySelectorAll('.feature-center-card')];
+    const mediaCard = cards.find(card => card.textContent.includes('媒体转发'));
+    assert.ok(mediaCard, '功能总览应包含媒体转发卡片');
+    assert.match(mediaCard.textContent, /已启用/);
+  } finally { window.happyDOM?.abort?.(); }
+});

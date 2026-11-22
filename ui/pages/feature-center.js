@@ -33,7 +33,12 @@ function updateFeatureCenter() {
   const box = $('#feature-center-list');
   if (!box) return;
   const data = state.featureCenterData;
-  const features = data?.features || FEATURE_CATALOG.map(item => ({ ...item, enabled: state.config?.[item.configKey]?.enabled === true }));
+  const features = data?.features || FEATURE_CATALOG.map(item => ({
+    ...item,
+    enabled: item.id === 'media'
+      ? (state.config?.bilibili?.enabled === true || state.config?.douyin?.enabled === true)
+      : state.config?.[item.configKey]?.enabled === true
+  }));
   const tasks = data?.tasks || [];
   const query = state.featureCenterQuery.trim().toLowerCase();
   const selected = features.filter(feature => {

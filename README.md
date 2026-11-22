@@ -39,7 +39,7 @@
 | 以图搜图 | “找鸡”和默认“搜图”通过 SerpApi 查询 Google Lens；可指定 Google、Yandex、trace.moe 等平台，返回来源链接或匹配图片 | [用法与中转部署](docs/IMAGE-SEARCH.md) |
 | X 账号检索 | 查询公开账号近期帖子，支持翻页、中文翻译与按结果编号取原图；官方 API 或独立东京浏览器中转需自行配置 | [X 账号检索](docs/X-SEARCH.md) |
 | JM 下载 | 明确指令下载、图片处理、逐页合成 PDF、群聊／私聊文件发送、任务状态、日更与图库 | [JM 设置](docs/JM-SUOMINGOR.md) |
-| B 站自动转发 | 识别链接、短链接与 QQ 分享卡片，获取信息并下载、发送视频 | [B 站转发](docs/BILIBILI-AUTO-FORWARD.md) |
+| 媒体自动转发 | 识别 B 站与抖音链接、口令文案及 QQ 分享卡片，免登录解析并转发视频与图文 | [B 站 / 抖音转发](docs/BILIBILI-AUTO-FORWARD.md) |
 | 多人跑团 | 独立工作台、世界观和角色卡导入、按世界建角与自由加点、叙事冒险、持久化战役 | [跑团用法](docs/TRPG.md) · [编写卡片](docs/TRPG-CARD-GUIDE.md) |
 | 诡秘战术模式 | 多人各控制一角，方格战斗、移动、掩体与敌方回合；22 途径、序列 9—5 的简化成长规则 | [战术战役](docs/TRPG-TACTICAL.md) |
 | 语音与图片能力 | 语音转写、视频音轨与画面理解，可选语音回复、图片生成；需要对应服务或本地依赖 | [配置示例](docs/CONFIG-EXAMPLES.md) |
