@@ -1,9 +1,105 @@
 import { parse } from 'node-html-parser';
+import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { boundedBody, cleanTitle, publicLink } from '../image-search/common.js';
 import { webSearch } from '../../llm/web-search.js';
 
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const proxyAgents = new Map();
+
+export function resolveOverseasProxyUrl(settings = {}, options = {}) {
+  const getCfg = options?.getConfig;
+  const fullCfg = typeof getCfg === 'function' ? getCfg() : (options?.config || {});
+  const candidates = [
+    settings?.proxyUrl,
+    options?.proxyUrl,
+    fullCfg?.resourceSearch?.proxyUrl,
+    fullCfg?.pixiv?.proxyUrl,
+    fullCfg?.ehentai?.proxyUrl
+  ];
+  for (const raw of candidates) {
+    const val = typeof raw === 'string' ? raw.trim() : '';
+    if (!val) continue;
+    try {
+      const url = new URL(val);
+      if (url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+        && url.port && !url.username && !url.password && url.pathname === '/' && !url.search && !url.hash) {
+        return url.origin;
+      }
+    } catch { /* ignore invalid proxy url */ }
+  }
+  return '';
+}
+
+function getProxyDispatcher(proxyUrl) {
+  if (!proxyUrl) return null;
+  if (!proxyAgents.has(proxyUrl)) {
+    if (proxyAgents.size >= 4) {
+      const first = proxyAgents.keys().next().value;
+      proxyAgents.get(first)?.close?.().catch?.(() => {});
+      proxyAgents.delete(first);
+    }
+    proxyAgents.set(proxyUrl, new ProxyAgent(proxyUrl));
+  }
+  return proxyAgents.get(proxyUrl);
+}
+
+export function getOverseasFetch(settings = {}, options = {}) {
+  if (typeof options?.fetchImpl === 'function') return options.fetchImpl;
+  const proxyUrl = resolveOverseasProxyUrl(settings, options);
+  if (!proxyUrl) return globalThis.fetch;
+  return async (url, init = {}) => {
+    const dispatcher = getProxyDispatcher(proxyUrl);
+    try {
+      const res = await undiciFetch(url, { ...init, dispatcher });
+      if (res.status === 403 || res.status === 502) {
+        await res.body?.cancel?.().catch?.(() => {});
+        return await globalThis.fetch(url, init);
+      }
+      return res;
+    } catch (error) {
+      if (init?.signal?.aborted) throw error;
+      return await globalThis.fetch(url, init);
+    }
+  };
+}
+
+async function queryTokyoResourceRelay(source, query, options = {}) {
+  if (options?.disableRelay) return null;
+  const relay = options?.imageSearchSettings;
+  const relayUrl = typeof relay?.relayUrl === 'string' ? relay.relayUrl.trim().replace(/\/+$/, '') : '';
+  const relayToken = typeof relay?.relayToken === 'string' ? relay.relayToken.trim() : '';
+  if (!relayUrl || !relayToken) return null;
+  const fetchFn = options?.fetchImpl || globalThis.fetch;
+  const timeoutSignal = AbortSignal.any([
+    ...(options?.signal ? [options.signal] : []),
+    AbortSignal.timeout(14000)
+  ]);
+  try {
+    const res = await fetchFn(`${relayUrl}/v1/resource-search`, {
+      method: 'POST',
+      signal: timeoutSignal,
+      headers: {
+        authorization: `Bearer ${relayToken}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({ source, query: String(query || '').slice(0, 120) })
+    });
+    if (!res.ok) {
+      await res.body?.cancel?.().catch?.(() => {});
+      return null;
+    }
+    const buf = await boundedBody(res, MAX_JSON_BYTES, timeoutSignal);
+    const data = JSON.parse(buf.toString('utf8'));
+    if (data && Array.isArray(data.results) && data.status !== 'error') {
+      return data;
+    }
+    return null;
+  } catch {
+    options?.signal?.throwIfAborted();
+    return null;
+  }
+}
 
 export const SOURCE_LABELS = Object.freeze({
   shionlib: '书音的图书馆',
@@ -775,10 +871,14 @@ export async function searchBangumi(keyword, _settings, options = {}) {
 }
 
 /**
- * 9. DLsite 同人黄油检索（支持 RJ/VJ/BJ 号直查与关键词搜索）
+ * 9. DLsite 同人黄油检索（支持 RJ/VJ/BJ 号直查与关键词搜索；优先走东京中转/本机代理隧道）
  */
-export async function searchDlsite(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+export async function searchDlsite(keyword, settings, options = {}) {
+  const relayed = await queryTokyoResourceRelay('dlsite', keyword, options);
+  if (relayed) {
+    return { source: 'dlsite', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+  }
+  const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
   const codeMatch = String(keyword || '').match(/\b([RVB]J\d{6,8})\b/i);
   const results = [];
@@ -854,10 +954,14 @@ export async function searchDlsite(keyword, _settings, options = {}) {
 }
 
 /**
- * 10. Steam 商店接口检索
+ * 10. Steam 商店接口检索（优先走东京中转/本机代理隧道）
  */
-export async function searchSteam(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+export async function searchSteam(keyword, settings, options = {}) {
+  const relayed = await queryTokyoResourceRelay('steam', keyword, options);
+  if (relayed) {
+    return { source: 'steam', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+  }
+  const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
   const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(keyword)}&l=schinese&cc=CN`;
   const data = await fetchJson(url, {}, signal, fetchFn);
@@ -877,8 +981,10 @@ export async function searchSteam(keyword, _settings, options = {}) {
 /**
  * 11. 全网资源搜索（支持宿主配置的 webSearch + Yahoo Japan 无过滤 Google 索引双通道）
  */
-async function searchYahooJapanWeb(query, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+export async function searchYahooJapanWeb(query, settings, options = {}) {
+  const relayed = await queryTokyoResourceRelay('yahoo', query, options);
+  if (relayed) return relayed.results;
+  const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
   const url = `https://search.yahoo.co.jp/search?p=${encodeURIComponent(query)}&ei=UTF-8`;
   const html = await fetchText(url, {}, signal, fetchFn);
@@ -902,12 +1008,12 @@ async function searchYahooJapanWeb(query, options = {}) {
   return results;
 }
 
-export async function searchWebResources(query, _settings, options = {}) {
+export async function searchWebResources(query, settings, options = {}) {
   const webSearchFn = options.webSearchImpl || webSearch;
   const rawItems = [];
   const [hostSettled, yahooSettled] = await Promise.allSettled([
     webSearchFn(query),
-    options.webSearchImpl ? Promise.resolve([]) : searchYahooJapanWeb(query, options)
+    options.webSearchImpl ? Promise.resolve([]) : searchYahooJapanWeb(query, settings, options)
   ]);
   options.signal?.throwIfAborted();
   if (hostSettled.status === 'fulfilled' && Array.isArray(hostSettled.value?.results)) {
@@ -939,6 +1045,22 @@ export async function searchWebResources(query, _settings, options = {}) {
     if (results.length >= 6) break;
   }
   return { source: 'web', status: results.length ? 'ok' : 'empty', results };
+}
+
+/**
+ * 供东京搜图中转（src/features/image-search/relay.js）调用的海外资源检索执行器
+ */
+export async function runTokyoRelayResourceSearch(source, query, options = {}) {
+  const clean = String(query || '').trim().slice(0, 120);
+  if (!clean) return { source, status: 'empty', results: [] };
+  const localOpts = { ...options, disableRelay: true };
+  if (source === 'dlsite') return searchDlsite(clean, {}, localOpts);
+  if (source === 'steam') return searchSteam(clean, {}, localOpts);
+  if (source === 'yahoo') {
+    const results = await searchYahooJapanWeb(clean, {}, localOpts);
+    return { source: 'yahoo', status: results.length ? 'ok' : 'empty', results };
+  }
+  throw new Error(`不支持的中转检索源: ${source}`);
 }
 
 /**

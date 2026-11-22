@@ -11,7 +11,10 @@ import socketserver
 import threading
 
 SLOTS = threading.BoundedSemaphore(4)
-HOSTS = frozenset({'e-hentai.org', 'ehgt.org', 'hath.network'})
+HOSTS = frozenset({
+    'e-hentai.org', 'ehgt.org', 'hath.network',
+    'search.yahoo.co.jp', 'www.dlsite.com', 'img.dlsite.jp', 'store.steampowered.com',
+})
 
 
 def allowed_host(host):

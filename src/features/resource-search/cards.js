@@ -1,6 +1,6 @@
 import { boundedBody, cleanTitle, publicLink } from '../image-search/common.js';
 import { imageType } from '../../core/image-type.js';
-import { matchesWorkTitle, normalizeTitleForMatch } from './sources.js';
+import { getOverseasFetch, matchesWorkTitle, normalizeTitleForMatch } from './sources.js';
 
 const MAX_COVER_BYTES = 4 * 1024 * 1024;
 
@@ -90,16 +90,22 @@ function resolveWorkProfile(agentResult, query) {
     if (clean) tagSet.add(clean);
   }
 
-  const coverCandidates = [
-    parsedWork.cover,
+  const coverCandidates = [...new Set([
     shion?.cover,
     kungal?.cover,
     bangumi?.cover,
     vndb?.cover,
+    parsedWork.cover,
     dlsite?.cover,
     touchgal?.cover,
     steam?.cover
-  ].map(publicLink).filter(Boolean);
+  ].map(publicLink).filter(Boolean))];
+
+  const coverKeys = {};
+  for (const item of items) {
+    const cUrl = publicLink(item?.cover);
+    if (cUrl && item?.coverKey) coverKeys[cUrl] = String(item.coverKey);
+  }
 
   const summary = cleanTitle(
     parsedWork.summary
@@ -119,6 +125,8 @@ function resolveWorkProfile(agentResult, query) {
     tags: [...tagSet].slice(0, 8),
     characters: animeChars.slice(0, 3),
     cover: coverCandidates[0] || '',
+    coverCandidates,
+    coverKeys,
     summary
   };
 }
@@ -341,31 +349,72 @@ export async function buildResourceSearchNodes(agentResult, settings = {}, optio
   const text = (value) => ({ type: 'text', data: { text: value } });
 
   const headerContent = [text(formatWorkHeader(work))];
-  if (settings.includeImages !== false && work.cover && !options.signal?.aborted) {
-    try {
-      const fetchFn = options.fetchImpl || globalThis.fetch;
+  if (settings.includeImages !== false && work.coverCandidates?.length && !options.signal?.aborted) {
+    const fetchFn = getOverseasFetch(settings, options);
+    const relay = options.imageSearchSettings;
+    const relayUrl = typeof relay?.relayUrl === 'string' ? relay.relayUrl.trim().replace(/\/+$/, '') : '';
+    const relayToken = typeof relay?.relayToken === 'string' ? relay.relayToken.trim() : '';
+    const relayFetch = options.fetchImpl || globalThis.fetch;
+
+    for (const candidateUrl of work.coverCandidates.slice(0, 3)) {
+      if (options.signal?.aborted) break;
       const imgSignal = AbortSignal.any([
         ...(options.signal ? [options.signal] : []),
         AbortSignal.timeout(10000)
       ]);
-      const res = await fetchFn(work.cover, {
-        signal: imgSignal,
-        headers: { 'user-agent': 'Mozilla/5.0' }
-      });
-      if (res.ok) {
-        const buffer = await boundedBody(res, MAX_COVER_BYTES, imgSignal);
-        if (imageType(buffer)) {
-          headerContent.push(text('\n作品封面预览：'));
-          headerContent.push({
-            type: 'image',
-            data: { file: `base64://${buffer.toString('base64')}` }
+      let attached = false;
+      const coverKey = work.coverKeys?.[candidateUrl];
+      if (coverKey && relayUrl && relayToken) {
+        try {
+          const rRes = await relayFetch(`${relayUrl}/v1/image`, {
+            method: 'POST',
+            signal: imgSignal,
+            headers: {
+              authorization: `Bearer ${relayToken}`,
+              'content-type': 'application/json',
+              'x-image-max-bytes': String(MAX_COVER_BYTES)
+            },
+            body: JSON.stringify({ key: coverKey })
           });
+          if (rRes.ok) {
+            const buffer = await boundedBody(rRes, MAX_COVER_BYTES, imgSignal);
+            if (imageType(buffer)) {
+              headerContent.push(text('\n作品封面预览：'));
+              headerContent.push({
+                type: 'image',
+                data: { file: `base64://${buffer.toString('base64')}` }
+              });
+              attached = true;
+            }
+          } else {
+            await rRes.body?.cancel().catch(() => {});
+          }
+        } catch {
+          options.signal?.throwIfAborted();
         }
-      } else {
-        await res.body?.cancel().catch(() => {});
       }
-    } catch {
-      options.signal?.throwIfAborted();
+      if (attached) break;
+      try {
+        const res = await fetchFn(candidateUrl, {
+          signal: imgSignal,
+          headers: { 'user-agent': 'Mozilla/5.0' }
+        });
+        if (res.ok) {
+          const buffer = await boundedBody(res, MAX_COVER_BYTES, imgSignal);
+          if (imageType(buffer)) {
+            headerContent.push(text('\n作品封面预览：'));
+            headerContent.push({
+              type: 'image',
+              data: { file: `base64://${buffer.toString('base64')}` }
+            });
+            break;
+          }
+        } else {
+          await res.body?.cancel().catch(() => {});
+        }
+      } catch {
+        options.signal?.throwIfAborted();
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import { imageSearchConfig } from '../image-search/config.js';
 import { resourceSearchConfig } from './config.js';
 import { resolveDeepSeekCredentials, runResourceSearchAgent } from './agent.js';
 import { buildResourceSearchNodes, formatResourceSearchReply } from './cards.js';
+import { resolveOverseasProxyUrl } from './sources.js';
 
 export class ResourceSearchManager {
   constructor(options) {
@@ -18,7 +19,7 @@ export class ResourceSearchManager {
     this.forward = options.forward;
     this.onebot = options.onebot;
     this.store = options.store;
-    this.fetch = options.fetchImpl || globalThis.fetch;
+    this.fetch = options.fetchImpl;
     this.complete = options.completeImpl;
     this.webSearch = options.webSearchImpl;
     this.webFetch = options.webFetchImpl;
@@ -44,12 +45,18 @@ export class ResourceSearchManager {
     const { deepseekApiKey, touchgalToken, ...publicSettings } = rawSettings;
     const fullCfg = this.getConfig();
     const globalDeepSeek = resolveDeepSeekCredentials(fullCfg, { ...rawSettings, deepseekApiKey: '' });
+    const imgCfg = imageSearchConfig(fullCfg?.imageSearch);
+    const hasTokyoRelay = Boolean(imgCfg.relayUrl && imgCfg.relayToken);
+    const effectiveProxyUrl = resolveOverseasProxyUrl(rawSettings, { config: fullCfg });
     return {
       settings: {
         ...publicSettings,
         hasDeepseekApiKey: Boolean(deepseekApiKey),
         hasTouchgalToken: Boolean(touchgalToken),
-        hasGlobalDeepseekKey: globalDeepSeek.configured
+        hasGlobalDeepseekKey: globalDeepSeek.configured,
+        hasTokyoRelay,
+        tokyoRelayUrl: hasTokyoRelay ? imgCfg.relayUrl : '',
+        effectiveProxyUrl
       },
       running: Boolean(this.active),
       history: this.history.slice().reverse()
@@ -203,6 +210,8 @@ export class ResourceSearchManager {
         ? await buildResourceSearchNodes(agentResult, settings, {
             query,
             signal,
+            getConfig: this.getConfig,
+            imageSearchSettings,
             fetchImpl: this.fetch,
             selfId: this.onebot?.selfId,
             name: this.onebot?.selfNickname

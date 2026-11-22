@@ -16,6 +16,7 @@ import { resourceSearchCommand } from '../src/features/resource-search/command.j
 import {
   crawlMultiSites,
   matchesWorkTitle,
+  resolveOverseasProxyUrl,
   searchAnimeTrace,
   searchBangumi,
   searchDlsite,
@@ -24,9 +25,12 @@ import {
   searchShionlib,
   searchSteam,
   searchTouchGal,
-  searchVndb
+  searchVndb,
+  searchWebResources
 } from '../src/features/resource-search/sources.js';
+import { buildResourceSearchNodes } from '../src/features/resource-search/cards.js';
 import { ResourceSearchManager } from '../src/features/resource-search/manager.js';
+import { createImageSearchRelay } from '../src/features/image-search/relay.js';
 
 const TINY_PNG = Buffer.from(
   '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082',
@@ -464,3 +468,101 @@ test('资源检索控制台设置页渲染、群白名单、冷却与密钥保�
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.match(doc.querySelector('#resource-search-history').textContent, /千恋万花/);
 });
+
+test('东京搜图中转 /v1/resource-search 代查 DLsite / Yahoo 日本及本机代理隧道校验', async (t) => {
+  // 1. 本机代理地址校验与自动回退检测
+  validateResourceSearchPatch({ proxyUrl: 'http://127.0.0.1:3222' });
+  validateResourceSearchPatch({ proxyUrl: '' });
+  assert.throws(() => validateResourceSearchPatch({ proxyUrl: 'http://evil.example.com:8080' }), /本机/);
+  assert.throws(() => validateResourceSearchPatch({ proxyUrl: 'http://user:pass@127.0.0.1:3222' }), /本机/);
+
+  assert.equal(
+    resolveOverseasProxyUrl({}, { config: { pixiv: { proxyUrl: 'http://127.0.0.1:3222' } } }),
+    'http://127.0.0.1:3222'
+  );
+  assert.equal(
+    resolveOverseasProxyUrl({ proxyUrl: 'http://127.0.0.1:3223' }, { config: { pixiv: { proxyUrl: 'http://127.0.0.1:3222' } } }),
+    'http://127.0.0.1:3223'
+  );
+
+  // 2. 启动真实东京中转 HTTP 服务测试 /v1/resource-search + 封面凭证 /v1/image
+  const token = 'r'.repeat(40);
+  const relayCalls = [];
+  const server = createImageSearchRelay({
+    token,
+    download: async () => ({ buffer: TINY_PNG }),
+    resourceSearch: async (source, query) => {
+      relayCalls.push({ source, query });
+      if (source === 'dlsite') {
+        return {
+          source: 'dlsite',
+          status: 'ok',
+          results: [{
+            source: 'dlsite',
+            siteName: 'DLsite',
+            kind: 'official',
+            id: 'RJ01208749',
+            title: '夢吉原のあやかし妓楼 (RJ01208749)',
+            developers: ['とらいあんぐる！'],
+            cover: 'https://img.dlsite.jp/modpub/RJ01208749_img_main.jpg',
+            url: 'https://www.dlsite.com/maniax/work/=/product_id/RJ01208749.html'
+          }]
+        };
+      }
+      if (source === 'yahoo') {
+        return {
+          source: 'yahoo',
+          status: 'ok',
+          results: [{
+            title: '【SLG/官中】梦吉原的妖怪妓楼 官中步兵版',
+            url: 'https://www.vikacg.com/post/41095',
+            snippet: '百度网盘/Workupload直链 下载'
+          }]
+        };
+      }
+      return { source, status: 'empty', results: [] };
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const relayUrl = `http://127.0.0.1:${server.address().port}`;
+  const imageSearchSettings = { relayUrl, relayToken: token };
+
+  // 未鉴权请求被拒绝
+  assert.equal((await fetch(`${relayUrl}/v1/resource-search`, { method: 'POST', body: '{}' })).status, 401);
+  // 未知源返回 400
+  assert.equal((await fetch(`${relayUrl}/v1/resource-search`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'invalid', query: 'test' })
+  })).status, 400);
+
+  // 通过东京中转查询 DLsite 与全网 Yahoo 日本
+  const dlReport = await searchDlsite('RJ01208749', {}, { imageSearchSettings });
+  assert.equal(dlReport.status, 'ok');
+  assert.equal(dlReport.results[0].id, 'RJ01208749');
+  assert.ok(dlReport.results[0].coverKey, '东京中转应为 DLsite 封面签发短期图片凭证');
+
+  const webReport = await searchWebResources('RJ01208749', {}, {
+    imageSearchSettings,
+    webSearchImpl: async () => ({ results: [] })
+  });
+  // 注意：当传入自定义 webSearchImpl 时只调 webSearchImpl，不传 webSearchImpl 时才调 Yahoo Japan
+  const webReportWithYahoo = await searchWebResources('RJ01208749', {}, { imageSearchSettings });
+  assert.equal(webReport.results.length, 0);
+  assert.equal(webReportWithYahoo.results.some((r) => r.url.includes('vikacg.com')), true);
+  assert.deepEqual(relayCalls.map((c) => c.source), ['dlsite', 'yahoo']);
+
+  // 验证合并卡片可通过东京中转 coverKey 拉取海外 DLsite 封面图
+  const nodes = await buildResourceSearchNodes(
+    {
+      parsed: null,
+      crawledItems: [...dlReport.results, ...webReportWithYahoo.results]
+    },
+    { includeImages: true, maxResults: 5 },
+    { query: '梦吉原的妖怪妓楼', imageSearchSettings, selfId: '10001' }
+  );
+  assert.ok(nodes);
+  assert.equal(nodes[0].data.content.some((part) => part.type === 'image'), true);
+});
+

@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 HOSTS = frozenset({
     'www.pixiv.net', 'app-api.pixiv.net', 'i.pximg.net', 's.pximg.net',
     'pixiv.re', 'i.pixiv.re', 'api.lolicon.app',
+    'search.yahoo.co.jp', 'www.dlsite.com', 'img.dlsite.jp', 'store.steampowered.com',
 })
 SLOTS = threading.BoundedSemaphore(8)
 IMAGE_SLOT = threading.BoundedSemaphore(6)

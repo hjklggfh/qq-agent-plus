@@ -27,6 +27,7 @@ export const DEFAULT_RESOURCE_SEARCH_CONFIG = Object.freeze({
   touchgalDomain: 'www.touchgal.ink',
   touchgalToken: '',
   shionlibDomain: 'shionlib.com',
+  proxyUrl: '',
   sources: Object.freeze({
     shionlib: true,
     kungal: true,
@@ -49,6 +50,16 @@ export function validateApiBaseUrl(value, label = 'DeepSeek API 地址') {
   if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
     || url.username || url.password || url.search || url.hash) {
     throw new Error(`${label}须为 HTTPS 地址或本机 HTTP 地址，且不含凭据与查询参数`);
+  }
+}
+
+export function validateProxyUrl(value) {
+  if (value === '') return;
+  let url;
+  try { url = new URL(value); } catch { throw new Error('海外检索本机代理地址无效'); }
+  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)
+    || !url.port || url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
+    throw new Error('海外检索本机代理只能是本机 HTTP CONNECT 地址，例如 http://127.0.0.1:3222');
   }
 }
 
@@ -84,6 +95,12 @@ export function validateResourceSearchPatch(raw) {
     }
     validateApiBaseUrl(raw.deepseekBaseUrl);
   }
+  if (Object.hasOwn(raw, 'proxyUrl')) {
+    if (typeof raw.proxyUrl !== 'string' || raw.proxyUrl.length > 200) {
+      throw new Error('海外检索本机代理地址无效');
+    }
+    validateProxyUrl(raw.proxyUrl);
+  }
   if (Object.hasOwn(raw, 'deepseekModel')) {
     if (typeof raw.deepseekModel !== 'string' || !raw.deepseekModel.trim() || raw.deepseekModel.length > 120 || /[\r\n]/.test(raw.deepseekModel)) {
       throw new Error('DeepSeek 模型名称无效');
@@ -114,6 +131,13 @@ export function resourceSearchConfig(raw = {}) {
   for (const key of RESOURCE_SEARCH_SOURCES) {
     if (typeof rawSources[key] === 'boolean') sources[key] = rawSources[key];
   }
+  let proxyUrl = '';
+  if (typeof input.proxyUrl === 'string' && input.proxyUrl.trim()) {
+    try {
+      validateProxyUrl(input.proxyUrl.trim());
+      proxyUrl = input.proxyUrl.trim();
+    } catch { proxyUrl = ''; }
+  }
   const config = {
     ...structuredClone(DEFAULT_RESOURCE_SEARCH_CONFIG),
     enabled: input.enabled === true,
@@ -138,6 +162,7 @@ export function resourceSearchConfig(raw = {}) {
     touchgalToken: typeof input.touchgalToken === 'string' ? input.touchgalToken.trim() : '',
     shionlibDomain: typeof input.shionlibDomain === 'string' && /^[a-z0-9.-]{3,120}$/i.test(input.shionlibDomain.trim())
       ? input.shionlibDomain.trim() : DEFAULT_RESOURCE_SEARCH_CONFIG.shionlibDomain,
+    proxyUrl,
     sources
   };
   return config;

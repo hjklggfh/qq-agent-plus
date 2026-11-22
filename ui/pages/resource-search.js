@@ -21,6 +21,10 @@ function renderResourceSearchSection(config) {
   const dsKeyStatus = s.hasDeepseekApiKey
     ? '（已单独保存，留空保留）'
     : (hasGlobalDs ? '（当前自动复用「模型 API」中的 DeepSeek Key）' : '（尚未配置，可在模型 API 或此处填写）');
+  const hasTokyoRelay = Boolean((config.imageSearch?.relayUrl && config.imageSearch?.hasRelayToken) || s.hasTokyoRelay);
+  const relayHint = hasTokyoRelay
+    ? `（已自动复用以图搜图东京中转 ${config.imageSearch?.relayUrl || s.tokyoRelayUrl || 'http://127.0.0.1:3220'}）`
+    : (s.effectiveProxyUrl ? `（当前生效本机代理 ${s.effectiveProxyUrl}）` : '（留空则优先复用以图搜图东京中转 3220 或 Pixiv/E站本机隧道）');
   return `<h3>资源检索（DeepSeek 后台多站聚合）</h3>
     <p class="hint">发送“/找资源 游戏名”、“/求资源 游戏名”或“/搜黄油 游戏名”，也可附带或引用回复一张游戏截图发送“/找资源”。后台独立调用 DeepSeek 并发检索多个资源站与数据库（不加载聊天人设与群聊历史，不阻塞前台 Gemini 正常聊天），完成后以合并转发卡片返回免费资源与正版参考。</p>
     <div class="field"><label><input id="resource-search-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用资源检索</label></div>
@@ -35,7 +39,7 @@ function renderResourceSearchSection(config) {
       <div class="field"><label>最多展示免费资源条数（1—10）</label><input id="resource-search-max-results" type="number" min="1" max="10" value="${esc(s.maxResults ?? 5)}"></div>
       <div class="field"><label>同会话冷却（秒，0—3600）</label><input id="resource-search-cooldown" type="number" min="0" max="3600" value="${esc(s.cooldownSeconds ?? 15)}"></div>
     </div>
-    <h4 style="margin:14px 0 8px">后台 DeepSeek 与站点可选凭据</h4>
+    <h4 style="margin:14px 0 8px">后台 DeepSeek、东京隧道与站点可选凭据</h4>
     <div class="field-row">
       <div class="field"><label>DeepSeek API 地址</label><input id="resource-search-ds-url" type="url" value="${esc(s.deepseekBaseUrl || 'https://api.deepseek.com/v1')}"></div>
       <div class="field"><label>DeepSeek 模型</label><input id="resource-search-ds-model" value="${esc(s.deepseekModel || 'deepseek-chat')}"></div>
@@ -44,6 +48,10 @@ function renderResourceSearchSection(config) {
       <label id="resource-search-ds-key-label" for="resource-search-ds-key">专用 DeepSeek API Key${esc(dsKeyStatus)}</label>
       <input id="resource-search-ds-key" type="password" autocomplete="new-password" placeholder="留空则默认复用全局 DeepSeek 密钥">
       <label><input id="resource-search-clear-ds-key" type="checkbox"> 清除已单独保存的 DeepSeek Key</label>
+    </div>
+    <div class="field">
+      <label id="resource-search-proxy-label" for="resource-search-proxy-url">海外站点（DLsite / Steam / Yahoo日本）本机代理地址${esc(relayHint)}</label>
+      <input id="resource-search-proxy-url" type="url" placeholder="例如 http://127.0.0.1:3222（留空自动复用东京搜图中转或已有本机隧道）" value="${esc(s.proxyUrl || '')}">
     </div>
     <div class="field-row">
       <div class="field"><label>TouchGal 域名</label><input id="resource-search-tg-domain" value="${esc(s.touchgalDomain || 'www.touchgal.ink')}"></div>
@@ -70,6 +78,7 @@ async function saveResourceSearchSettings() {
     cooldownSeconds: Number($('#resource-search-cooldown').value),
     deepseekBaseUrl: $('#resource-search-ds-url').value.trim(),
     deepseekModel: $('#resource-search-ds-model').value.trim(),
+    proxyUrl: $('#resource-search-proxy-url') ? $('#resource-search-proxy-url').value.trim() : '',
     touchgalDomain: $('#resource-search-tg-domain').value.trim(),
     shionlibDomain: $('#resource-search-shion-domain').value.trim()
   };

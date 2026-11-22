@@ -8,6 +8,7 @@ import { IMAGE_SEARCH_LIMIT_MAX, IMAGE_SEARCH_PLATFORMS } from './config.js';
 import { MAX_IMAGE_BYTES, publicLink } from './common.js';
 import { searchProvider } from './providers.js';
 import { safeFetchPublicBinary } from '../../llm/safe-fetch.js';
+import { runTokyoRelayResourceSearch } from '../resource-search/sources.js';
 
 function respond(res, status, value) {
   if (res.destroyed) return;
@@ -20,12 +21,14 @@ export function createImageSearchRelay(options = {}) {
   if (token.length < 32 || token.length > 512 || /[\r\n]/.test(token)) throw new Error('IMAGE_SEARCH_RELAY_TOKEN 至少32字符，最多512字符');
   const provider = options.search || searchProvider;
   const download = options.download || safeFetchPublicBinary;
+  const resourceProvider = options.resourceSearch || runTokyoRelayResourceSearch;
   // 仅接受最近搜索结果的短期凭证，不能作为任意 URL 下载代理。
   // 容量须装下“搜图 全部”一轮的全部凭证（平台数 × 条数上限 × 原图/缩略图），否则先查的平台凭证会被挤掉。
   const maxImageKeys = IMAGE_SEARCH_PLATFORMS.length * IMAGE_SEARCH_LIMIT_MAX * 2;
   const images = new Map();
   let googleBlockedUntil = 0;
   let busy = false;
+  let resourceBusy = 0;
   const controllers = new Set();
   const server = http.createServer(async (req, res) => {
     const received = Buffer.from(req.headers.authorization || '');
@@ -33,8 +36,58 @@ export function createImageSearchRelay(options = {}) {
     if (received.length !== expected.length || !timingSafeEqual(received, expected)) { respond(res, 401, { error: '未授权' }); req.resume(); return; }
     if (req.url === '/healthz' && req.method === 'GET') { respond(res, 200, { ok: true, busy, googleConfigured: Boolean(options.chromePath || process.env.IMAGE_SEARCH_CHROME), serpapiConfigured: Boolean(options.serpApiKey || process.env.IMAGE_SEARCH_SERPAPI_API_KEY) }); return; }
     const imageRequest = req.url === '/v1/image';
-    if (req.url !== '/v1/search' && !imageRequest) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
+    const resourceRequest = req.url === '/v1/resource-search';
+    if (req.url !== '/v1/search' && !imageRequest && !resourceRequest) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
     if (req.method !== 'POST') { respond(res, 405, { error: '仅支持 POST' }); req.resume(); return; }
+    if (resourceRequest) {
+      if (Number(req.headers['content-length']) > 1024) { respond(res, 413, { error: '请求过大' }); req.resume(); return; }
+      if (resourceBusy >= 8) { respond(res, 429, { error: '搜图中转正忙' }); req.resume(); return; }
+      resourceBusy += 1;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15000);
+      controllers.add(controller);
+      const abort = () => { if (!res.writableEnded) controller.abort(); };
+      res.on('close', abort);
+      req.on('aborted', abort);
+      try {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of req) {
+          controller.signal.throwIfAborted();
+          size += chunk.length;
+          if (size > 1024) { respond(res, 413, { error: '请求过大' }); return; }
+          chunks.push(chunk);
+        }
+        let body;
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { respond(res, 400, { error: '无效 JSON' }); return; }
+        const source = String(body?.source || '');
+        const query = String(body?.query || '').trim().slice(0, 120);
+        if (!['dlsite', 'steam', 'yahoo'].includes(source) || !query) {
+          respond(res, 400, { error: '未知资源检索源或查询词为空' });
+          return;
+        }
+        for (const [key, item] of images) if (item.expires < Date.now()) images.delete(key);
+        const report = await resourceProvider(source, query, { signal: controller.signal });
+        for (const row of (report?.results || []).slice(0, 10)) {
+          const url = publicLink(row?.cover);
+          if (!url) continue;
+          const key = randomUUID();
+          images.set(key, { url, expires: Date.now() + 5 * 60 * 1000 });
+          row.coverKey = key;
+        }
+        while (images.size > maxImageKeys) images.delete(images.keys().next().value);
+        respond(res, 200, report);
+      } catch {
+        respond(res, 200, { source: 'unknown', status: 'error', message: '搜图中转处理失败', results: [] });
+      } finally {
+        clearTimeout(timer);
+        controllers.delete(controller);
+        res.off('close', abort);
+        req.off('aborted', abort);
+        resourceBusy -= 1;
+      }
+      return;
+    }
     if (busy) { respond(res, 429, { error: '搜图中转正忙' }); req.resume(); return; }
     const platform = req.headers['x-search-platform'];
     if (!imageRequest && !IMAGE_SEARCH_PLATFORMS.includes(platform)) { respond(res, 400, { error: '未知搜图平台' }); req.resume(); return; }
