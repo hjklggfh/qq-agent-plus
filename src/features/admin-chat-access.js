@@ -8,9 +8,10 @@ const FEATURES = Object.freeze({
   '跑团': { section: 'trpg', field: { group: 'allowedGroups', private: 'allowedPrivate' }, idOnly: true },
   '群游戏': { section: 'groupGame', field: 'chats', kind: 'group' },
   '群日报': { section: 'groupDigest', field: 'chats', kind: 'group' },
-  '群搜图': { section: 'imageSearch', field: 'allowedGroups', kind: 'group', idOnly: true }
+  '群搜图': { section: 'imageSearch', field: 'allowedGroups', kind: 'group', idOnly: true },
+  '群找资源': { section: 'resourceSearch', field: 'allowedGroups', kind: 'group', idOnly: true }
 });
-const ALIASES = Object.freeze({ '聊天': '基础聊天', '基础聊天': '基础聊天', 'E-Hentai': 'E站', '搜图': '群搜图', '以图搜图': '群搜图', '禁漫': 'JM' });
+const ALIASES = Object.freeze({ '聊天': '基础聊天', '基础聊天': '基础聊天', 'E-Hentai': 'E站', '搜图': '群搜图', '以图搜图': '群搜图', '找资源': '群找资源', '资源检索': '群找资源', '禁漫': 'JM' });
 
 export function parseAdminChatAccessCommand(raw) {
   const text = String(raw || '').trim();

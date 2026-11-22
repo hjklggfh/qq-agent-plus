@@ -39,7 +39,7 @@ test('authenticated feature inventory coordinates live tasks and cleans all time
       return response.json();
     };
     const first = await request('/api/features');
-    assert.equal(first.features.length, 16);
+    assert.equal(first.features.length, 17);
     assert.equal(first.tasks.length, 12);
     assert.equal(new Set(first.features.map(item => item.id)).size, first.features.length);
     assert.equal(first.tasks.find(item => item.id === 'reminders').state, 'waiting');

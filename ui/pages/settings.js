@@ -33,6 +33,7 @@ import { renderAsrSection } from './settings-voice.js';
 import { refreshAutoUpdateStatus, timeControlTargetOptions } from './status.js';
 import { loadUsageView } from './usage.js';
 import { renderImageSearchSection, bindImageSearchSection } from './image-search.js';
+import { renderResourceSearchSection, bindResourceSearchSection } from './resource-search.js';
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
 import { renderXSearchSection, bindXSearchSection } from './x-search.js';
 import { renderDailyReportSection, bindDailyReportSection } from './daily-report.js';
@@ -145,6 +146,7 @@ function renderSettingsImpl() {
   if (state.settingsSection === 'bailian') bindBailianSection();
   if (state.settingsSection === 'persona-switch') bindPersonaSwitchSection();
   if (state.settingsSection === 'image-search') bindImageSearchSection();
+  if (state.settingsSection === 'resource-search') bindResourceSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
   if (state.settingsSection === 'x-search') bindXSearchSection();
   if (state.settingsSection === 'daily-report') bindDailyReportSection();
@@ -235,6 +237,7 @@ function renderSettingsSection(c) {
     api: () => renderApiSection(c),
     search: () => renderSearchSection(c),
     'image-search': () => renderImageSearchSection(c),
+    'resource-search': () => renderResourceSearchSection(c),
     'pixiv': () => renderPixivSection(c),
     'x-search': () => renderXSearchSection(c),
     'daily-report': () => renderDailyReportSection(c),

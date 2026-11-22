@@ -3,6 +3,7 @@
 const FEATURE_CATALOG = Object.freeze([
   { id: 'search', name: '搜索服务', category: '检索与媒体', configKey: 'webSearch', description: '为模型提供联网搜索能力。' },
   { id: 'image-search', name: '以图搜图', category: '检索与媒体', configKey: 'imageSearch', description: '按图片查询来源与相似结果。' },
+  { id: 'resource-search', name: '资源检索', category: '检索与媒体', configKey: 'resourceSearch', description: '后台调用 DeepSeek 聚合多站检索游戏与资源卡片。' },
   { id: 'pixiv', name: 'PID 搜索', category: '检索与媒体', configKey: 'pixiv', description: '查询作品并投递图片或 PDF。' },
   { id: 'x-search', name: 'X 账号检索', category: '检索与媒体', configKey: 'xSearch', description: '读取公开账号近期帖子与原图。' },
   { id: 'ehentai', name: 'E站检索', category: '检索与媒体', configKey: 'ehentai', description: '搜索、翻页与下载投递。' },
