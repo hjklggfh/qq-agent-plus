@@ -874,14 +874,19 @@ export async function searchBangumi(keyword, _settings, options = {}) {
  * 9. DLsite 同人黄油检索（支持 RJ/VJ/BJ 号直查与关键词搜索；优先走东京中转/本机代理隧道）
  */
 export async function searchDlsite(keyword, settings, options = {}) {
-  const relayed = await queryTokyoResourceRelay('dlsite', keyword, options);
-  if (relayed) {
-    return { source: 'dlsite', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+  const hasExplicitProxy = Boolean(typeof settings?.proxyUrl === 'string' && settings.proxyUrl.trim());
+  const fallbackProxy = resolveOverseasProxyUrl(settings, options);
+  if (!hasExplicitProxy) {
+    const relayed = await queryTokyoResourceRelay('dlsite', keyword, options);
+    if (relayed && (relayed.results.length > 0 || !fallbackProxy)) {
+      return { source: 'dlsite', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
   }
   const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
   const codeMatch = String(keyword || '').match(/\b([RVB]J\d{6,8})\b/i);
   const results = [];
+  let lastError = null;
 
   if (codeMatch) {
     const code = codeMatch[1].toUpperCase();
@@ -905,8 +910,9 @@ export async function searchDlsite(keyword, settings, options = {}) {
           url: `https://www.dlsite.com/maniax/work/=/product_id/${code}.html`
         });
       }
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
+      lastError = error;
     }
   }
 
@@ -946,9 +952,13 @@ export async function searchDlsite(keyword, settings, options = {}) {
         });
         if (results.length >= 4) break;
       }
-    } catch {
+    } catch (error) {
       signal?.throwIfAborted();
+      lastError = error;
     }
+  }
+  if (!results.length && lastError) {
+    return { source: 'dlsite', status: 'error', error: String(lastError?.message ?? lastError).slice(0, 120), results: [] };
   }
   return { source: 'dlsite', status: results.length ? 'ok' : 'empty', results };
 }
@@ -957,9 +967,13 @@ export async function searchDlsite(keyword, settings, options = {}) {
  * 10. Steam 商店接口检索（优先走东京中转/本机代理隧道）
  */
 export async function searchSteam(keyword, settings, options = {}) {
-  const relayed = await queryTokyoResourceRelay('steam', keyword, options);
-  if (relayed) {
-    return { source: 'steam', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+  const hasExplicitProxy = Boolean(typeof settings?.proxyUrl === 'string' && settings.proxyUrl.trim());
+  const fallbackProxy = resolveOverseasProxyUrl(settings, options);
+  if (!hasExplicitProxy) {
+    const relayed = await queryTokyoResourceRelay('steam', keyword, options);
+    if (relayed && (relayed.results.length > 0 || !fallbackProxy)) {
+      return { source: 'steam', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
   }
   const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
@@ -982,8 +996,12 @@ export async function searchSteam(keyword, settings, options = {}) {
  * 11. 全网资源搜索（支持宿主配置的 webSearch + Yahoo Japan 无过滤 Google 索引双通道）
  */
 export async function searchYahooJapanWeb(query, settings, options = {}) {
-  const relayed = await queryTokyoResourceRelay('yahoo', query, options);
-  if (relayed) return relayed.results;
+  const hasExplicitProxy = Boolean(typeof settings?.proxyUrl === 'string' && settings.proxyUrl.trim());
+  const fallbackProxy = resolveOverseasProxyUrl(settings, options);
+  if (!hasExplicitProxy) {
+    const relayed = await queryTokyoResourceRelay('yahoo', query, options);
+    if (relayed && (relayed.results.length > 0 || !fallbackProxy)) return relayed.results;
+  }
   const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
   const url = `https://search.yahoo.co.jp/search?p=${encodeURIComponent(query)}&ei=UTF-8`;
