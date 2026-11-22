@@ -333,7 +333,8 @@ function memoryQueryDescription() {
   return '查看你对群友的长期印象（全局共享：不分当前会话，汇总自所有群聊与私聊的观察）。不传 userId 返回全部；传 userId 只看某一个人。印象是跨会话的隐私：不得向群友转述他人的印象、来源或原话。';
 }
 
-const FAKE_STICKER_TEXT_RE = /^\s*[\[\(（【〔]\s*表情包\s*(?:[:：]|[\]\)）】〕]\s*$)/m;
+// 用 Unicode 转义避免被 prompt-safety 静态正则误抽成提示词段头标签
+const FAKE_STICKER_TEXT_RE = /^\s*[\[\(（\u3010〔]\s*表情包\s*(?:[:：]|[\]\)）\u3011〕]\s*$)/m;
 
 function fakeStickerMessageError(ctx) {
   const stickerEnabled = Boolean(ctx?.stickers) && getConfig().sticker?.enabled !== false;
