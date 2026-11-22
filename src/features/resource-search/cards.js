@@ -65,17 +65,25 @@ function resolveWorkProfile(agentResult, query) {
   }
   if (vndb?.id) codeSet.add(normalizeCodeLabel(`VNDB:${vndb.id}`));
   if (dlsite?.id) codeSet.add(normalizeCodeLabel(dlsite.id));
+  for (const rj of Array.isArray(kungal?.dlsiteCodes) ? kungal.dlsiteCodes : []) {
+    codeSet.add(normalizeCodeLabel(rj));
+  }
   if (steam?.id) codeSet.add(normalizeCodeLabel(`Steam:${steam.id}`));
   if (bangumi?.id) codeSet.add(normalizeCodeLabel(bangumi.id));
 
-  const devCandidates = Array.isArray(parsedWork.developers) && parsedWork.developers.length
-    ? [...parsedWork.developers, ...(vndb?.developers || []), ...(dlsite?.developers || []), ...(shion?.developers || [])]
-    : [...(vndb?.developers || []), ...(dlsite?.developers || []), ...(shion?.developers || [])];
+  const devCandidates = [
+    ...(Array.isArray(parsedWork.developers) ? parsedWork.developers : []),
+    ...(kungal?.developers || []),
+    ...(vndb?.developers || []),
+    ...(dlsite?.developers || []),
+    ...(shion?.developers || [])
+  ];
   const developers = deduplicateDevelopers(devCandidates);
 
   const tagSet = new Set();
   for (const t of [
     ...(Array.isArray(parsedWork.tags) ? parsedWork.tags : []),
+    ...(kungal?.tags || []),
     ...(shion?.tags || [])
   ]) {
     const clean = cleanTitle(t, 40);
@@ -95,6 +103,7 @@ function resolveWorkProfile(agentResult, query) {
 
   const summary = cleanTitle(
     parsedWork.summary
+      || kungal?.description
       || vndb?.description
       || dlsite?.description
       || (!agentResult?.parsed && agentResult?.rawSummary ? agentResult.rawSummary : ''),
@@ -119,20 +128,35 @@ function collectResourceLists(agentResult, work, query, maxResults = 5) {
   const parsedFree = Array.isArray(agentResult?.parsed?.freeResources) ? agentResult.parsed.freeResources : [];
   const parsedOfficial = Array.isArray(agentResult?.parsed?.officialResources) ? agentResult.parsed.officialResources : [];
 
-  const targetTitles = [work.titleZh, work.titleJp, work.titleEn, query].filter((t) => t && t !== '未确认作品名');
+  const jpShort = String(work.titleJp || '').split(/[～~－—]/)[0].trim();
+  const zhShort = String(work.titleZh || '').split(/[～~－—]/)[0].trim();
+  const rawCodes = work.codes.map((c) => c.replace(/^(?:VNDB|Bangumi|Steam):/i, ''));
+  const targetTitles = [work.titleZh, work.titleJp, work.titleEn, jpShort, zhShort, ...rawCodes, query]
+    .filter((t) => t && t !== '未确认作品名');
+
   const isItemRelevant = (item) => {
     if (!targetTitles.length) return true;
-    const itemTitles = [item?.title, item?.titleZh, item?.titleJp, item?.titleEn, ...(Array.isArray(item?.aliases) ? item.aliases : [])].filter(Boolean);
+    const itemTitles = [
+      item?.title,
+      item?.titleZh,
+      item?.titleJp,
+      item?.titleEn,
+      item?.snippet,
+      item?.id,
+      ...(Array.isArray(item?.aliases) ? item.aliases : [])
+    ].filter(Boolean);
     return matchesWorkTitle(targetTitles, itemTitles);
   };
 
   const freeList = [];
   const seenFreeUrls = new Set();
 
-  // 1. 优先放结构化免费资源站（书音的图书馆、鲲 Galgame、真红小站、TouchGal）且必须与目标作品匹配
+  // 1. 优先放有实际免费资源的站点（书音的图书馆、鲲 Galgame 带资源帖、真红小站、TouchGal）
   const freeSources = ['touchgal', 'shionlib', 'kungal', 'shinnku'];
   for (const item of items) {
     if (!freeSources.includes(item.source)) continue;
+    // 鲲 Galgame 若该作品下暂未上传网盘资源（kind === 'database'），归入下方数据库参考，不占免费下载位
+    if (item.source === 'kungal' && item.kind === 'database') continue;
     if (!isItemRelevant(item)) continue;
     const url = publicLink(item.url);
     if (!url || seenFreeUrls.has(url)) continue;
@@ -146,10 +170,11 @@ function collectResourceLists(agentResult, work, query, maxResults = 5) {
     });
   }
 
-  // 2. 合并 DeepSeek 筛选出的免费资源渠道（若与已有站点同 URL，则补充 note；若新 URL 则加入）
+  // 2. 合并 DeepSeek 筛选出的免费资源渠道
   for (const row of parsedFree) {
     const url = publicLink(row?.url);
     if (!url || seenFreeUrls.has(url)) continue;
+    if (/dlsite\.com|store\.steampowered\.com|vndb\.org|bgm\.tv/i.test(url)) continue;
     seenFreeUrls.add(url);
     freeList.push({
       siteName: cleanTitle(row?.siteName || '免费资源站', 60),
@@ -160,12 +185,26 @@ function collectResourceLists(agentResult, work, query, maxResults = 5) {
     });
   }
 
-  // 3. 若免费列表不足，把全网搜索命中的相关资源页补进来
-  for (const item of items) {
-    if (item.source !== 'web' || freeList.length >= maxResults) break;
-    if (!isItemRelevant(item)) continue;
+  // 3. 若免费列表不足，把全网搜索命中的相关免费资源页按“含下载/汉化/解压密码/资源站特征”优先级排序补入
+  const webResourceScore = (item) => {
+    const text = `${item.title || ''} ${item.snippet || ''} ${item.url || ''}`;
+    let score = 0;
+    if (/解压密码|提取码|网盘|百度盘|夸克|workupload|mega\.nz|gofile/i.test(text)) score += 50;
+    if (/vikacg|acggw|xsharing|v2dao|ryuugames|f95zone|anime-sharing/i.test(item.url || '')) score += 40;
+    if (/汉化|官中|硬盘版|直装|\b(?:rar|7z|zip)\b|download|下载/i.test(text)) score += 25;
+    if (/攻略|感想|レビュー|review|matome/i.test(text)) score -= 20;
+    return score;
+  };
+  const webCandidates = items
+    .filter((item) => item.source === 'web')
+    .sort((a, b) => webResourceScore(b) - webResourceScore(a));
+
+  for (const item of webCandidates) {
+    if (freeList.length >= maxResults) break;
     const url = publicLink(item.url);
     if (!url || seenFreeUrls.has(url)) continue;
+    if (/dlsite\.com|store\.steampowered\.com|vndb\.org|bgm\.tv|nicovideo\.jp|x\.com|twitter\.com/i.test(url)) continue;
+    if (!isItemRelevant(item)) continue;
     seenFreeUrls.add(url);
     freeList.push({
       siteName: cleanTitle(item.siteName || '网页资源', 60),
@@ -176,11 +215,12 @@ function collectResourceLists(agentResult, work, query, maxResults = 5) {
     });
   }
 
-  // 4. 正版与权威数据库参考（DLsite / Steam / VNDB / Bangumi）
+  // 4. 正版与权威数据库参考（DLsite / Steam / VNDB / Bangumi / 鲲 Galgame 档案）
   const officialList = [];
   const seenOfficialUrls = new Set();
   for (const item of items) {
-    if (!['dlsite', 'steam', 'vndb', 'bangumi'].includes(item.source)) continue;
+    const isKunGalDb = item.source === 'kungal' && item.kind === 'database';
+    if (!['dlsite', 'steam', 'vndb', 'bangumi'].includes(item.source) && !isKunGalDb) continue;
     if (!isItemRelevant(item)) continue;
     const url = publicLink(item.url);
     if (!url || seenOfficialUrls.has(url)) continue;

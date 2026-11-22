@@ -26,8 +26,6 @@ import {
   searchTouchGal,
   searchVndb
 } from '../src/features/resource-search/sources.js';
-import { runResourceSearchAgent } from '../src/features/resource-search/agent.js';
-import { buildResourceSearchNodes } from '../src/features/resource-search/cards.js';
 import { ResourceSearchManager } from '../src/features/resource-search/manager.js';
 
 const TINY_PNG = Buffer.from(

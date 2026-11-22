@@ -3,6 +3,7 @@ import { webFetch } from '../../llm/web-search.js';
 import { cleanTitle, publicLink } from '../image-search/common.js';
 import {
   crawlMultiSites,
+  normalizeTitleForMatch,
   searchAnimeTrace,
   searchImageRelayClues,
   searchWebResources
@@ -90,8 +91,8 @@ const SYSTEM_PROMPT = [
   '【工作策略】',
   '1. 识别作品真名：结合用户提供的名字或截图识图线索（AnimeTrace 角色/作品识别、以图搜图匹配网页标题），确定作品的「中文常用译名」「日文原名」「开发商/社团（只写原开发商，汉化组请写在 summary 里）」及唯一编号（如 VNDB:v12345、RJ123456、Steam:12345）。',
   '2. 多轮交叉检索（最多再调 2 轮工具）：',
-  '   - 如果首轮只搜了模糊俗称、角色名或只拿到了 VNDB/DLsite 的日文原名，还没在「书音的图书馆 (shionlib)」「鲲 Galgame (kungal)」「真红小站 (shinnku)」命中具体资源，请提取准确的中文译名或日文原名再次调用 `crawl_multi_sites`；',
-  '   - 如果是 RPGMaker / Unity / SLG 同人黄油（通常不在传统 Galgame 站），请用日文原名、中文名或 RJ 号调用 `web_search_query` 检索免费资源站与汉化补丁信息。',
+  '   - 如果首轮只搜了模糊俗称、角色名或只拿到了日文原名/RJ编号，还没在免费站命中具体下载渠道，可用日文原名、其他译名或 RJ 号调用 `crawl_multi_sites` 或 `web_search_query` 深挖；',
+  '   - 若首轮及自动扩展检索已经拿到了充足的免费资源站与正版条目，无需重复调用工具，直接整理输出 JSON。',
   '3. 严格过滤无关作品：搜索结果里若混入名称相似但不是同一部作品的其他游戏，务必剔除，只保留目标作品的资源链接！',
   '4. 严禁编造任何链接、提取码或解压密码！所有 URL、提取码、解压密码必须 100% 来自工具真实返回的数据。',
   '',
@@ -110,7 +111,7 @@ const SYSTEM_PROMPT = [
   '  },',
   '  "freeResources": [',
   '    {',
-  '      "siteName": "站点名（如 书音的图书馆 / 鲲 Galgame / 真红小站 / TouchGal）",',
+  '      "siteName": "站点名（如 书音的图书馆 / 鲲 Galgame / 真红小站 / ACG港湾 / Ryuugames / Workupload）",',
   '      "title": "资源或帖子标题（必须属于目标作品）",',
   '      "url": "真实访问或下载链接",',
   '      "note": "版本说明、网盘类型、文件大小、提取码或解压密码摘要"',
@@ -118,7 +119,7 @@ const SYSTEM_PROMPT = [
   '  ],',
   '  "officialResources": [',
   '    {',
-  '      "siteName": "平台名（如 DLsite / Steam / VNDB / Bangumi）",',
+  '      "siteName": "平台名（如 DLsite / Steam / VNDB / Bangumi / 鲲 Galgame）",',
   '      "title": "条目名与编号",',
   '      "url": "真实平台链接",',
   '      "note": "正版发售页或权威数据库档案"',
@@ -215,11 +216,42 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
   }
 
   const initialCrawls = [];
+  const searchedNorm = new Set();
   for (const kw of seedKeywords.slice(0, 2)) {
+    searchedNorm.add(normalizeTitleForMatch(kw));
     const report = await crawlMultiSites(kw, settings, options);
     recordCrawl(report);
     initialCrawls.push(summarizeCrawlForPrompt(report));
     signal?.throwIfAborted();
+  }
+
+  // 2.5 自动交叉扩展：若首轮搜的是中文译名（如《梦吉原的妖怪妓楼》），而 KunGal/VNDB/Bangumi 返回了
+  // 日文原名（如 夢吉原のあやかし妓楼）或关联的 DLsite RJ 编号（如 RJ01208749），自动并发补抓一轮日文原名与 RJ 号！
+  const discoveredQueries = [];
+  for (const item of crawledMap.values()) {
+    const jpMain = String(item.titleJp || '').split(/[～~－—]/)[0].trim();
+    const jpNorm = normalizeTitleForMatch(jpMain);
+    if (jpMain && jpNorm.length >= 3 && !searchedNorm.has(jpNorm)) {
+      searchedNorm.add(jpNorm);
+      discoveredQueries.push({ keyword: jpMain, sites: ['dlsite', 'bangumi', 'vndb', 'shinnku', 'web'] });
+    }
+    for (const rj of Array.isArray(item.dlsiteCodes) ? item.dlsiteCodes.slice(0, 1) : []) {
+      const rjNorm = normalizeTitleForMatch(rj);
+      if (rj && !searchedNorm.has(rjNorm)) {
+        searchedNorm.add(rjNorm);
+        discoveredQueries.push({ keyword: rj, sites: ['dlsite', 'web'] });
+      }
+    }
+  }
+  if (discoveredQueries.length) {
+    const extraReports = await Promise.all(
+      discoveredQueries.slice(0, 2).map((q) => crawlMultiSites(q.keyword, settings, { ...options, sites: q.sites }))
+    );
+    signal?.throwIfAborted();
+    for (const rep of extraReports) {
+      recordCrawl(rep);
+      initialCrawls.push(summarizeCrawlForPrompt(rep));
+    }
   }
 
   // 3. 构造给 DeepSeek 的纯净初始消息（无任何人设和群聊上下文）
@@ -237,7 +269,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
     { role: 'system', content: SYSTEM_PROMPT },
     {
       role: 'user',
-      content: `请根据以下输入线索与首轮多站点检索数据，确定作品信息并整理免费与正版资源渠道。若首轮因为别名/外文原名未搜全，请继续调用工具深挖：\n${JSON.stringify(userPayload, null, 2)}`
+      content: `请根据以下输入线索与多站点检索数据，确定作品信息并整理免费与正版资源渠道。若已命中免费资源与正版档案，请直接整理输出 JSON：\n${JSON.stringify(userPayload, null, 2)}`
     }
   ];
 

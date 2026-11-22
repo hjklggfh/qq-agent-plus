@@ -28,7 +28,7 @@ function formatBytes(bytes) {
 }
 
 /**
- * 归一化作品标题用于相关性比对：去除标点符号、空格与修饰符，防止分词模糊搜索把无关游戏（如搜“千恋万花”混入“千之刃涛”“恋心如花”）当成命中结果。
+ * 归一化作品标题用于相关性比对：去除书名号、标点符号、空格与修饰符，防止分词模糊搜索把无关游戏当成命中结果。
  */
 export function normalizeTitleForMatch(text) {
   return String(text || '')
@@ -48,8 +48,9 @@ export function matchesWorkTitle(queries, candidates) {
   for (const q of qList) {
     for (const c of cList) {
       if (c.includes(q) || q.includes(c)) return true;
-      // 允许繁简或个别异体字差异：若查询词 ≥3 字，按保序子序列命中 ≥75% 字符且首尾或连续2字重合
-      if (q.length >= 3 && c.length >= 3) {
+      // 允许繁简或个别译名差异（如“梦吉原的妖怪妓楼” vs “梦吉原的妖魅妓楼”）：
+      // 但目标标题长度不能远短于查询词（防止 8 字查询词去命中 2 字无关短标题如“妖人”）
+      if (q.length >= 4 && c.length >= Math.ceil(q.length * 0.7)) {
         let matched = 0;
         let pos = 0;
         for (const ch of q) {
@@ -295,12 +296,11 @@ export async function searchShionlib(keyword, settings = {}, options = {}) {
   }, signal, fetchFn);
 
   const rawItems = Array.isArray(payload?.data?.games?.items) ? payload.data.games.items : [];
-  // 先按标题相关性过滤，剔除分词模糊搜索带出的无关游戏（如搜“千恋万花”时过滤掉“恋心如花俏绚烂”“千之刃涛”）
-  const matchedItems = rawItems.filter((item) => {
+  // 严格按标题相关性过滤：不匹配时返回空，绝不回退拿第 1 条无关游戏充数
+  const selected = rawItems.filter((item) => {
     const candidates = [item?.title_zh, item?.title_jp, item?.title_en, ...(Array.isArray(item?.aliases) ? item.aliases : [])];
     return matchesWorkTitle(keyword, candidates);
-  });
-  const selected = (matchedItems.length ? matchedItems : rawItems.slice(0, 1)).slice(0, 2);
+  }).slice(0, 2);
 
   const results = await Promise.all(selected.map(async (item) => {
     const gameId = String(item.id);
@@ -319,7 +319,6 @@ export async function searchShionlib(keyword, settings = {}, options = {}) {
     const resourceCount = Number.isInteger(item?.resources?.count) ? item.resources.count : 0;
     const gameUrl = `https://${domain}/zh/game/${gameId}`;
 
-    // 拉取该作品底下的具体下载版本明细（/api/game/{id}/download-source）
     const downloads = [];
     if (resourceCount > 0) {
       try {
@@ -376,13 +375,12 @@ export async function searchShionlib(keyword, settings = {}, options = {}) {
 }
 
 /**
- * 4. 鲲 Galgame 公开资源目录检索（www.kungal.com/api/v1/search/works + /api/v1/works/{id}/resources）
- * 与 TouchGal 同属 KunMoe 体系，公开 v1 REST 接口无 Cloudflare 403 拦截。
+ * 4. 鲲 Galgame 公开资源目录检索（www.kungal.com/api/v1/search/works + /api/v1/works/{id} + /api/v1/works/{id}/resources）
  */
 const KUNGAL_PLAT = { win: 'Windows', and: 'Android', android: 'Android', mac: 'macOS', lin: 'Linux', ios: 'iOS', oth: '其他' };
 const KUNGAL_LANG = { 'zh-cn': '简体中文', 'zh-tw': '繁体中文', 'zh-hans': '简体中文', 'zh-hant': '繁体中文', ja: '日文', jp: '日文', en: '英文' };
 
-export async function searchKunGal(keyword, _settings = {}, options = {}) {
+export async function searchKunGal(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const baseUrl = 'https://www.kungal.com';
@@ -390,7 +388,7 @@ export async function searchKunGal(keyword, _settings = {}, options = {}) {
   const data = await fetchJson(searchUrl, {}, signal, fetchFn);
   const rawItems = Array.isArray(data?.items) ? data.items : [];
 
-  const matched = rawItems.filter((work) => {
+  const selected = rawItems.filter((work) => {
     const loc = work?.localized || {};
     const candidates = [
       work?.display_name,
@@ -401,8 +399,7 @@ export async function searchKunGal(keyword, _settings = {}, options = {}) {
       loc.en?.value
     ];
     return matchesWorkTitle(keyword, candidates);
-  });
-  const selected = (matched.length ? matched : rawItems.slice(0, 1)).slice(0, 2);
+  }).slice(0, 2);
 
   const results = await Promise.all(selected.map(async (work) => {
     const workId = String(work?.id || '');
@@ -414,10 +411,19 @@ export async function searchKunGal(keyword, _settings = {}, options = {}) {
     const cover = publicLink(work?.cover?.url || work?.banner?.url);
     const workUrl = `${baseUrl}/galgame/${workId}`;
 
+    let detail = null;
     const downloads = [];
     if (workId) {
-      try {
-        const resData = await fetchJson(`${baseUrl}/api/v1/works/${encodeURIComponent(workId)}/resources?page=1&limit=6`, {}, signal, fetchFn);
+      const [detailSettled, resSettled] = await Promise.allSettled([
+        fetchJson(`${baseUrl}/api/v1/works/${encodeURIComponent(workId)}`, {}, signal, fetchFn),
+        fetchJson(`${baseUrl}/api/v1/works/${encodeURIComponent(workId)}/resources?page=1&limit=6`, {}, signal, fetchFn)
+      ]);
+      signal?.throwIfAborted();
+      if (detailSettled.status === 'fulfilled' && detailSettled.value && typeof detailSettled.value === 'object') {
+        detail = detailSettled.value;
+      }
+      if (resSettled.status === 'fulfilled') {
+        const resData = resSettled.value;
         const cards = (Array.isArray(resData?.items) ? resData.items : []).filter((c) => c?.state === 'valid');
         for (const card of cards.slice(0, 4)) {
           const cardTitle = cleanTitle(card?.title || '游戏资源', 100);
@@ -434,24 +440,46 @@ export async function searchKunGal(keyword, _settings = {}, options = {}) {
             note: metaParts.join(' · ')
           });
         }
-      } catch {
-        signal?.throwIfAborted();
       }
     }
+
+    const developers = [];
+    if (detail?.maker?.display_name) developers.push(cleanTitle(detail.maker.display_name, 60));
+    const tags = (Array.isArray(detail?.tags) ? detail.tags : [])
+      .map((t) => cleanTitle(t?.display_name, 40))
+      .filter(Boolean)
+      .slice(0, 8);
+    const aliases = (Array.isArray(detail?.aliases) ? detail.aliases : [])
+      .map((a) => cleanTitle(a, 100))
+      .filter(Boolean)
+      .slice(0, 6);
+    const intros = Array.isArray(detail?.intros) ? detail.intros : [];
+    const zhIntro = intros.find((i) => i?.locale === 'zh-Hans' || i?.locale === 'zh-Hant') || intros[0];
+    const description = stripBbCodeAndHtml(zhIntro?.value || '', 240);
+    const extRefs = Array.isArray(detail?.external_refs) ? detail.external_refs : [];
+    const dlsiteCodes = extRefs
+      .filter((r) => r?.site === 'dlsite' && /^[RVB]J\d{6,8}$/i.test(String(r.external_id || '')))
+      .map((r) => String(r.external_id).toUpperCase());
 
     return {
       source: 'kungal',
       siteName: '鲲 Galgame (KunGal)',
-      kind: 'free',
+      kind: downloads.length ? 'free' : 'database',
       id: workId,
       title,
       titleZh,
       titleJp,
       titleEn,
+      aliases,
+      developers,
+      tags,
+      description,
+      released: cleanTitle(detail?.release_date || work?.release_date, 20),
+      dlsiteCodes,
       cover,
       url: workUrl,
       downloads,
-      note: downloads.length ? `站内找到 ${downloads.length} 个资源帖（含网盘/直装分流）` : '鲲 Galgame 作品档案与资源页'
+      note: downloads.length ? `站内找到 ${downloads.length} 个资源帖（含网盘/直装分流）` : '鲲 Galgame 作品档案页（暂未上传站内网盘分流）'
     };
   }));
 
@@ -470,7 +498,7 @@ function shinnkuFileUrl(filePath) {
   return `https://www.shinnku.com/files/shinnku/${encodePath(filePath)}`;
 }
 
-export async function searchShinnku(keyword, _settings = {}, options = {}) {
+export async function searchShinnku(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const searchUrl = `https://www.shinnku.com/search?q=${encodeURIComponent(keyword)}`;
@@ -498,7 +526,6 @@ export async function searchShinnku(keyword, _settings = {}, options = {}) {
     rawFiles.push({ filePath, fileSize });
   }
 
-  // 过滤出与查询词匹配的文件，并优先把 0/win（熟肉中文目录）排在前面
   const matchedFiles = rawFiles
     .filter((f) => matchesWorkTitle(keyword, [f.filePath]))
     .sort((a, b) => {
@@ -626,8 +653,9 @@ export async function searchTouchGal(keyword, settings = {}, options = {}) {
   }, signal, fetchFn);
 
   const rawGames = Array.isArray(data?.galgames) ? data.galgames : [];
-  const matched = rawGames.filter((g) => matchesWorkTitle(keyword, [g?.name, g?.cnName, g?.jpName]));
-  const games = (matched.length ? matched : rawGames.slice(0, 1)).slice(0, 2);
+  const games = rawGames
+    .filter((g) => matchesWorkTitle(keyword, [g?.name, g?.cnName, g?.jpName]))
+    .slice(0, 2);
 
   const results = await Promise.all(games.map(async (game) => {
     const patchId = game?.id;
@@ -667,7 +695,7 @@ export async function searchTouchGal(keyword, settings = {}, options = {}) {
 /**
  * 7. VNDB Kana API 权威作品与别名检索
  */
-export async function searchVndb(keyword, _settings = {}, options = {}) {
+export async function searchVndb(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const data = await fetchJson('https://api.vndb.org/kana/vn', {
@@ -716,7 +744,7 @@ export async function searchVndb(keyword, _settings = {}, options = {}) {
 /**
  * 8. Bangumi 番组计划游戏条目检索（国内直连稳定，提供中日译名与国内高速封面图）
  */
-export async function searchBangumi(keyword, _settings = {}, options = {}) {
+export async function searchBangumi(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const url = `https://api.bgm.tv/search/subject/${encodeURIComponent(keyword)}?type=4&responseGroup=small`;
@@ -724,8 +752,9 @@ export async function searchBangumi(keyword, _settings = {}, options = {}) {
     headers: { 'user-agent': 'qq-agent-plus/1.0 (https://github.com/hjklggfh/qq-agent-plus)' }
   }, signal, fetchFn);
   const rawList = Array.isArray(data?.list) ? data.list : [];
-  const matched = rawList.filter((item) => matchesWorkTitle(keyword, [item?.name, item?.name_cn]));
-  const items = (matched.length ? matched : rawList.slice(0, 1)).slice(0, 2);
+  const items = rawList
+    .filter((item) => matchesWorkTitle(keyword, [item?.name, item?.name_cn]))
+    .slice(0, 2);
   const results = items.filter((item) => item?.id).map((item) => {
     const titleZh = cleanTitle(item.name_cn || item.name, 120);
     const titleJp = cleanTitle(item.name, 120);
@@ -748,7 +777,7 @@ export async function searchBangumi(keyword, _settings = {}, options = {}) {
 /**
  * 9. DLsite 同人黄油检索（支持 RJ/VJ/BJ 号直查与关键词搜索）
  */
-export async function searchDlsite(keyword, _settings = {}, options = {}) {
+export async function searchDlsite(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const codeMatch = String(keyword || '').match(/\b([RVB]J\d{6,8})\b/i);
@@ -827,7 +856,7 @@ export async function searchDlsite(keyword, _settings = {}, options = {}) {
 /**
  * 10. Steam 商店接口检索
  */
-export async function searchSteam(keyword, _settings = {}, options = {}) {
+export async function searchSteam(keyword, _settings, options = {}) {
   const fetchFn = options.fetchImpl || globalThis.fetch;
   const signal = options.signal;
   const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(keyword)}&l=schinese&cc=CN`;
@@ -846,24 +875,69 @@ export async function searchSteam(keyword, _settings = {}, options = {}) {
 }
 
 /**
- * 11. 全网资源搜索（复用宿主配置的 webSearch）
+ * 11. 全网资源搜索（支持宿主配置的 webSearch + Yahoo Japan 无过滤 Google 索引双通道）
  */
-export async function searchWebResources(query, _settings = {}, options = {}) {
+async function searchYahooJapanWeb(query, options = {}) {
+  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const signal = options.signal;
+  const url = `https://search.yahoo.co.jp/search?p=${encodeURIComponent(query)}&ei=UTF-8`;
+  const html = await fetchText(url, {}, signal, fetchFn);
+  const root = parse(html);
+  const seen = new Set();
+  const results = [];
+  for (const card of root.querySelectorAll('.sw-CardBase, div.sw-Card')) {
+    const a = card.querySelector('a[href^="http"]');
+    if (!a) continue;
+    const href = publicLink(a.getAttribute('href'));
+    if (!href || seen.has(href) || /yahoo\.co\.jp/i.test(href)) continue;
+    seen.add(href);
+    const h3 = card.querySelector('h3') || a;
+    const snippetNode = card.querySelector('.sw-Card__summary, p');
+    const title = cleanTitle(h3?.text || a.text, 140);
+    const snippet = cleanTitle(snippetNode?.text || '', 220);
+    if (!title) continue;
+    results.push({ title, url: href, snippet });
+    if (results.length >= 6) break;
+  }
+  return results;
+}
+
+export async function searchWebResources(query, _settings, options = {}) {
   const webSearchFn = options.webSearchImpl || webSearch;
-  const data = await webSearchFn(query);
-  const items = Array.isArray(data?.results) ? data.results.slice(0, 6) : [];
-  const results = items
-    .map((item) => ({
+  const rawItems = [];
+  const [hostSettled, yahooSettled] = await Promise.allSettled([
+    webSearchFn(query),
+    options.webSearchImpl ? Promise.resolve([]) : searchYahooJapanWeb(query, options)
+  ]);
+  options.signal?.throwIfAborted();
+  if (hostSettled.status === 'fulfilled' && Array.isArray(hostSettled.value?.results)) {
+    rawItems.push(...hostSettled.value.results);
+  }
+  if (yahooSettled.status === 'fulfilled' && Array.isArray(yahooSettled.value)) {
+    rawItems.push(...yahooSettled.value);
+  }
+
+  const seenUrls = new Set();
+  const results = [];
+  for (const item of rawItems) {
+    const url = publicLink(item?.url);
+    if (!url || seenUrls.has(url)) continue;
+    seenUrls.add(url);
+    const title = cleanTitle(item?.title, 140);
+    const snippet = cleanTitle(item?.snippet, 220);
+    if (!title) continue;
+    let siteName = '网页结果';
+    try { siteName = new URL(url).hostname.replace(/^www\./i, ''); } catch { /* ignore */ }
+    results.push({
       source: 'web',
-      siteName: (() => {
-        try { return new URL(item.url).hostname.replace(/^www\./i, ''); } catch { return '网页结果'; }
-      })(),
+      siteName,
       kind: 'web',
-      title: cleanTitle(item.title, 140),
-      snippet: cleanTitle(item.snippet, 220),
-      url: publicLink(item.url)
-    }))
-    .filter((item) => item.title && (item.url || item.snippet));
+      title,
+      snippet,
+      url
+    });
+    if (results.length >= 6) break;
+  }
   return { source: 'web', status: results.length ? 'ok' : 'empty', results };
 }
 
@@ -888,7 +962,7 @@ export async function crawlMultiSites(keyword, settings = {}, options = {}) {
     bangumi: () => searchBangumi(clean, settings, options),
     dlsite: () => searchDlsite(clean, settings, options),
     steam: () => searchSteam(clean, settings, options),
-    web: () => searchWebResources(`${clean} 汉化 下载 资源`, settings, options)
+    web: () => searchWebResources(/^[RVB]J\d{6,8}$/i.test(clean) ? clean : `${clean} 汉化 下载`, settings, options)
   };
 
   const tasks = requested
