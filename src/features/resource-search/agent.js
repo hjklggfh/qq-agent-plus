@@ -107,7 +107,7 @@ const SYSTEM_PROMPT = [
   '1. 智能开局决策：',
   '   - 若用户输入了明确的作品名、简称、RJ/VJ/BJ 编号，或识图线索给出了明确作品名：第 1 轮优先调用 `crawl_multi_sites` 一次性高并发扫全站。',
   '   - 若用户输入的是模糊描述、剧情片段或角色/设定特征：',
-  '     a) **先结合自身 ACG/Galgame 知识库推理出 1～3 个最有可能的候选作品名**，在第 1 轮直接用高概率候选作品名调用 `crawl_multi_sites` 查档案并核对剧情设定；',
+  '     a) **先结合自身 ACG/Galgame 知识库从不同社团/题材方向发散推理出 1～3 个最有可能的候选作品名**（例如同时兼顾知名恋爱 ADV 与退魔/同人 RPG，禁止连续 2 轮以上死磕同一系列的衍生续作），在第 1 轮直接用高概率候选作品名调用 `crawl_multi_sites` 查档案并核对剧情设定；',
   '     b) 同时可配合 `web_search_query` 交叉核实，但每条搜索词务必精炼为 **3～5 个核心词**（严禁把 8～12 个词堆砌在同一条 query 里，也不要把整句剧情描述传给 `crawl_multi_sites`）；',
   '     c) **包容用户记忆的轻微偏差**：用户凭印象复述剧情时常有细节出入（例如把“折断神刀”记成“拔出神刀”、把“诅咒/祟り”记成“祟神”）。只要核心舞台、关键角色组合与主线高度吻合，就应主动查证并确认该作品，不要仅因个别动词或细节差异把最吻合的候选直接剔除；若确实存在 2～3 部高度相似的候选，围绕最可能的一部提供资源，并在 `summary` 中列出其余候选作品名供用户核对。',
   '2. 多轮交叉深挖：',
@@ -301,10 +301,16 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
     }
   ];
 
+  const isReasoningModel = /(?:reasoner|r1|thinking|\bo1\b|\bo3\b|\bo4\b)/i.test(creds.model);
+  const perRoundMaxTokens = isReasoningModel ? 8192 : 3000;
+  const perRoundTimeoutCapMs = isReasoningModel ? 60000 : 45000;
+
   const executedToolCalls = new Set();
   let staleRounds = 0;
   let duplicateSkips = 0;
   let timeWrappedUp = false;
+  let forceFinalRound = false;
+  let emptyRetries = 0;
   let roundsExecuted = 0;
   let finalContent = '';
 
@@ -313,7 +319,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
     roundsExecuted = round + 1;
     const remainingMs = deadlineAt - nowFn();
     const isTimeConstrained = round > 0 && remainingMs < wrapUpThresholdMs;
-    const isLastRound = round === maxRounds - 1 || isTimeConstrained;
+    const isLastRound = round === maxRounds - 1 || isTimeConstrained || forceFinalRound;
 
     if (isTimeConstrained) {
       timeWrappedUp = true;
@@ -322,7 +328,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
         '_timeLimitNotice',
         '剩余检索时间不足 20 秒，本轮已禁用工具调用。请立即基于目前已经获取到的真实线索整理并输出最终 JSON 结果，严禁编造未验证链接。'
       );
-    } else if (isLastRound && round > 0) {
+    } else if (isLastRound && round > 0 && !forceFinalRound) {
       appendGuardFieldToLastToolMessage(
         messages,
         '_finalRoundNotice',
@@ -334,7 +340,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
       baseUrl: creds.baseUrl,
       apiKey: creds.apiKey,
       model: creds.model,
-      timeoutMs: Math.min(45000, Math.max(12000, remainingMs + 5000))
+      timeoutMs: Math.min(perRoundTimeoutCapMs, Math.max(12000, remainingMs + 5000))
     };
 
     const response = await completeFn({
@@ -342,7 +348,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
       tools: isLastRound ? null : AGENT_TOOLS,
       toolChoice: isLastRound ? undefined : 'auto',
       temperature: 0.2,
-      maxTokens: 2000,
+      maxTokens: perRoundMaxTokens,
       purpose: 'default',
       overrides,
       signal
@@ -350,14 +356,34 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
 
     const msg = response?.message || {};
     const toolCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
-    if (!toolCalls.length || isLastRound) {
-      finalContent = String(msg.content || '').trim();
+    const contentText = String(msg.content || '').trim();
+    if (!toolCalls.length) {
+      if (!contentText && !isLastRound && emptyRetries < 1 && (deadlineAt - nowFn()) >= 8000) {
+        // 推理模型偶发因思考过长撞上 length 截断导致空 content：自动强制进入下一轮禁工具收口，直接输出精简 JSON。
+        emptyRetries += 1;
+        forceFinalRound = true;
+        const attached = appendGuardFieldToLastToolMessage(
+          messages,
+          '_emptyRetryNotice',
+          '上一轮思考过长未输出正文，本轮已禁用工具调用。请简短思考并直接基于现有线索输出最终 JSON 结果。'
+        );
+        if (!attached && messages.length > 0 && messages[messages.length - 1]?.role === 'user') {
+          messages[messages.length - 1].content += '\n\n（注意：请简短思考，直接输出最终 JSON 结果，不要输出空内容。）';
+        }
+        continue;
+      }
+      finalContent = contentText;
+      break;
+    }
+    if (isLastRound) {
+      finalContent = contentText;
       break;
     }
 
     messages.push({
       role: 'assistant',
       content: msg.content || '',
+      ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       tool_calls: toolCalls
     });
 

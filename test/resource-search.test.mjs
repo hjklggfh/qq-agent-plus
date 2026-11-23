@@ -1071,4 +1071,67 @@ test('Agent 8轮预算、时间感知收口（<20s）、防空转护栏（去重
   }
 });
 
+test('deepseek-reasoner 适配：maxTokens 放宽至 8192、多轮保留 reasoning_content、空截断自动收口重试', async () => {
+  let round = 0;
+  let sawReasoningPreserved = false;
+  let sawEmptyRetryNotice = false;
+  const maxTokensSeen = [];
+
+  const res = await runResourceSearchAgent(
+    { query: '测试推理模型适配' },
+    {
+      deepseekApiKey: 'sk-test-key',
+      deepseekBaseUrl: 'https://api.deepseek.com/v1',
+      deepseekModel: 'deepseek-reasoner',
+      timeoutSeconds: 150,
+      sources: { shionlib: false, kungal: false, shinnku: false, touchgal: false, vndb: false, bangumi: false, dlsite: false, steam: false, web: true }
+    },
+    {
+      webSearchImpl: async () => ({ results: [{ title: '千恋＊万花', url: 'https://example.com/1', snippet: '柚子社' }] }),
+      completeImpl: async ({ messages, tools, maxTokens }) => {
+        round += 1;
+        maxTokensSeen.push(maxTokens);
+        if (round === 1) {
+          return {
+            message: {
+              content: '',
+              reasoning_content: '第一轮思考：先查候选作品千恋万花。',
+              tool_calls: [{ id: 'r1', type: 'function', function: { name: 'web_search_query', arguments: JSON.stringify({ query: '千恋万花' }) } }]
+            }
+          };
+        }
+        if (round === 2) {
+          const assistantMsg = messages.find((m) => m.role === 'assistant');
+          sawReasoningPreserved = assistantMsg?.reasoning_content === '第一轮思考：先查候选作品千恋万花。';
+          // 模拟思考过长触发长度截断导致 content 与 tool_calls 均为空
+          return {
+            message: {
+              content: '',
+              reasoning_content: '第二轮思考过长被截断...'
+            },
+            finishReason: 'length'
+          };
+        }
+        assert.equal(tools, null, '空截断后应强制禁工具收口');
+        const lastTool = JSON.parse(messages[messages.length - 1].content);
+        sawEmptyRetryNotice = typeof lastTool._emptyRetryNotice === 'string' && lastTool._emptyRetryNotice.includes('未输出正文');
+        return {
+          message: {
+            content: JSON.stringify({
+              work: { titleZh: '千恋＊万花', summary: '重试后成功收口。' },
+              freeResources: [],
+              officialResources: []
+            })
+          }
+        };
+      }
+    }
+  );
+
+  assert.deepEqual(maxTokensSeen, [8192, 8192, 8192]);
+  assert.equal(sawReasoningPreserved, true);
+  assert.equal(sawEmptyRetryNotice, true);
+  assert.equal(res.parsed?.work?.titleZh, '千恋＊万花');
+});
+
 
