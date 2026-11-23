@@ -1134,4 +1134,72 @@ test('deepseek-reasoner 适配：maxTokens 放宽至 8192、多轮保留 reasoni
   assert.equal(res.parsed?.work?.titleZh, '千恋＊万花');
 });
 
+test('卡片构建防串台：多轮搜索含其他候选作品时，不混入旧候选的封面、开发商与编号', async () => {
+  const fetchedCoverUrls = [];
+  const mockFetch = async (url) => {
+    fetchedCoverUrls.push(String(url));
+    return new Response(TINY_PNG, { status: 200 });
+  };
+  const agentResult = {
+    parsed: {
+      work: {
+        titleZh: '魔法少女的魔女审判',
+        titleJp: '魔法少女ノ魔女裁判',
+        codes: ['VNDB:v50283', 'Steam:3101040', 'Bangumi:488392'],
+        developers: ['Acacia'],
+        cover: 'https://img.example.com/witch-trials-right.png',
+        summary: '孤岛悬疑审判游戏。'
+      },
+      freeResources: [],
+      officialResources: []
+    },
+    crawledItems: [
+      {
+        source: 'shionlib',
+        siteName: '书音的图书馆',
+        kind: 'free',
+        id: '100',
+        title: 'DiaGnosis ～漆黒のノート～',
+        titleJp: 'DiaGnosis ～漆黒のノート～',
+        developers: ['BLUEWATER'],
+        cover: 'https://img.example.com/diagnosis-wrong.png',
+        url: 'https://shionlib.com/zh/game/100'
+      },
+      {
+        source: 'bangumi',
+        siteName: 'Bangumi 番组计划',
+        kind: 'database',
+        id: 'bgm214581',
+        title: '古诺西亚',
+        titleJp: 'グノーシア',
+        cover: 'https://img.example.com/gnosia-wrong.png',
+        url: 'https://bgm.tv/subject/214581'
+      },
+      {
+        source: 'shionlib',
+        siteName: '书音的图书馆',
+        kind: 'free',
+        id: '200',
+        title: '魔法少女的魔女审判',
+        titleZh: '魔法少女的魔女审判',
+        titleJp: '魔法少女ノ魔女裁判',
+        developers: ['Acacia'],
+        cover: 'https://img.example.com/witch-trials-shion.png',
+        url: 'https://shionlib.com/zh/game/200'
+      }
+    ]
+  };
+
+  const nodes = await buildResourceSearchNodes(
+    agentResult,
+    { includeImages: true, maxResults: 5 },
+    { query: '推荐一部悬疑推理百合游戏', chatKind: 'group', fetchImpl: mockFetch, selfId: '10001' }
+  );
+  assert.ok(nodes);
+  const headerText = nodes[0].data.content.filter((c) => c.type === 'text').map((c) => c.data.text).join('\n');
+  assert.doesNotMatch(headerText, /BLUEWATER/, '不应混入淘汰候选作的开发商');
+  assert.doesNotMatch(headerText, /214581/, '不应混入淘汰候选作的 Bangumi 编号');
+  assert.deepEqual(fetchedCoverUrls, ['https://img.example.com/witch-trials-right.png'], '应优先拉取最终确认作品的封面，不拉取旧候选封面');
+});
+
 

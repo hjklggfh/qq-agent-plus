@@ -107,7 +107,43 @@ function deduplicateDevelopers(list) {
 
 function resolveWorkProfile(agentResult, query) {
   const parsedWork = agentResult?.parsed?.work || {};
-  const items = Array.isArray(agentResult?.crawledItems) ? agentResult.crawledItems : [];
+  const allItems = Array.isArray(agentResult?.crawledItems) ? agentResult.crawledItems : [];
+
+  const anchorTitles = [
+    parsedWork.titleZh,
+    parsedWork.titleJp,
+    parsedWork.titleEn,
+    String(parsedWork.titleZh || '').split(/[～~－—:：]/)[0].trim(),
+    String(parsedWork.titleJp || '').split(/[～~－—:：]/)[0].trim()
+  ].filter(Boolean);
+  const anchorCodes = new Set(
+    (Array.isArray(parsedWork.codes) ? parsedWork.codes : [])
+      .map((c) => normalizeCodeLabel(c).replace(/^(?:VNDB|Bangumi|Steam):/i, '').toLowerCase())
+      .filter(Boolean)
+  );
+
+  // 多轮发散检索会抓取多个候选作品：若 DeepSeek 已明确最终作品，先按最终标题/编号过滤，
+  // 避免把前一轮被淘汰候选作的封面、开发商或编号串台混入当前作品档案。
+  const items = (anchorTitles.length || anchorCodes.size)
+    ? allItems.filter((item) => {
+        const itemCodeIds = [
+          item?.id,
+          ...(Array.isArray(item?.dlsiteCodes) ? item.dlsiteCodes : [])
+        ]
+          .map((c) => String(c || '').replace(/^(?:vndb:|bgm:?|bangumi:|steam:)/i, '').toLowerCase())
+          .filter(Boolean);
+        if (itemCodeIds.some((id) => anchorCodes.has(id))) return true;
+        const itemTitles = [
+          item?.title,
+          item?.titleZh,
+          item?.titleJp,
+          item?.titleEn,
+          ...(Array.isArray(item?.aliases) ? item.aliases : [])
+        ].filter(Boolean);
+        return anchorTitles.length > 0 && matchesWorkTitle(anchorTitles, itemTitles);
+      })
+    : allItems;
+
   const shion = items.find((i) => i.source === 'shionlib');
   const kungal = items.find((i) => i.source === 'kungal');
   const vndb = items.find((i) => i.source === 'vndb');
@@ -164,18 +200,18 @@ function resolveWorkProfile(agentResult, query) {
   }
 
   const coverCandidates = [...new Set([
+    parsedWork.cover,
     shion?.cover,
     kungal?.cover,
     bangumi?.cover,
     vndb?.cover,
-    parsedWork.cover,
     dlsite?.cover,
     touchgal?.cover,
     steam?.cover
   ].map(publicLink).filter(Boolean))];
 
   const coverKeys = {};
-  for (const item of items) {
+  for (const item of allItems) {
     const cUrl = publicLink(item?.cover);
     if (cUrl && item?.coverKey) coverKeys[cUrl] = String(item.coverKey);
   }
