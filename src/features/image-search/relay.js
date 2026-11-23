@@ -13,6 +13,7 @@ import {
   isRelayAllowedTouchGalDomain,
   runTokyoRelayResourceSearch
 } from '../resource-search/sources.js';
+import { WEBPAGE_TIMEOUT_MS, fetchWebpageDirect } from '../resource-search/webpage.js';
 
 function respond(res, status, value) {
   if (res.destroyed) return;
@@ -26,6 +27,7 @@ export function createImageSearchRelay(options = {}) {
   const provider = options.search || searchProvider;
   const download = options.download || safeFetchPublicBinary;
   const resourceProvider = options.resourceSearch || runTokyoRelayResourceSearch;
+  const webpageProvider = options.webpageFetch || fetchWebpageDirect;
   // 仅接受最近搜索结果的短期凭证，不能作为任意 URL 下载代理。
   // 容量须装下“搜图 全部”与多站点资源检索一轮的全部凭证，避免先查的站点凭证被挤掉。
   const maxImageKeys = Math.max(64, IMAGE_SEARCH_PLATFORMS.length * IMAGE_SEARCH_LIMIT_MAX * 2);
@@ -33,6 +35,7 @@ export function createImageSearchRelay(options = {}) {
   let googleBlockedUntil = 0;
   let busy = false;
   let resourceBusy = 0;
+  let webpageBusy = 0;
   const controllers = new Set();
   const server = http.createServer(async (req, res) => {
     const received = Buffer.from(req.headers.authorization || '');
@@ -41,8 +44,67 @@ export function createImageSearchRelay(options = {}) {
     if (req.url === '/healthz' && req.method === 'GET') { respond(res, 200, { ok: true, busy, googleConfigured: Boolean(options.chromePath || process.env.IMAGE_SEARCH_CHROME), serpapiConfigured: Boolean(options.serpApiKey || process.env.IMAGE_SEARCH_SERPAPI_API_KEY) }); return; }
     const imageRequest = req.url === '/v1/image';
     const resourceRequest = req.url === '/v1/resource-search';
-    if (req.url !== '/v1/search' && !imageRequest && !resourceRequest) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
+    const webpageRequest = req.url === '/v1/webpage';
+    if (req.url !== '/v1/search' && !imageRequest && !resourceRequest && !webpageRequest) { respond(res, 404, { error: '接口不存在' }); req.resume(); return; }
     if (req.method !== 'POST') { respond(res, 405, { error: '仅支持 POST' }); req.resume(); return; }
+    if (webpageRequest) {
+      if (Number(req.headers['content-length']) > 2048) { respond(res, 413, { error: '请求过大' }); req.resume(); return; }
+      if (webpageBusy >= 8) { respond(res, 429, { error: '外网读页中转正忙' }); req.resume(); return; }
+      webpageBusy += 1;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), WEBPAGE_TIMEOUT_MS);
+      controllers.add(controller);
+      const abort = () => { if (!res.writableEnded) controller.abort(); };
+      res.on('close', abort);
+      req.on('aborted', abort);
+      try {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of req) {
+          controller.signal.throwIfAborted();
+          size += chunk.length;
+          if (size > 2048) { respond(res, 413, { error: '请求过大' }); return; }
+          chunks.push(chunk);
+        }
+        let body;
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { respond(res, 400, { error: '无效 JSON' }); return; }
+        const targetUrl = publicLink(body?.url);
+        if (!targetUrl) {
+          respond(res, 400, { error: 'URL 无效（仅允许无凭据的 http/https 链接）' });
+          return;
+        }
+        const page = await webpageProvider(targetUrl, { signal: controller.signal });
+        respond(res, 200, {
+          url: page.url || targetUrl,
+          statusCode: page.statusCode || 200,
+          title: page.title || '',
+          truncated: Boolean(page.truncated),
+          blocked: page.blocked || '',
+          warning: page.warning || '',
+          excerpt: page.excerpt || '',
+          links: Array.isArray(page.links) ? page.links : []
+        });
+      } catch (error) {
+        const msg = String(error?.message ?? error);
+        const isPolicyRejection = error?.code === 'UNSUPPORTED_CONTENT_TYPE'
+          || /内网|本机|URL 无效|仅允许 http\/https|不能包含凭据|主机名为空/.test(msg);
+        if (isPolicyRejection) {
+          respond(res, 400, { error: msg.slice(0, 160) });
+        } else {
+          respond(res, 502, {
+            status: 'error',
+            error: controller.signal.aborted ? '目标网页读取超时（10s）' : msg.slice(0, 160)
+          });
+        }
+      } finally {
+        clearTimeout(timer);
+        controllers.delete(controller);
+        res.off('close', abort);
+        req.off('aborted', abort);
+        webpageBusy -= 1;
+      }
+      return;
+    }
     if (resourceRequest) {
       if (Number(req.headers['content-length']) > 1024) { respond(res, 413, { error: '请求过大' }); req.resume(); return; }
       if (resourceBusy >= 24) { respond(res, 429, { error: '搜图中转正忙' }); req.resume(); return; }

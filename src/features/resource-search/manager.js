@@ -23,6 +23,7 @@ export class ResourceSearchManager {
     this.complete = options.completeImpl;
     this.webSearch = options.webSearchImpl;
     this.webFetch = options.webFetchImpl;
+    this.progressDelayMs = Number.isFinite(options.progressDelayMs) ? options.progressDelayMs : 20000;
     this.file = path.join(options.dataDir, 'resource-search', 'history.json');
     this.active = null;
     this.task = null;
@@ -182,6 +183,20 @@ export class ResourceSearchManager {
     const guard = setInterval(() => {
       try { this.enforce(); } catch { controller.abort(); }
     }, 500);
+    let digging = true;
+    let progressSent = false;
+    let progressTimer = null;
+    if (this.progressDelayMs > 0) {
+      progressTimer = setTimeout(() => {
+        if (!digging || progressSent || signal.aborted || controller.signal.aborted || !this.allowed(chatKey)) return;
+        progressSent = true;
+        Promise.resolve(this.send(
+          chatKey,
+          ['🔍 仍在继续深挖全网资源与补丁线索，稍后整理完成发送，请稍候…'],
+          { runId: `${runId}-progress`, preserveCode: false }
+        )).catch(() => { /* 进度提示失败不影响主任务 */ });
+      }, this.progressDelayMs);
+    }
 
     try {
       this.save();
@@ -204,6 +219,11 @@ export class ResourceSearchManager {
           webFetchImpl: this.webFetch
         }
       );
+      digging = false;
+      if (progressTimer) {
+        clearTimeout(progressTimer);
+        progressTimer = null;
+      }
 
       const chatKind = String(chatKey || '').startsWith('private:') ? 'private' : 'group';
       record.sources = agentResult.sources || [];
@@ -255,6 +275,8 @@ export class ResourceSearchManager {
         } catch { /* 无自动重试。 */ }
       }
     } finally {
+      digging = false;
+      if (progressTimer) clearTimeout(progressTimer);
       clearInterval(guard);
     }
   }

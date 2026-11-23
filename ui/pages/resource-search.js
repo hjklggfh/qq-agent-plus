@@ -25,8 +25,8 @@ function renderResourceSearchSection(config) {
   const relayHint = hasTokyoRelay
     ? `（已自动复用以图搜图东京中转 ${config.imageSearch?.relayUrl || s.tokyoRelayUrl || 'http://127.0.0.1:3220'}）`
     : (s.effectiveProxyUrl ? `（当前生效本机代理 ${s.effectiveProxyUrl}）` : '（留空则优先复用以图搜图东京中转 3220 或 Pixiv/E站本机隧道）');
-  return `<h3>资源检索（DeepSeek 后台多站聚合）</h3>
-    <p class="hint">发送“/找资源 游戏名”、“/求资源 游戏名”或“/搜黄油 游戏名”，也可附带或引用回复一张游戏截图发送“/找资源”。后台独立调用 DeepSeek 并发检索多个资源站与数据库（不加载聊天人设与群聊历史，不阻塞前台 Gemini 正常聊天），完成后以合并转发卡片返回免费资源与正版参考。</p>
+  return `<h3>资源检索（DeepSeek 后台多轮深度检索）</h3>
+    <p class="hint">发送“/找资源 游戏名”、“/求资源 游戏名”或“/搜黄油 游戏名”，也支持模糊剧情描述或附带/引用回复一张游戏截图发送“/找资源”。后台由 DeepSeek 主导多轮检索（最高 8 轮，结合高并发多站爬取与东京受控外网读页，不加载聊天人设与群聊历史，不阻塞前台正常聊天），完成后以合并转发卡片返回免费资源与正版参考。</p>
     <div class="field"><label><input id="resource-search-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用资源检索</label></div>
     <div class="field"><label>并发检索站点（建议勾选多个站点，避免单一站点漏搜或找错）</label>
       <div>${Object.entries(RESOURCE_SOURCE_LABELS).map(([key, label]) => `<label style="margin-right:12px;display:inline-block"><input id="resource-search-source-${key}" type="checkbox" ${(s.sources?.[key] ?? true) ? 'checked' : ''}> ${esc(label)}</label>`).join('')}</div>
@@ -36,7 +36,7 @@ function renderResourceSearchSection(config) {
     <div class="field"><label><input id="resource-search-images" type="checkbox" ${s.includeImages !== false ? 'checked' : ''}> 合并转发卡片内附带作品封面预览图（已自动压缩转码；如某群图片风控严可关闭）</label></div>
     <div class="field"><label><input id="resource-search-safe-group-links" type="checkbox" ${s.safeGroupLinks !== false ? 'checked' : ''}> 群聊链接防风控断链（推荐开启：群内自动将网址转为 域名[.]后缀 并合并为 3 条气泡防 QQ 吞消息，私聊仍发完整链接）</label></div>
     <div class="field-row">
-      <div class="field"><label>检索总超时（秒，15—120）</label><input id="resource-search-timeout" type="number" min="15" max="120" value="${esc(s.timeoutSeconds ?? 60)}"></div>
+      <div class="field"><label>检索总超时（秒，15—300）</label><input id="resource-search-timeout" type="number" min="15" max="300" value="${esc(s.timeoutSeconds ?? 150)}"></div>
       <div class="field"><label>最多展示免费资源条数（1—10）</label><input id="resource-search-max-results" type="number" min="1" max="10" value="${esc(s.maxResults ?? 5)}"></div>
       <div class="field"><label>同会话冷却（秒，0—3600）</label><input id="resource-search-cooldown" type="number" min="0" max="3600" value="${esc(s.cooldownSeconds ?? 15)}"></div>
     </div>

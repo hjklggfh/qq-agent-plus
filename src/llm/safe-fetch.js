@@ -130,7 +130,9 @@ async function resolveSafeHost(hostname, { allowPrivate = false } = {}) {
       if (isPrivateIp(address)) throw new Error('域名解析到内网/本机地址，已阻止');
     }
   }
-  return addresses[0].address;
+  // 全部地址通过私网检查后优先选 IPv4，避免无 IPv6 路由的主机被首选 AAAA 记录阻塞。
+  const preferred = addresses.find((entry) => entry.family === 4) || addresses[0];
+  return preferred.address;
 }
 
 /** 校验 URL 的 scheme 与主机（DNS 级）。返回 { url, ip }。 */
@@ -194,14 +196,23 @@ function readBounded(res, maxBytes, asText) {
 }
 
 // 使用已校验的 IP 发起请求（保留 Host/SNI），从根上消除 DNS rebinding。
-function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal, headers = {} } = {}) {  return new Promise((resolve, reject) => {
+function requestOnce(url, ip, {
+  asBinary = false,
+  maxBytes = 50000,
+  signal,
+  headers = {},
+  timeoutMs = 20000,
+  stripAuthHeaders = false,
+  validateContentType = null
+} = {}) {
+  return new Promise((resolve, reject) => {
     const mod = url.protocol === 'https:' ? https : http;
     const port = url.port || (url.protocol === 'https:' ? 443 : 80);
     const forwardedHeaders = { ...headers };
-    for (const name of ['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade']) {
-      delete forwardedHeaders[name];
-      delete forwardedHeaders[name.toLowerCase()];
-      delete forwardedHeaders[name.toUpperCase()];
+    const forbidden = ['host', 'content-length', 'connection', 'transfer-encoding', 'upgrade'];
+    if (stripAuthHeaders) forbidden.push('cookie', 'authorization', 'proxy-authorization');
+    for (const name of Object.keys(forwardedHeaders)) {
+      if (forbidden.includes(name.toLowerCase())) delete forwardedHeaders[name];
     }
     const req = mod.request({
       hostname: ip,
@@ -218,17 +229,28 @@ function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal, head
       servername: url.protocol === 'https:' ? url.hostname : undefined,
       rejectUnauthorized: url.protocol === 'https:',
       signal,
-      timeout: 20000
+      timeout: timeoutMs
     }, (res) => {
       const statusCode = res.statusCode || 0;
+      const contentType = String(res.headers['content-type'] || '');
+      const cfMitigated = String(res.headers['cf-mitigated'] || '');
       if ([301, 302, 303, 307, 308].includes(statusCode)) {
         // 不要 resume() 排空响应体：它不计入 maxBytes，恶意目标可以一直吐数据把连接占住
         res.destroy();
-        resolve({ statusCode, redirect: String(res.headers.location || '') });
+        resolve({ statusCode, redirect: String(res.headers.location || ''), contentType, cfMitigated });
         return;
       }
+      if (typeof validateContentType === 'function') {
+        try {
+          validateContentType(contentType, statusCode);
+        } catch (err) {
+          res.destroy();
+          reject(err);
+          return;
+        }
+      }
       readBounded(res, maxBytes, !asBinary)
-        .then((body) => resolve({ statusCode, body, contentType: String(res.headers['content-type'] || '') }))
+        .then((body) => resolve({ statusCode, body, contentType, cfMitigated }))
         .catch(reject);
     });
     req.on('timeout', () => req.destroy(new Error(`请求超时：${url.hostname}`)));
@@ -238,6 +260,70 @@ function requestOnce(url, ip, { asBinary = false, maxBytes = 50000, signal, head
 }
 
 const MAX_REDIRECTS = 5;
+const PUBLIC_TEXT_MAX_BYTES = 512 * 1024;
+
+export function isAllowedTextContentType(contentType) {
+  const ct = String(contentType || '').split(';')[0].trim().toLowerCase();
+  if (!ct) return true;
+  if (ct.startsWith('text/')) return true;
+  if (ct === 'application/xhtml+xml' || ct === 'application/xml' || ct === 'application/json') return true;
+  if (ct.endsWith('+xml') || ct.endsWith('+json')) return true;
+  return false;
+}
+
+/**
+ * 独立中转与资源检索专用：受控只读公网文本抓取。
+ * 强制禁止私网/回环/元数据 IP（重定向逐跳重检）、无 Cookie GET、文本类响应、≤512KB、≤10s 超时。
+ */
+export async function safeFetchPublicText(urlString, options = {}) {
+  const maxBytes = Math.min(PUBLIC_TEXT_MAX_BYTES, Math.max(1024, Number(options.maxBytes) || PUBLIC_TEXT_MAX_BYTES));
+  const timeoutMs = Math.min(15000, Math.max(1000, Number(options.timeoutMs) || 10000));
+  const combinedSignal = AbortSignal.any([
+    ...(options.signal ? [options.signal] : []),
+    AbortSignal.timeout(timeoutMs)
+  ]);
+
+  let { url, ip } = await validateFetchUrl(urlString, { allowPrivate: false });
+  for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    combinedSignal.throwIfAborted();
+    const result = await requestOnce(url, ip, {
+      asBinary: false,
+      maxBytes,
+      signal: combinedSignal,
+      timeoutMs,
+      stripAuthHeaders: true,
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,application/json;q=0.7,*/*;q=0.5',
+        'accept-language': 'zh-CN,zh;q=0.9,ja;q=0.8,en;q=0.7',
+        ...(options.headers || {})
+      },
+      validateContentType: (ct) => {
+        if (!isAllowedTextContentType(ct)) {
+          const err = new Error(`不支持的非文本响应类型：${ct.split(';')[0].trim()}`);
+          err.code = 'UNSUPPORTED_CONTENT_TYPE';
+          throw err;
+        }
+      }
+    });
+    if ([301, 302, 303, 307, 308].includes(result.statusCode)) {
+      if (!result.redirect) throw new Error(`重定向缺少 Location: ${result.statusCode}`);
+      const next = new URL(result.redirect, url).toString();
+      ({ url, ip } = await validateFetchUrl(next, { allowPrivate: false }));
+      continue;
+    }
+    const body = result.body || '';
+    return {
+      url: url.toString(),
+      statusCode: result.statusCode,
+      contentType: result.contentType,
+      cfMitigated: result.cfMitigated,
+      truncated: Buffer.byteLength(body, 'utf8') >= maxBytes,
+      body
+    };
+  }
+  throw new Error('重定向次数过多，已停止');
+}
 
 /** 抓取网页文本（≤50000 字符），SSRF 全防护（不做内网例外）。 */
 export async function safeFetch(urlString) {

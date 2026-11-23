@@ -18,7 +18,7 @@ export const DEFAULT_RESOURCE_SEARCH_CONFIG = Object.freeze({
   allowPrivate: false,
   allowedGroups: Object.freeze([]),
   cooldownSeconds: 15,
-  timeoutSeconds: 60,
+  timeoutSeconds: 150,
   maxResults: 5,
   includeImages: true,
   safeGroupLinks: true,
@@ -115,7 +115,7 @@ export function validateResourceSearchPatch(raw) {
   if (Object.hasOwn(raw, 'touchgalDomain')) validateDomainName(raw.touchgalDomain, 'TouchGal 域名');
   if (Object.hasOwn(raw, 'shionlibDomain')) validateDomainName(raw.shionlibDomain, '书音图书馆域名');
   for (const [key, min, max] of [
-    ['timeoutSeconds', 15, 120],
+    ['timeoutSeconds', 15, 300],
     ['maxResults', 1, RESOURCE_SEARCH_LIMIT_MAX],
     ['cooldownSeconds', 0, 3600]
   ]) {
@@ -150,7 +150,7 @@ export function resourceSearchConfig(raw = {}) {
       : [],
     cooldownSeconds: Number.isInteger(input.cooldownSeconds) && input.cooldownSeconds >= 0 && input.cooldownSeconds <= 3600
       ? input.cooldownSeconds : DEFAULT_RESOURCE_SEARCH_CONFIG.cooldownSeconds,
-    timeoutSeconds: Number.isInteger(input.timeoutSeconds) && input.timeoutSeconds >= 15 && input.timeoutSeconds <= 120
+    timeoutSeconds: Number.isInteger(input.timeoutSeconds) && input.timeoutSeconds >= 15 && input.timeoutSeconds <= 300
       ? input.timeoutSeconds : DEFAULT_RESOURCE_SEARCH_CONFIG.timeoutSeconds,
     maxResults: Number.isInteger(input.maxResults) && input.maxResults >= 1 && input.maxResults <= RESOURCE_SEARCH_LIMIT_MAX
       ? input.maxResults : DEFAULT_RESOURCE_SEARCH_CONFIG.maxResults,
