@@ -441,6 +441,7 @@ test('后台 DeepSeek 独立检索循环与 ResourceSearchManager 完整流程�
     assert.match(cardTexts, /真红小站/);
     assert.match(cardTexts, /https:\/\/www\.kungal\.com\/galgame\/resource\/78093/);
     assert.match(cardTexts, /https:\/\/www\.shinnku\.com\/files\/shinnku/);
+    assert.match(cardTexts, /\n\n2\. \[/, '每条结果之间应空一行便于阅读');
     assert.doesNotMatch(cardTexts, /\[\.\]/, '默认关闭混淆时不应向链接插入 [.]');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });

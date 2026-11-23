@@ -361,8 +361,9 @@ function formatLinkValue(url, safeGroup) {
 }
 
 function formatFreeResourcesList(freeResources, safeGroup = false) {
-  const lines = [`📦 免费资源渠道（共 ${freeResources.length} 条）`];
+  const blocks = [`📦 免费资源渠道（共 ${freeResources.length} 条）`];
   for (const [idx, item] of freeResources.entries()) {
+    const lines = [];
     const site = friendlySiteName(item.siteName, safeGroup);
     const title = safeGroup
       ? sanitizeGroupText(item.title, { stripUrls: true, softenSensitive: true })
@@ -390,16 +391,18 @@ function formatFreeResourcesList(freeResources, safeGroup = false) {
         if (meta) lines.push(`     (${meta})`);
       }
     }
+    blocks.push(lines.join('\n'));
   }
   if (safeGroup) {
-    lines.push('💡 群聊已对网址做防风控断链，复制后去掉 [ ] 即可浏览器打开；私聊可直出完整链接。');
+    blocks.push('💡 群聊已对网址做防风控断链，复制后去掉 [ ] 即可浏览器打开；私聊可直出完整链接。');
   }
-  return lines.join('\n');
+  return blocks.join('\n\n');
 }
 
 function formatOfficialListBlock(officialResources, safeGroup = false) {
-  const lines = ['🛒 正版与权威数据库参考'];
+  const blocks = ['🛒 正版与权威数据库参考'];
   for (const [idx, item] of officialResources.entries()) {
+    const lines = [];
     const site = friendlySiteName(item.siteName, safeGroup);
     const title = safeGroup
       ? sanitizeGroupText(item.title, { stripUrls: true, softenSensitive: true })
@@ -410,8 +413,9 @@ function formatOfficialListBlock(officialResources, safeGroup = false) {
       if (note) lines.push(`   ${note}`);
     }
     lines.push(`   ${formatLinkValue(item.url, safeGroup)}`);
+    blocks.push(lines.join('\n'));
   }
-  return lines.join('\n');
+  return blocks.join('\n\n');
 }
 
 export function formatResourceSearchReply(agentResult, settings = {}, query = '', options = {}) {
