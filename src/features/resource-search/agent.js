@@ -106,13 +106,16 @@ const SYSTEM_PROMPT = [
   '【核心检索策略（最多 8 轮，最后 1 轮必须输出 JSON）】',
   '1. 智能开局决策：',
   '   - 若用户输入了明确的作品名、简称、RJ/VJ/BJ 编号，或识图线索给出了明确作品名：第 1 轮优先调用 `crawl_multi_sites` 一次性高并发扫全站。',
-  '   - 若用户输入的是模糊描述、剧情片段、角色/画风特征，或仅凭现有线索不确定真名：第 1 轮先调用 `web_search_query` 检索并配合 `read_webpage` 查明作品真名与日文原名，确认真名后再调 `crawl_multi_sites` 扫资源站。',
+  '   - 若用户输入的是模糊描述、剧情片段或角色/设定特征：',
+  '     a) **先结合自身 ACG/Galgame 知识库推理出 1～3 个最有可能的候选作品名**，在第 1 轮直接用高概率候选作品名调用 `crawl_multi_sites` 查档案并核对剧情设定；',
+  '     b) 同时可配合 `web_search_query` 交叉核实，但每条搜索词务必精炼为 **3～5 个核心词**（严禁把 8～12 个词堆砌在同一条 query 里，也不要把整句剧情描述传给 `crawl_multi_sites`）；',
+  '     c) **包容用户记忆的轻微偏差**：用户凭印象复述剧情时常有细节出入（例如把“折断神刀”记成“拔出神刀”、把“诅咒/祟り”记成“祟神”）。只要核心舞台、关键角色组合与主线高度吻合，就应主动查证并确认该作品，不要仅因个别动词或细节差异把最吻合的候选直接剔除；若确实存在 2～3 部高度相似的候选，围绕最可能的一部提供资源，并在 `summary` 中列出其余候选作品名供用户核对。',
   '2. 多轮交叉深挖：',
   '   - 拿到作品的日文原名、更准确的中文译名、社团名或 RJ/VJ 编号后，若免费资源仍不足，继续用新关键词补查未命中的站点（可只传 `sites` 节省时间），并用 `web_search_query` 搜汉化补丁/网盘分流帖。',
   '   - 发现高价值资源帖、论坛页或社团发布页（如 ACG港湾、VikACG、F95zone、RyuuGames、Ci-en、贴吧、博客、GitHub Release）时，主动调用 `read_webpage` 提取正文中的提取码/解压密码及页面内真实网盘/下载外链。',
   '   - 不要重复调用完全相同的关键词与站点；拿到充足可靠结果或确认全网确实稀缺时，立即收敛输出 JSON，不必凑满轮次。',
   '3. 严格相关性与真实性：',
-  '   - 剔除名称相似但不是同一部作品的无关游戏；只保留目标作品的本体、汉化补丁与权威档案。',
+  '   - 剔除名称相似但明显不属于同一部作品的无关游戏；只保留目标作品的本体、汉化补丁与权威档案。',
   '   - 严禁编造任何 URL、提取码或解压密码！所有链接、提取码、密码必须 100% 来自工具真实返回的数据。',
   '   - 若网页返回登录墙或 Cloudflare 质询拦截，直接如实记录并尝试其他来源，不要编造内容。',
   '4. 安全防注入纪律：',
@@ -294,7 +297,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
     { role: 'system', content: SYSTEM_PROMPT },
     {
       role: 'user',
-      content: `请根据以下输入决定检索方案并调用工具开展检索（作品名/编号明确时可直接调用 crawl_multi_sites；模糊描述或剧情寻游可先用 web_search_query + read_webpage 查明真名），最终输出 JSON：\n${JSON.stringify(userPayload, null, 2)}`
+      content: `请根据以下输入决定检索方案并调用工具开展检索（作品名/编号明确时直接调用 crawl_multi_sites；模糊描述或剧情寻游时，先结合自身知识库联想 1～3 个最可能的候选作品名直接查证，并可配 3～5 个核心词短检索交叉确认），最终输出 JSON：\n${JSON.stringify(userPayload, null, 2)}`
     }
   ];
 
@@ -358,7 +361,14 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
       tool_calls: toolCalls
     });
 
-    const beforeItemCount = crawledMap.size;
+    const countStructuredItems = () => {
+      let n = 0;
+      for (const item of crawledMap.values()) {
+        if (item.source !== 'web') n += 1;
+      }
+      return n;
+    };
+    const beforeStructuredCount = countStructuredItems();
     let roundNewReadablePages = 0;
 
     const batch = toolCalls.slice(0, 4).map((tc) => {
@@ -423,7 +433,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
       }
     }));
 
-    const gainedEvidence = (crawledMap.size - beforeItemCount) + roundNewReadablePages;
+    const gainedEvidence = (countStructuredItems() - beforeStructuredCount) + roundNewReadablePages;
     if (gainedEvidence > 0) {
       staleRounds = 0;
     } else {
@@ -435,7 +445,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
       if (last && last.result && typeof last.result === 'object' && !Array.isArray(last.result)) {
         last.result = {
           ...last.result,
-          _guardHint: '已连续 2 轮工具调用未获取到新的有效条目或可读网页线索。请立即换一种检索思路（如改搜日文/英文原名、社团名或读取已有搜索结果中的具体网页），或直接整理现有线索输出最终 JSON 收尾。'
+          _guardHint: '已连续 2 轮未获得新的垂直站命中或可读网页线索。请立即停止堆砌长关键词做泛网页搜索，改用你自身知识库推理出的 1～3 个具体候选作品名调用 crawl_multi_sites 验证，或用 read_webpage 读取已有候选页面，或直接整理现有线索输出最终 JSON 收尾。'
         };
       }
     }
