@@ -15,8 +15,10 @@ import {
 import { resourceSearchCommand } from '../src/features/resource-search/command.js';
 import {
   crawlMultiSites,
+  isRelayAllowedTouchGalDomain,
   matchesWorkTitle,
   resolveOverseasProxyUrl,
+  sanitizeSearchKeyword,
   searchAnimeTrace,
   searchBangumi,
   searchDlsite,
@@ -28,6 +30,7 @@ import {
   searchVndb,
   searchWebResources
 } from '../src/features/resource-search/sources.js';
+import { runResourceSearchAgent } from '../src/features/resource-search/agent.js';
 import {
   buildResourceSearchNodes,
   defangUrlForGroup,
@@ -599,6 +602,205 @@ test('东京搜图中转 /v1/resource-search 代查 DLsite / Yahoo 日本及本�
   );
   assert.match(privateText, /https:\/\/www\.vikacg\.com\/post\/41095/);
   assert.match(privateText, /https:\/\/www\.dlsite\.com\/maniax\/work\/=\/product_id\/RJ01208749\.html/);
+});
+
+test('关键词书名号清洗、TouchGal 域名白名单、东京中转扩展 4 站及中文译名二次补查', async (t) => {
+  // 1. 书名号与外层包裹引号清洗（保留正文内标点）
+  assert.equal(sanitizeSearchKeyword('《梦吉原的妖怪》'), '梦吉原的妖怪');
+  assert.equal(sanitizeSearchKeyword('「『千恋＊万花』」'), '千恋＊万花');
+  assert.equal(sanitizeSearchKeyword('【Fate/stay night】'), 'Fate/stay night');
+  assert.equal(sanitizeSearchKeyword('Re:ゼロから始める異世界生活'), 'Re:ゼロから始める異世界生活');
+
+  // 2. TouchGal 中转域名防 SSRF 白名单校验
+  assert.equal(isRelayAllowedTouchGalDomain('www.touchgal.ink'), true);
+  assert.equal(isRelayAllowedTouchGalDomain('touchgal.top'), true);
+  assert.equal(isRelayAllowedTouchGalDomain('127.0.0.1'), false);
+  assert.equal(isRelayAllowedTouchGalDomain('localhost'), false);
+  assert.equal(isRelayAllowedTouchGalDomain('touchgal.ink.evil.com'), false);
+
+  // 3. 东京中转 /v1/resource-search 支持 bangumi / touchgal / shinnku / vndb 并拦截非法 domain
+  const token = 't'.repeat(40);
+  const relayCalls = [];
+  const server = createImageSearchRelay({
+    token,
+    download: async () => ({ buffer: TINY_PNG }),
+    resourceSearch: async (source, query, opts = {}) => {
+      relayCalls.push({ source, query, domain: opts.domain || '' });
+      if (source === 'bangumi') {
+        return {
+          source: 'bangumi',
+          status: 'ok',
+          results: [{
+            source: 'bangumi',
+            siteName: 'Bangumi 番组计划',
+            kind: 'database',
+            id: 'bgm539640',
+            title: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～',
+            titleZh: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～',
+            titleJp: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～',
+            cover: 'https://lain.bgm.tv/pic/cover/l/aa/bb/539640.jpg',
+            url: 'https://bgm.tv/subject/539640'
+          }]
+        };
+      }
+      if (source === 'touchgal') {
+        return {
+          source: 'touchgal',
+          status: 'ok',
+          results: [{
+            source: 'touchgal',
+            siteName: 'TouchGal 资源站',
+            kind: 'free',
+            id: 'tg1',
+            title: '千恋＊万花',
+            url: `https://${opts.domain || 'www.touchgal.ink'}/tg1`,
+            downloads: [{ name: '网盘', url: 'https://pan.example.com/1' }]
+          }]
+        };
+      }
+      return { source, status: 'empty', results: [] };
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
+  const relayUrl = `http://127.0.0.1:${server.address().port}`;
+  const imageSearchSettings = { relayUrl, relayToken: token };
+
+  // 非法 domain 参数必须被拒绝（防 SSRF）
+  assert.equal((await fetch(`${relayUrl}/v1/resource-search`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'touchgal', query: '千恋万花', domain: '127.0.0.1' })
+  })).status, 400);
+  assert.equal((await fetch(`${relayUrl}/v1/resource-search`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'bangumi', query: '千恋万花', domain: 'www.touchgal.ink' })
+  })).status, 400);
+
+  const bgm = await searchBangumi('《夢吉原のあやかし妓楼》', {}, { imageSearchSettings });
+  assert.equal(bgm.status, 'ok');
+  assert.equal(bgm.results[0].id, 'bgm539640');
+  assert.ok(bgm.results[0].coverKey, 'Bangumi 封面应经东京中转签发短期图片凭证');
+
+  const tg = await searchTouchGal('《千恋万花》', { touchgalDomain: 'touchgal.top' }, { imageSearchSettings });
+  assert.equal(tg.status, 'ok');
+  assert.match(tg.results[0].url, /^https:\/\/touchgal\.top\//);
+
+  const shinnku = await searchShinnku('《梦吉原的妖怪》', {}, { imageSearchSettings });
+  assert.equal(shinnku.status, 'empty');
+
+  const vndb = await searchVndb('《梦吉原的妖怪》', {}, { imageSearchSettings });
+  assert.equal(vndb.status, 'empty');
+
+  assert.deepEqual(relayCalls, [
+    { source: 'bangumi', query: '夢吉原のあやかし妓楼', domain: '' },
+    { source: 'touchgal', query: '千恋万花', domain: 'touchgal.top' },
+    { source: 'shinnku', query: '梦吉原的妖怪', domain: '' },
+    { source: 'vndb', query: '梦吉原的妖怪', domain: '' }
+  ]);
+
+  // 4. Agent 首轮去书名号 + 自动交叉扩展应使用规范中文译名和日文原名补查 shionlib 与 touchgal
+  const seenRequests = [];
+  const mockFetch = async (url, init = {}) => {
+    const u = String(url);
+    seenRequests.push({ url: u, body: String(init.body || '') });
+    if (u.includes('kungal.com/api/v1/search/works')) {
+      return new Response(JSON.stringify({
+        items: [{
+          id: '61115',
+          display_name: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～',
+          localized: {
+            'zh-Hans': { value: '梦吉原的妖魅妓楼 ～妖怪大楼再建谭～' },
+            ja: { value: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～' }
+          }
+        }]
+      }), { status: 200 });
+    }
+    if (u.includes('kungal.com/api/v1/works/61115/resources')) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }
+    if (u.includes('kungal.com/api/v1/works/61115')) {
+      return new Response(JSON.stringify({ external_refs: [{ site: 'dlsite', external_id: 'RJ01208749' }] }), { status: 200 });
+    }
+    if (u.includes('shionlib.com/api/search')) {
+      if (decodeURIComponent(u).includes('梦吉原的妖魅妓楼')) {
+        return new Response(JSON.stringify({
+          data: {
+            games: {
+              items: [{
+                id: 999,
+                title_zh: '梦吉原的妖魅妓楼 ～妖怪大楼再建谭～',
+                title_jp: '夢吉原のあやかし妓楼 ～妖怪大楼再建譚～',
+                resources: { count: 0 }
+              }]
+            }
+          }
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: { games: { items: [] } } }), { status: 200 });
+    }
+    if (u.includes('touchgal.ink/api/search')) {
+      return new Response(JSON.stringify({ galgames: [] }), { status: 200 });
+    }
+    if (u.includes('shinnku.com/search')) {
+      return new Response('<html></html>', { status: 200 });
+    }
+    if (u.includes('api.vndb.org/kana/vn')) {
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }
+    if (u.includes('api.bgm.tv/search/subject')) {
+      return new Response(JSON.stringify({ list: [] }), { status: 200 });
+    }
+    if (u.includes('dlsite.com')) {
+      return new Response('[]', { status: 200 });
+    }
+    if (u.includes('steampowered.com')) {
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  };
+
+  const agentResult = await runResourceSearchAgent(
+    { query: '《梦吉原的妖怪》' },
+    {
+      deepseekApiKey: 'sk-test-key',
+      deepseekBaseUrl: 'https://api.deepseek.com/v1',
+      deepseekModel: 'deepseek-chat',
+      timeoutSeconds: 30,
+      sources: {
+        shionlib: true,
+        kungal: true,
+        shinnku: true,
+        touchgal: true,
+        vndb: true,
+        bangumi: true,
+        dlsite: true,
+        steam: true,
+        web: false
+      }
+    },
+    {
+      fetchImpl: mockFetch,
+      webSearchImpl: async () => ({ results: [] }),
+      completeImpl: async () => ({
+        message: {
+          content: JSON.stringify({
+            work: { titleZh: '梦吉原的妖魅妓楼', titleJp: '夢吉原のあやかし妓楼' },
+            freeResources: [],
+            officialResources: []
+          })
+        }
+      })
+    }
+  );
+
+  // 首轮请求不含书名号
+  assert.equal(seenRequests.some((r) => decodeURIComponent(r.url).includes('《') || r.body.includes('《')), false);
+  // 自动扩展应使用标准中文译名“梦吉原的妖魅妓楼”补查 shionlib 与 touchgal
+  assert.equal(seenRequests.some((r) => r.url.includes('shionlib.com/api/search') && decodeURIComponent(r.url).includes('梦吉原的妖魅妓楼')), true);
+  assert.equal(seenRequests.some((r) => r.url.includes('touchgal.ink/api/search') && r.body.includes('梦吉原的妖魅妓楼')), true);
+  assert.equal(agentResult.crawledItems.some((item) => item.source === 'shionlib' && item.id === '999'), true);
 });
 
 

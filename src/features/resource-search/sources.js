@@ -1,11 +1,76 @@
 import { parse } from 'node-html-parser';
-import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { Agent, ProxyAgent, fetch as undiciFetch } from 'undici';
 import { boundedBody, cleanTitle, publicLink } from '../image-search/common.js';
 import { webSearch } from '../../llm/web-search.js';
 
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
 const proxyAgents = new Map();
+let directAgent = null;
+
+export const TOKYO_RELAY_RESOURCE_SOURCES = Object.freeze([
+  'dlsite',
+  'steam',
+  'yahoo',
+  'bangumi',
+  'touchgal',
+  'shinnku',
+  'vndb'
+]);
+
+const WRAPPER_PAIRS = [
+  ['《', '》'],
+  ['「', '」'],
+  ['『', '』'],
+  ['【', '】'],
+  ['“', '”'],
+  ['‘', '’'],
+  ['"', '"'],
+  ["'", "'"]
+];
+
+/**
+ * 清理搜索关键词外层包裹的书名号/引号，避免直连搜索接口把《》当作字面字符导致漏搜。
+ */
+export function sanitizeSearchKeyword(keyword) {
+  const raw = String(keyword || '').trim().slice(0, 120);
+  if (!raw) return '';
+  let current = raw;
+  let stripped = true;
+  while (stripped && current.length >= 2) {
+    stripped = false;
+    for (const [open, close] of WRAPPER_PAIRS) {
+      if (current.startsWith(open) && current.endsWith(close)) {
+        const inner = current.slice(open.length, current.length - close.length).trim();
+        if (inner) {
+          current = inner;
+          stripped = true;
+          break;
+        }
+      }
+    }
+  }
+  return current.slice(0, 120);
+}
+
+export function isRelayAllowedTouchGalDomain(domain) {
+  return typeof domain === 'string' && /^(?:www\.)?touchgal\.[a-z]{2,12}$/i.test(domain.trim());
+}
+
+/**
+ * 直连 fetch 适配器：将 Node 22 / undici 的 autoSelectFamilyAttemptTimeout 从默认 250ms 放宽到 2000ms，
+ * 避免跨欧亚高 RTT（如东京→欧洲 VNDB ~280ms）过早切去无路由 IPv6 而报 UND_ERR_CONNECT_TIMEOUT。
+ */
+function getDirectFetch() {
+  if (!directAgent) {
+    directAgent = new Agent({
+      connect: { autoSelectFamilyAttemptTimeout: 2000 },
+      keepAliveTimeout: 2000,
+      keepAliveMaxTimeout: 5000
+    });
+  }
+  return (url, init = {}) => undiciFetch(url, { ...init, dispatcher: directAgent });
+}
 
 export function resolveOverseasProxyUrl(settings = {}, options = {}) {
   const getCfg = options?.getConfig;
@@ -46,25 +111,26 @@ function getProxyDispatcher(proxyUrl) {
 
 export function getOverseasFetch(settings = {}, options = {}) {
   if (typeof options?.fetchImpl === 'function') return options.fetchImpl;
+  const directFetch = getDirectFetch();
   const proxyUrl = resolveOverseasProxyUrl(settings, options);
-  if (!proxyUrl) return globalThis.fetch;
+  if (!proxyUrl) return directFetch;
   return async (url, init = {}) => {
     const dispatcher = getProxyDispatcher(proxyUrl);
     try {
       const res = await undiciFetch(url, { ...init, dispatcher });
       if (res.status === 403 || res.status === 502) {
         await res.body?.cancel?.().catch?.(() => {});
-        return await globalThis.fetch(url, init);
+        return await directFetch(url, init);
       }
       return res;
     } catch (error) {
       if (init?.signal?.aborted) throw error;
-      return await globalThis.fetch(url, init);
+      return await directFetch(url, init);
     }
   };
 }
 
-async function queryTokyoResourceRelay(source, query, options = {}) {
+async function queryTokyoResourceRelay(source, query, options = {}, extra = {}) {
   if (options?.disableRelay) return null;
   const relay = options?.imageSearchSettings;
   const relayUrl = typeof relay?.relayUrl === 'string' ? relay.relayUrl.trim().replace(/\/+$/, '') : '';
@@ -75,6 +141,10 @@ async function queryTokyoResourceRelay(source, query, options = {}) {
     ...(options?.signal ? [options.signal] : []),
     AbortSignal.timeout(14000)
   ]);
+  const payload = { source, query: String(query || '').slice(0, 120) };
+  if (source === 'touchgal' && isRelayAllowedTouchGalDomain(extra?.domain)) {
+    payload.domain = extra.domain.trim();
+  }
   try {
     const res = await fetchFn(`${relayUrl}/v1/resource-search`, {
       method: 'POST',
@@ -83,7 +153,7 @@ async function queryTokyoResourceRelay(source, query, options = {}) {
         authorization: `Bearer ${relayToken}`,
         'content-type': 'application/json'
       },
-      body: JSON.stringify({ source, query: String(query || '').slice(0, 120) })
+      body: JSON.stringify(payload)
     });
     if (!res.ok) {
       await res.body?.cancel?.().catch?.(() => {});
@@ -383,10 +453,12 @@ const SHION_PLAT = { win: 'Windows', mac: 'macOS', lin: 'Linux', and: 'Android',
 const SHION_TRANS = { official: '官方中文', group: '汉化组', machine: '机翻', none: '原版' };
 
 export async function searchShionlib(keyword, settings = {}, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'shionlib', status: 'empty', results: [] };
+  const fetchFn = options.fetchImpl || getDirectFetch();
   const signal = options.signal;
   const domain = String(settings.shionlibDomain || 'shionlib.com').trim();
-  const url = `https://${domain}/api/search?q=${encodeURIComponent(keyword)}&page=1`;
+  const url = `https://${domain}/api/search?q=${encodeURIComponent(clean)}&page=1`;
   const payload = await fetchJson(url, {
     headers: { referer: `https://${domain}/zh/search/game` }
   }, signal, fetchFn);
@@ -395,7 +467,7 @@ export async function searchShionlib(keyword, settings = {}, options = {}) {
   // 严格按标题相关性过滤：不匹配时返回空，绝不回退拿第 1 条无关游戏充数
   const selected = rawItems.filter((item) => {
     const candidates = [item?.title_zh, item?.title_jp, item?.title_en, ...(Array.isArray(item?.aliases) ? item.aliases : [])];
-    return matchesWorkTitle(keyword, candidates);
+    return matchesWorkTitle(clean, candidates);
   }).slice(0, 2);
 
   const results = await Promise.all(selected.map(async (item) => {
@@ -477,10 +549,12 @@ const KUNGAL_PLAT = { win: 'Windows', and: 'Android', android: 'Android', mac: '
 const KUNGAL_LANG = { 'zh-cn': '简体中文', 'zh-tw': '繁体中文', 'zh-hans': '简体中文', 'zh-hant': '繁体中文', ja: '日文', jp: '日文', en: '英文' };
 
 export async function searchKunGal(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'kungal', status: 'empty', results: [] };
+  const fetchFn = options.fetchImpl || getDirectFetch();
   const signal = options.signal;
   const baseUrl = 'https://www.kungal.com';
-  const searchUrl = `${baseUrl}/api/v1/search/works?q=${encodeURIComponent(keyword)}&page=1&limit=6&include_nsfw=true`;
+  const searchUrl = `${baseUrl}/api/v1/search/works?q=${encodeURIComponent(clean)}&page=1&limit=6&include_nsfw=true`;
   const data = await fetchJson(searchUrl, {}, signal, fetchFn);
   const rawItems = Array.isArray(data?.items) ? data.items : [];
 
@@ -494,7 +568,7 @@ export async function searchKunGal(keyword, _settings, options = {}) {
       loc.ja?.value,
       loc.en?.value
     ];
-    return matchesWorkTitle(keyword, candidates);
+    return matchesWorkTitle(clean, candidates);
   }).slice(0, 2);
 
   const results = await Promise.all(selected.map(async (work) => {
@@ -595,9 +669,17 @@ function shinnkuFileUrl(filePath) {
 }
 
 export async function searchShinnku(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'shinnku', status: 'empty', results: [] };
+  if (!options?.fetchImpl) {
+    const relayed = await queryTokyoResourceRelay('shinnku', clean, options);
+    if (relayed) {
+      return { source: 'shinnku', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
+  }
+  const fetchFn = options.fetchImpl || getDirectFetch();
   const signal = options.signal;
-  const searchUrl = `https://www.shinnku.com/search?q=${encodeURIComponent(keyword)}`;
+  const searchUrl = `https://www.shinnku.com/search?q=${encodeURIComponent(clean)}`;
   const html = await fetchText(searchUrl, {
     headers: { accept: 'text/html,application/xhtml+xml' }
   }, signal, fetchFn);
@@ -623,7 +705,7 @@ export async function searchShinnku(keyword, _settings, options = {}) {
   }
 
   const matchedFiles = rawFiles
-    .filter((f) => matchesWorkTitle(keyword, [f.filePath]))
+    .filter((f) => matchesWorkTitle(clean, [f.filePath]))
     .sort((a, b) => {
       const score = (p) => (p.startsWith('0/win/') ? 100 : p.startsWith('0/') ? 80 : p.startsWith('zd/') ? 50 : 20);
       return score(b.filePath) - score(a.filePath);
@@ -656,8 +738,8 @@ export async function searchShinnku(keyword, _settings, options = {}) {
     source: 'shinnku',
     siteName: '真红小站 (Shinnku)',
     kind: 'free',
-    id: keyword,
-    title: `${keyword}（真红小站直链归档）`,
+    id: clean,
+    title: `${clean}（真红小站直链归档）`,
     url: searchUrl,
     downloads,
     note: `站内匹配到 ${matchedFiles.length} 个直链档案（优先展示前 ${downloads.length} 个版本）`
@@ -704,10 +786,18 @@ function normalizeTouchGalResources(payload) {
 }
 
 export async function searchTouchGal(keyword, settings = {}, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
-  const signal = options.signal;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'touchgal', status: 'empty', results: [] };
   const domain = String(settings.touchgalDomain || 'www.touchgal.ink').trim();
   const token = String(settings.touchgalToken || '').trim();
+  if (!options?.fetchImpl && !token && isRelayAllowedTouchGalDomain(domain)) {
+    const relayed = await queryTokyoResourceRelay('touchgal', clean, options, { domain });
+    if (relayed) {
+      return { source: 'touchgal', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
+  }
+  const fetchFn = options.fetchImpl || getDirectFetch();
+  const signal = options.signal;
   const cookieParts = ['kun-patch-setting-store|state|data|kunNsfwEnable=all'];
   if (token) cookieParts.push(`kun-galgame-patch-moe-token=${token}`);
   const headers = {
@@ -724,7 +814,7 @@ export async function searchTouchGal(keyword, settings = {}, options = {}) {
     cookie: cookieParts.join('; ')
   };
   const body = JSON.stringify({
-    queryString: JSON.stringify([{ type: 'keyword', mode: 'include', name: keyword }]),
+    queryString: JSON.stringify([{ type: 'keyword', mode: 'include', name: clean }]),
     limit: 4,
     page: 1,
     searchOption: {
@@ -742,15 +832,27 @@ export async function searchTouchGal(keyword, settings = {}, options = {}) {
     minRatingCount: 0
   });
 
-  const data = await fetchJson(`https://${domain}/api/search`, {
-    method: 'POST',
-    headers,
-    body
-  }, signal, fetchFn);
+  let data;
+  try {
+    data = await fetchJson(`https://${domain}/api/search`, {
+      method: 'POST',
+      headers,
+      body
+    }, signal, fetchFn);
+  } catch (error) {
+    if (!options?.fetchImpl && token && isRelayAllowedTouchGalDomain(domain)
+      && /Cloudflare Challenge/i.test(String(error?.message || ''))) {
+      const relayed = await queryTokyoResourceRelay('touchgal', clean, options, { domain });
+      if (relayed) {
+        return { source: 'touchgal', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+      }
+    }
+    throw error;
+  }
 
   const rawGames = Array.isArray(data?.galgames) ? data.galgames : [];
   const games = rawGames
-    .filter((g) => matchesWorkTitle(keyword, [g?.name, g?.cnName, g?.jpName]))
+    .filter((g) => matchesWorkTitle(clean, [g?.name, g?.cnName, g?.jpName]))
     .slice(0, 2);
 
   const results = await Promise.all(games.map(async (game) => {
@@ -792,13 +894,21 @@ export async function searchTouchGal(keyword, settings = {}, options = {}) {
  * 7. VNDB Kana API 权威作品与别名检索
  */
 export async function searchVndb(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'vndb', status: 'empty', results: [] };
+  if (!options?.fetchImpl) {
+    const relayed = await queryTokyoResourceRelay('vndb', clean, options);
+    if (relayed) {
+      return { source: 'vndb', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
+  }
+  const fetchFn = options.fetchImpl || getDirectFetch();
   const signal = options.signal;
   const data = await fetchJson('https://api.vndb.org/kana/vn', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      filters: ['search', '=', keyword],
+      filters: ['search', '=', clean],
       fields: 'id,title,alttitle,aliases,released,rating,image.url,developers.name,description',
       results: 4
     })
@@ -838,18 +948,26 @@ export async function searchVndb(keyword, _settings, options = {}) {
 }
 
 /**
- * 8. Bangumi 番组计划游戏条目检索（国内直连稳定，提供中日译名与国内高速封面图）
+ * 8. Bangumi 番组计划游戏条目检索（优先走东京中转避免国内 DNS 污染，不可用时回退直连）
  */
 export async function searchBangumi(keyword, _settings, options = {}) {
-  const fetchFn = options.fetchImpl || globalThis.fetch;
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'bangumi', status: 'empty', results: [] };
+  if (!options?.fetchImpl) {
+    const relayed = await queryTokyoResourceRelay('bangumi', clean, options);
+    if (relayed) {
+      return { source: 'bangumi', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
+    }
+  }
+  const fetchFn = options.fetchImpl || getDirectFetch();
   const signal = options.signal;
-  const url = `https://api.bgm.tv/search/subject/${encodeURIComponent(keyword)}?type=4&responseGroup=small`;
+  const url = `https://api.bgm.tv/search/subject/${encodeURIComponent(clean)}?type=4&responseGroup=small`;
   const data = await fetchJson(url, {
     headers: { 'user-agent': 'qq-agent-plus/1.0 (https://github.com/hjklggfh/qq-agent-plus)' }
   }, signal, fetchFn);
   const rawList = Array.isArray(data?.list) ? data.list : [];
   const items = rawList
-    .filter((item) => matchesWorkTitle(keyword, [item?.name, item?.name_cn]))
+    .filter((item) => matchesWorkTitle(clean, [item?.name, item?.name_cn]))
     .slice(0, 2);
   const results = items.filter((item) => item?.id).map((item) => {
     const titleZh = cleanTitle(item.name_cn || item.name, 120);
@@ -874,17 +992,19 @@ export async function searchBangumi(keyword, _settings, options = {}) {
  * 9. DLsite 同人黄油检索（支持 RJ/VJ/BJ 号直查与关键词搜索；优先走东京中转/本机代理隧道）
  */
 export async function searchDlsite(keyword, settings, options = {}) {
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'dlsite', status: 'empty', results: [] };
   const hasExplicitProxy = Boolean(typeof settings?.proxyUrl === 'string' && settings.proxyUrl.trim());
   const fallbackProxy = resolveOverseasProxyUrl(settings, options);
   if (!hasExplicitProxy) {
-    const relayed = await queryTokyoResourceRelay('dlsite', keyword, options);
+    const relayed = await queryTokyoResourceRelay('dlsite', clean, options);
     if (relayed && (relayed.results.length > 0 || !fallbackProxy)) {
       return { source: 'dlsite', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
     }
   }
   const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
-  const codeMatch = String(keyword || '').match(/\b([RVB]J\d{6,8})\b/i);
+  const codeMatch = clean.match(/\b([RVB]J\d{6,8})\b/i);
   const results = [];
   let lastError = null;
 
@@ -918,7 +1038,7 @@ export async function searchDlsite(keyword, settings, options = {}) {
 
   if (!results.length) {
     try {
-      const searchUrl = `https://www.dlsite.com/maniax/fsr/=/language/jp/sex_category%5B0%5D/male/keyword/${encodeURIComponent(keyword)}/per_page/5/page/1`;
+      const searchUrl = `https://www.dlsite.com/maniax/fsr/=/language/jp/sex_category%5B0%5D/male/keyword/${encodeURIComponent(clean)}/per_page/5/page/1`;
       const html = await fetchText(searchUrl, {
         headers: { cookie: 'adultchecked=1; locale=zh-cn' }
       }, signal, fetchFn);
@@ -967,17 +1087,19 @@ export async function searchDlsite(keyword, settings, options = {}) {
  * 10. Steam 商店接口检索（优先走东京中转/本机代理隧道）
  */
 export async function searchSteam(keyword, settings, options = {}) {
+  const clean = sanitizeSearchKeyword(keyword);
+  if (!clean) return { source: 'steam', status: 'empty', results: [] };
   const hasExplicitProxy = Boolean(typeof settings?.proxyUrl === 'string' && settings.proxyUrl.trim());
   const fallbackProxy = resolveOverseasProxyUrl(settings, options);
   if (!hasExplicitProxy) {
-    const relayed = await queryTokyoResourceRelay('steam', keyword, options);
+    const relayed = await queryTokyoResourceRelay('steam', clean, options);
     if (relayed && (relayed.results.length > 0 || !fallbackProxy)) {
       return { source: 'steam', status: relayed.results.length ? 'ok' : 'empty', results: relayed.results };
     }
   }
   const fetchFn = getOverseasFetch(settings, options);
   const signal = options.signal;
-  const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(keyword)}&l=schinese&cc=CN`;
+  const url = `https://store.steampowered.com/api/storesearch/?term=${encodeURIComponent(clean)}&l=schinese&cc=CN`;
   const data = await fetchJson(url, {}, signal, fetchFn);
   const items = Array.isArray(data?.items) ? data.items.slice(0, 4) : [];
   const results = items.filter((item) => item?.id && item?.name).map((item) => ({
@@ -1034,11 +1156,11 @@ export async function searchWebResources(query, settings, options = {}) {
     options.webSearchImpl ? Promise.resolve([]) : searchYahooJapanWeb(query, settings, options)
   ]);
   options.signal?.throwIfAborted();
-  if (hostSettled.status === 'fulfilled' && Array.isArray(hostSettled.value?.results)) {
-    rawItems.push(...hostSettled.value.results);
-  }
   if (yahooSettled.status === 'fulfilled' && Array.isArray(yahooSettled.value)) {
     rawItems.push(...yahooSettled.value);
+  }
+  if (hostSettled.status === 'fulfilled' && Array.isArray(hostSettled.value?.results)) {
+    rawItems.push(...hostSettled.value.results);
   }
 
   const seenUrls = new Set();
@@ -1060,7 +1182,7 @@ export async function searchWebResources(query, settings, options = {}) {
       snippet,
       url
     });
-    if (results.length >= 6) break;
+    if (results.length >= 8) break;
   }
   return { source: 'web', status: results.length ? 'ok' : 'empty', results };
 }
@@ -1069,11 +1191,18 @@ export async function searchWebResources(query, settings, options = {}) {
  * 供东京搜图中转（src/features/image-search/relay.js）调用的海外资源检索执行器
  */
 export async function runTokyoRelayResourceSearch(source, query, options = {}) {
-  const clean = String(query || '').trim().slice(0, 120);
+  const clean = sanitizeSearchKeyword(query);
   if (!clean) return { source, status: 'empty', results: [] };
   const localOpts = { ...options, disableRelay: true };
   if (source === 'dlsite') return searchDlsite(clean, {}, localOpts);
   if (source === 'steam') return searchSteam(clean, {}, localOpts);
+  if (source === 'bangumi') return searchBangumi(clean, {}, localOpts);
+  if (source === 'shinnku') return searchShinnku(clean, {}, localOpts);
+  if (source === 'vndb') return searchVndb(clean, {}, localOpts);
+  if (source === 'touchgal') {
+    const domain = isRelayAllowedTouchGalDomain(options?.domain) ? options.domain.trim() : 'www.touchgal.ink';
+    return searchTouchGal(clean, { touchgalDomain: domain }, localOpts);
+  }
   if (source === 'yahoo') {
     const results = await searchYahooJapanWeb(clean, {}, localOpts);
     return { source: 'yahoo', status: results.length ? 'ok' : 'empty', results };
@@ -1085,7 +1214,7 @@ export async function runTokyoRelayResourceSearch(source, query, options = {}) {
  * 多站点并发爬取：一次调用同时搜多个已启用站点，避免单一站点漏搜或找错
  */
 export async function crawlMultiSites(keyword, settings = {}, options = {}) {
-  const clean = String(keyword || '').trim().slice(0, 120);
+  const clean = sanitizeSearchKeyword(keyword);
   if (!clean) return { keyword: '', reports: [], results: [] };
   const enabledSources = settings.sources || {};
   const allCrawlable = ['shionlib', 'kungal', 'shinnku', 'touchgal', 'vndb', 'bangumi', 'dlsite', 'steam', 'web'];

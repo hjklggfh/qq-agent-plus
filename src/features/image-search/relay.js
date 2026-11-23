@@ -8,7 +8,11 @@ import { IMAGE_SEARCH_LIMIT_MAX, IMAGE_SEARCH_PLATFORMS } from './config.js';
 import { MAX_IMAGE_BYTES, publicLink } from './common.js';
 import { searchProvider } from './providers.js';
 import { safeFetchPublicBinary } from '../../llm/safe-fetch.js';
-import { runTokyoRelayResourceSearch } from '../resource-search/sources.js';
+import {
+  TOKYO_RELAY_RESOURCE_SOURCES,
+  isRelayAllowedTouchGalDomain,
+  runTokyoRelayResourceSearch
+} from '../resource-search/sources.js';
 
 function respond(res, status, value) {
   if (res.destroyed) return;
@@ -23,8 +27,8 @@ export function createImageSearchRelay(options = {}) {
   const download = options.download || safeFetchPublicBinary;
   const resourceProvider = options.resourceSearch || runTokyoRelayResourceSearch;
   // 仅接受最近搜索结果的短期凭证，不能作为任意 URL 下载代理。
-  // 容量须装下“搜图 全部”一轮的全部凭证（平台数 × 条数上限 × 原图/缩略图），否则先查的平台凭证会被挤掉。
-  const maxImageKeys = IMAGE_SEARCH_PLATFORMS.length * IMAGE_SEARCH_LIMIT_MAX * 2;
+  // 容量须装下“搜图 全部”与多站点资源检索一轮的全部凭证，避免先查的站点凭证被挤掉。
+  const maxImageKeys = Math.max(64, IMAGE_SEARCH_PLATFORMS.length * IMAGE_SEARCH_LIMIT_MAX * 2);
   const images = new Map();
   let googleBlockedUntil = 0;
   let busy = false;
@@ -41,7 +45,7 @@ export function createImageSearchRelay(options = {}) {
     if (req.method !== 'POST') { respond(res, 405, { error: '仅支持 POST' }); req.resume(); return; }
     if (resourceRequest) {
       if (Number(req.headers['content-length']) > 1024) { respond(res, 413, { error: '请求过大' }); req.resume(); return; }
-      if (resourceBusy >= 8) { respond(res, 429, { error: '搜图中转正忙' }); req.resume(); return; }
+      if (resourceBusy >= 24) { respond(res, 429, { error: '搜图中转正忙' }); req.resume(); return; }
       resourceBusy += 1;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15000);
@@ -62,12 +66,19 @@ export function createImageSearchRelay(options = {}) {
         try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { respond(res, 400, { error: '无效 JSON' }); return; }
         const source = String(body?.source || '');
         const query = String(body?.query || '').trim().slice(0, 120);
-        if (!['dlsite', 'steam', 'yahoo'].includes(source) || !query) {
+        const rawDomain = typeof body?.domain === 'string' ? body.domain.trim() : '';
+        if (!TOKYO_RELAY_RESOURCE_SOURCES.includes(source) || !query) {
           respond(res, 400, { error: '未知资源检索源或查询词为空' });
           return;
         }
+        if (rawDomain && (source !== 'touchgal' || !isRelayAllowedTouchGalDomain(rawDomain))) {
+          respond(res, 400, { error: '不支持的中转域名参数' });
+          return;
+        }
         for (const [key, item] of images) if (item.expires < Date.now()) images.delete(key);
-        const report = await resourceProvider(source, query, { signal: controller.signal });
+        const providerOptions = { signal: controller.signal };
+        if (source === 'touchgal' && rawDomain) providerOptions.domain = rawDomain;
+        const report = await resourceProvider(source, query, providerOptions);
         for (const row of (report?.results || []).slice(0, 10)) {
           const url = publicLink(row?.cover);
           if (!url) continue;
@@ -77,8 +88,14 @@ export function createImageSearchRelay(options = {}) {
         }
         while (images.size > maxImageKeys) images.delete(images.keys().next().value);
         respond(res, 200, report);
-      } catch {
-        respond(res, 200, { source: 'unknown', status: 'error', message: '搜图中转处理失败', results: [] });
+      } catch (error) {
+        respond(res, 200, {
+          source: 'unknown',
+          status: 'error',
+          message: controller.signal.aborted ? '搜图中转查询超时' : '搜图中转处理失败',
+          error: String(error?.message ?? error).slice(0, 120),
+          results: []
+        });
       } finally {
         clearTimeout(timer);
         controllers.delete(controller);

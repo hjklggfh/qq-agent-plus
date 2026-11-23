@@ -4,6 +4,7 @@ import { cleanTitle, publicLink } from '../image-search/common.js';
 import {
   crawlMultiSites,
   normalizeTitleForMatch,
+  sanitizeSearchKeyword,
   searchAnimeTrace,
   searchImageRelayClues,
   searchWebResources
@@ -204,14 +205,16 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
 
   // 2. 确定首轮种子关键词并预跑一次多站点并发爬取
   const seedKeywords = [];
-  if (input.query) seedKeywords.push(input.query);
+  const cleanedInputQuery = sanitizeSearchKeyword(input.query);
+  if (cleanedInputQuery) seedKeywords.push(cleanedInputQuery);
   if (imageClues.animetrace?.works?.length) {
     for (const w of imageClues.animetrace.works.slice(0, 2)) {
-      if (!seedKeywords.includes(w)) seedKeywords.push(w);
+      const cleanedWork = sanitizeSearchKeyword(w);
+      if (cleanedWork && !seedKeywords.includes(cleanedWork)) seedKeywords.push(cleanedWork);
     }
   }
   if (!seedKeywords.length && imageClues.relay?.results?.length) {
-    const firstTitle = cleanTitle(imageClues.relay.results[0]?.title, 60);
+    const firstTitle = sanitizeSearchKeyword(cleanTitle(imageClues.relay.results[0]?.title, 60));
     if (firstTitle) seedKeywords.push(firstTitle);
   }
 
@@ -225,15 +228,28 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
     signal?.throwIfAborted();
   }
 
-  // 2.5 自动交叉扩展：若首轮搜的是中文译名（如《梦吉原的妖怪妓楼》），而 KunGal/VNDB/Bangumi 返回了
-  // 日文原名（如 夢吉原のあやかし妓楼）或关联的 DLsite RJ 编号（如 RJ01208749），自动并发补抓一轮日文原名与 RJ 号！
+  // 2.5 自动交叉扩展：若首轮搜的是简称/中文俗称（如《梦吉原的妖怪》），而 KunGal/VNDB/Bangumi 返回了
+  // 日文原名（如 夢吉原のあやかし妓楼）、更准确的中文译名（如 梦吉原的妖魅妓楼）或关联的 DLsite RJ 编号，
+  // 自动并发补抓一轮覆盖全部核心站点！
   const discoveredQueries = [];
   for (const item of crawledMap.values()) {
-    const jpMain = String(item.titleJp || '').split(/[～~－—]/)[0].trim();
+    const jpMain = sanitizeSearchKeyword(String(item.titleJp || '').split(/[～~－—]/)[0]);
     const jpNorm = normalizeTitleForMatch(jpMain);
     if (jpMain && jpNorm.length >= 3 && !searchedNorm.has(jpNorm)) {
       searchedNorm.add(jpNorm);
-      discoveredQueries.push({ keyword: jpMain, sites: ['dlsite', 'bangumi', 'vndb', 'shinnku', 'web'] });
+      discoveredQueries.push({
+        keyword: jpMain,
+        sites: ['shionlib', 'touchgal', 'shinnku', 'bangumi', 'vndb', 'dlsite', 'web']
+      });
+    }
+    const zhMain = sanitizeSearchKeyword(String(item.titleZh || '').split(/[～~－—]/)[0]);
+    const zhNorm = normalizeTitleForMatch(zhMain);
+    if (zhMain && zhNorm.length >= 2 && !searchedNorm.has(zhNorm)) {
+      searchedNorm.add(zhNorm);
+      discoveredQueries.push({
+        keyword: zhMain,
+        sites: ['shionlib', 'touchgal', 'shinnku', 'bangumi', 'vndb', 'kungal']
+      });
     }
     for (const rj of Array.isArray(item.dlsiteCodes) ? item.dlsiteCodes.slice(0, 1) : []) {
       const rjNorm = normalizeTitleForMatch(rj);
@@ -245,7 +261,7 @@ export async function runResourceSearchAgent(input, settings, options = {}) {
   }
   if (discoveredQueries.length) {
     const extraReports = await Promise.all(
-      discoveredQueries.slice(0, 2).map((q) => crawlMultiSites(q.keyword, settings, { ...options, sites: q.sites }))
+      discoveredQueries.slice(0, 3).map((q) => crawlMultiSites(q.keyword, settings, { ...options, sites: q.sites }))
     );
     signal?.throwIfAborted();
     for (const rep of extraReports) {
