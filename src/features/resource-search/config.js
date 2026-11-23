@@ -21,7 +21,7 @@ export const DEFAULT_RESOURCE_SEARCH_CONFIG = Object.freeze({
   timeoutSeconds: 150,
   maxResults: 5,
   includeImages: true,
-  safeGroupLinks: true,
+  safeGroupLinks: false,
   deepseekBaseUrl: 'https://api.deepseek.com/v1',
   deepseekModel: 'deepseek-chat',
   deepseekApiKey: '',
@@ -144,7 +144,7 @@ export function resourceSearchConfig(raw = {}) {
     enabled: input.enabled === true,
     allowPrivate: input.allowPrivate === true,
     includeImages: input.includeImages !== false,
-    safeGroupLinks: input.safeGroupLinks !== false,
+    safeGroupLinks: input.safeGroupLinks === true,
     allowedGroups: Array.isArray(input.allowedGroups)
       ? [...new Set(input.allowedGroups.map(String).filter((id) => /^\d{5,15}$/.test(id)))].slice(0, 500)
       : [],

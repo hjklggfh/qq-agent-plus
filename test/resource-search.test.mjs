@@ -82,6 +82,7 @@ test('resourceSearch 配置校验与密钥脱敏', () => {
   assert.equal(cfg.enabled, false);
   assert.equal(cfg.cooldownSeconds, 15);
   assert.equal(cfg.timeoutSeconds, 150);
+  assert.equal(cfg.safeGroupLinks, false);
   assert.deepEqual(cfg.allowedGroups, []);
   assert.equal(cfg.sources.kungal, true);
   assert.equal(cfg.sources.shinnku, true);
@@ -386,7 +387,7 @@ test('后台 DeepSeek 独立检索循环与 ResourceSearchManager 完整流程�
             work: {
               titleZh: '千恋＊万花',
               titleJp: '千恋＊万花',
-              codes: ['v19073', 'VNDB:v19073'],
+              codes: ['v19073', 'VNDB:v19073', 'BGM:172612', 'Bangumi:172612'],
               developers: ['ゆずソフト (Yuzusoft)', 'ゆずソフト', '心愿屋汉化组'],
               tags: ['纯爱', '和风'],
               cover: 'https://t.shionlib.com/cover.png',
@@ -426,20 +427,21 @@ test('后台 DeepSeek 独立检索循环与 ResourceSearchManager 完整流程�
 
     // 验证无关游戏已被过滤
     assert.doesNotMatch(cardTexts, /恋心如花俏绚烂/);
-    // 验证编号去重（不出现 v19073 · VNDB:v19073）
-    assert.match(cardTexts, /识别编号：VNDB:v19073/);
+    // 验证编号去重（不出现 v19073 · VNDB:v19073 或 BGM:172612 · Bangumi:172612）
+    assert.match(cardTexts, /识别编号：VNDB:v19073 · Bangumi:172612/);
     assert.doesNotMatch(cardTexts, /v19073 · VNDB:v19073/);
+    assert.doesNotMatch(cardTexts, /BGM:172612/);
     // 验证厂商去重且剔除汉化组
     assert.match(cardTexts, /社团\/厂商：ゆずソフト \(Yuzusoft\)/);
     assert.doesNotMatch(cardTexts, /社团\/厂商：.*心愿屋汉化组/);
-    // 验证书音、鲲Gal、真红小站全部合并进 3 条气泡且群聊自动防风控断链
+    // 默认关闭群聊链接混淆时，保留 3 条精简气泡且直接输出完整原始链接（不加 [.]）
     assert.equal(forwardedCards[0].payload.nodes.length, 3);
     assert.match(cardTexts, /书音的图书馆/);
     assert.match(cardTexts, /鲲 Galgame/);
     assert.match(cardTexts, /真红小站/);
-    assert.match(cardTexts, /kungal\[\.\]com\/galgame\/resource\/78093/);
-    assert.match(cardTexts, /shinnku\[\.\]com\/files\/shinnku/);
-    assert.doesNotMatch(cardTexts, /https?:\/\//i, '群聊开启防风控断链时不应输出原始 https:// 裸链');
+    assert.match(cardTexts, /https:\/\/www\.kungal\.com\/galgame\/resource\/78093/);
+    assert.match(cardTexts, /https:\/\/www\.shinnku\.com\/files\/shinnku/);
+    assert.doesNotMatch(cardTexts, /\[\.\]/, '默认关闭混淆时不应向链接插入 [.]');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
@@ -488,10 +490,12 @@ test('资源检索控制台设置页渲染、群白名单、冷却与密钥保�
   const doc = window.document;
 
   assert.equal(doc.querySelector('#resource-search-enabled').checked, false);
+  assert.equal(doc.querySelector('#resource-search-safe-group-links').checked, false);
   assert.equal(doc.querySelectorAll('[id^="resource-search-source-"]').length, 10);
   assert.match(doc.body.textContent, /自动复用「模型 API」中的 DeepSeek Key/);
 
   doc.querySelector('#resource-search-enabled').checked = true;
+  doc.querySelector('#resource-search-safe-group-links').checked = true;
   doc.querySelector('#resource-search-groups').value = '100001\n100002\n100001';
   doc.querySelector('#resource-search-cooldown').value = '25';
   await vm.runInContext('saveResourceSearchSettings()', context);
@@ -499,6 +503,7 @@ test('资源检索控制台设置页渲染、群白名单、冷却与密钥保�
   const patch = JSON.parse(calls[0].options.body);
   assert.equal(calls[0].url, '/api/resource-search/settings');
   assert.equal(patch.enabled, true);
+  assert.equal(patch.safeGroupLinks, true);
   assert.equal(patch.cooldownSeconds, 25);
   assert.deepEqual(patch.allowedGroups, ['100001', '100002']);
   assert.equal(Object.hasOwn(patch, 'deepseekApiKey'), false);
@@ -614,6 +619,16 @@ test('东京搜图中转 /v1/resource-search 代查 DLsite / Yahoo 日本及本�
     sanitizeGroupText('解压工具：https://share.weiyun.com/abc v1.03 (1.93 GB) file.rar 步兵 妓院', { stripUrls: true, softenSensitive: true }),
     '解压工具： v1.03 (1.93 GB) file.rar 步·兵 妓·院'
   );
+  const groupDefaultText = formatResourceSearchReply(
+    { parsed: null, crawledItems: [...dlReport.results, ...webReportWithYahoo.results] },
+    { maxResults: 5 },
+    '梦吉原的妖怪妓楼',
+    { chatKind: 'group' }
+  );
+  assert.match(groupDefaultText, /https:\/\/www\.vikacg\.com\/post\/41095/);
+  assert.match(groupDefaultText, /https:\/\/www\.dlsite\.com\/maniax\/work\/=\/product_id\/RJ01208749\.html/);
+  assert.doesNotMatch(groupDefaultText, /\[\.\]/);
+
   const groupText = formatResourceSearchReply(
     { parsed: null, crawledItems: [...dlReport.results, ...webReportWithYahoo.results] },
     { maxResults: 5, safeGroupLinks: true },

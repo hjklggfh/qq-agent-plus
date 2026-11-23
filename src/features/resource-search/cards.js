@@ -82,7 +82,7 @@ function normalizeCodeLabel(raw) {
   if (!s) return '';
   if (/^(?:vndb:)?v\d+$/i.test(s)) return `VNDB:${s.replace(/^vndb:/i, '').toLowerCase()}`;
   if (/^[rvb]j\d{6,8}$/i.test(s)) return s.toUpperCase();
-  if (/^(?:bgm|bangumi:)\d+$/i.test(s)) return `Bangumi:${s.replace(/^(?:bgm|bangumi:)/i, '')}`;
+  if (/^(?:bgm:?|bangumi:)\d+$/i.test(s)) return `Bangumi:${s.replace(/^(?:bgm:?|bangumi:)/i, '')}`;
   if (/^steam:\d+$/i.test(s)) return `Steam:${s.replace(/^steam:/i, '')}`;
   return s;
 }
@@ -416,7 +416,7 @@ function formatOfficialListBlock(officialResources, safeGroup = false) {
 
 export function formatResourceSearchReply(agentResult, settings = {}, query = '', options = {}) {
   const maxResults = Number(settings.maxResults) || 5;
-  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks !== false;
+  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks === true;
   const work = resolveWorkProfile(agentResult, query);
   const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
   const blocks = [formatWorkHeader(work, safeGroup)];
@@ -436,7 +436,7 @@ export function formatResourceSearchReply(agentResult, settings = {}, query = ''
 export async function buildResourceSearchNodes(agentResult, settings = {}, options = {}) {
   const maxResults = Number(settings.maxResults) || 5;
   const query = options.query || '';
-  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks !== false;
+  const safeGroup = options.chatKind === 'group' && settings.safeGroupLinks === true;
   const work = resolveWorkProfile(agentResult, query);
   const { freeResources, officialResources } = collectResourceLists(agentResult, work, query, maxResults);
   if (!freeResources.length && !officialResources.length && !work.summary && !work.characters.length) {
