@@ -330,10 +330,11 @@ class WebNovelAdapters:
         return json.loads(text)
 
     # ---------------- Cool18 ----------------
-    async def search_cool18(self, query: str, *, mode: str = "search", limit: int = 16) -> list[dict[str, Any]]:
+    async def search_cool18(self, query: str, *, mode: str = "search", limit: int = 32, page: int = 1) -> list[dict[str, Any]]:
         parsed = parse_search_query(query) if mode == "search" else {"keywords": [], "tags": [], "exclude": [], "tgQuery": ""}
+        safe_page = max(1, min(20, int(page or 1)))
         if mode == "latest":
-            url = "https://www.cool18.com/bbs4/index.php"
+            url = "https://www.cool18.com/bbs4/index.php" if safe_page == 1 else f"https://www.cool18.com/bbs4/index.php?app=forum&act=gold&p={safe_page}"
             html_text = await self._fetch_text(url)
             items = parse_cool18_search_html(html_text, mode="latest")
             return items[:limit]
@@ -344,7 +345,8 @@ class WebNovelAdapters:
         if not search_word:
             return []
         q = urllib.parse.quote(search_word)
-        url = f"https://www.cool18.com/bbs4/index.php?action=search&bbsdr=bbs4&act=threadsearch&app=forum&keywords={q}&submit=%E6%9F%A5%E8%AF%A2&first=1"
+        page_param = f"&p={safe_page}" if safe_page > 1 else ""
+        url = f"https://www.cool18.com/bbs4/index.php?action=search&bbsdr=bbs4&act=threadsearch&app=forum&keywords={q}&submit=%E6%9F%A5%E8%AF%A2&first=1{page_param}"
         html_text = await self._fetch_text(url)
         items = parse_cool18_search_html(html_text, mode="search")
 
@@ -381,11 +383,17 @@ class WebNovelAdapters:
                 last_err = exc
         raise RuntimeError(f"ESJZone 请求失败: {last_err}")
 
-    async def search_esjzone(self, query: str, *, mode: str = "search", limit: int = 16) -> list[dict[str, Any]]:
+    async def search_esjzone(self, query: str, *, mode: str = "search", limit: int = 32, page: int = 1) -> list[dict[str, Any]]:
         parsed = parse_search_query(query) if mode == "search" else {"keywords": [], "tags": [], "exclude": [], "tgQuery": ""}
+        safe_page = max(1, min(20, int(page or 1)))
         if mode == "latest":
-            html_text = await self._fetch_esj("/list-01/")
+            path_q = "/list-01/" if safe_page == 1 else f"/list-01-{safe_page}.html"
+            html_text = await self._fetch_esj(path_q)
             return parse_esjzone_cards(html_text)[:limit]
+
+        # ESJZone tag page returns up to 40 works on page 1 without server-side static page 2.
+        if safe_page > 1:
+            return []
 
         # ESJZone tag/keyword search endpoint: /tags/<word>/
         terms = parsed["tags"] + parsed["keywords"]
@@ -469,15 +477,17 @@ class WebNovelAdapters:
         query: str,
         *,
         mode: str = "search",
-        limit: int = 16,
+        limit: int = 32,
+        page: int = 1,
         pixiv_cookie: str = "",
         min_chars: int = 1500,
     ) -> list[dict[str, Any]]:
         headers = self._pixiv_headers(pixiv_cookie)
         has_cookie = bool(str(pixiv_cookie or "").strip())
+        safe_page = max(1, min(20, int(page or 1)))
 
         if mode == "latest":
-            # Pull Chinese recent novels via tag search "中文" or "简体中文"
+            # Pull Chinese recent novels via tag search "中文"
             query = "中文"
 
         parsed = parse_search_query(query)
@@ -490,8 +500,9 @@ class WebNovelAdapters:
         pixiv_mode = "r18" if (req_r18 and has_cookie) else ("all" if has_cookie else "safe")
 
         raw_entries: list[dict[str, Any]] = []
-        # Fetch up to 2 pages so after stripping RP/recruitment spam we still have plenty of real novels.
-        for page_no in (1, 2):
+        start_p = (safe_page - 1) * 2 + 1
+        # Fetch 2 upstream pages per batch so after stripping RP/recruitment spam we still get rich results.
+        for page_no in (start_p, start_p + 1):
             url = (
                 f"https://www.pixiv.net/ajax/search/novels/{q}"
                 f"?word={q}&order=date_d&mode={pixiv_mode}&p={page_no}&s_mode=s_tag&lang=zh"
@@ -503,7 +514,7 @@ class WebNovelAdapters:
             if not rows:
                 break
             raw_entries.extend(rows)
-            if len(raw_entries) >= 80:
+            if len(raw_entries) >= 120:
                 break
 
         items: list[dict[str, Any]] = []

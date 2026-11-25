@@ -4,7 +4,7 @@ const SEARCH_RE = /^\/?(?:搜小说|找小说|搜书|找书|小说搜索)(?:[:�
 const HELP_RE = /^\/?(?:小说帮助|搜小说帮助|搜书帮助|小说指令)$/i;
 const LATEST_RE = /^\/?(?:(?:小说|蓝p|蓝P|px|p站小说|pixiv小说|禁忌书屋|书屋|cool18|esj|esjzone|轻小说|开心书库|开心)\s*最新|最新小说)$/i;
 const SHORTCUT_RE = /^\/?(?:搜?p站小说|搜?pixiv小说|搜?禁忌书屋|搜?书屋|cool18|搜?esjzone|搜?esj|搜?蓝p|搜?蓝P|搜?开心书库|搜?开心)(?:[:：\s]+([\s\S]+))?$/i;
-const EXPLICIT_NAV_RE = /^\/?(?:小说|搜小说|搜书)\s*(?:第\s*(\d{1,3})\s*页|(上一页|下一页)|([1-9]\d?))$/i;
+const EXPLICIT_NAV_RE = /^\/?(?:小说|搜小说|搜书)\s*(?:第\s*(\d{1,3})\s*页|(上一页|下一页)|([1-9]\d{0,2}))$/i;
 
 function sanitizeQuery(raw) {
   return String(raw || '')
@@ -67,10 +67,10 @@ export function novelSearchCommand(raw, hasList = false) {
   if (text === '上一页' || text === '下一页') {
     return { kind: 'turn', direction: text === '下一页' ? 1 : -1 };
   }
-  match = text.match(/^([1-9]\d?)$/);
+  match = text.match(/^([1-9]\d{0,2})$/);
   if (match) {
     const index = Number(match[1]);
-    if (index >= 1 && index <= 40) return { kind: 'select', index };
+    if (index >= 1 && index <= 500) return { kind: 'select', index };
   }
   return null;
 }

@@ -298,16 +298,19 @@ class NovelRelayApp:
         limit: int,
         summary_override: str,
         max_bytes: int,
-    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        tg_offsets: dict[str, int] | None = None,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, int]]:
         items: list[dict[str, Any]] = []
         channel_errors: dict[str, str] = {}
+        next_offsets: dict[str, int] = dict(tg_offsets or {})
         strict_local = bool(len(parsed["tags"]) > 1 or parsed["exclude"] or len(parsed["keywords"]) > 1)
-        per_channel_fetch = min(60, max(limit, 40 if strict_local else 20))
+        per_channel_fetch = min(60, max(limit, 40 if strict_local else 24))
 
         async with self.tg_lock:
             for cid in target_ids:
                 meta = self.channels[cid]
                 sm = summary_override if summary_override in ("clean", "minimal") else meta["summaryMode"]
+                offset_id = int((tg_offsets or {}).get(cid) or 0)
                 try:
                     entity = await self._resolve_channel(cid)
                     await self._throttle_tg()
@@ -315,6 +318,7 @@ class NovelRelayApp:
                         messages = await self.client.get_messages(
                             entity,
                             limit=per_channel_fetch,
+                            max_id=offset_id,
                             filter=InputMessagesFilterDocument(),
                         )
                     else:
@@ -323,9 +327,10 @@ class NovelRelayApp:
                             entity,
                             search=tg_q,
                             limit=per_channel_fetch,
+                            max_id=offset_id,
                             filter=InputMessagesFilterDocument(),
                         )
-                        if not messages and (len(parsed["tags"]) > 1 or (parsed["tags"] and parsed["keywords"])):
+                        if not messages and offset_id == 0 and (len(parsed["tags"]) > 1 or (parsed["tags"] and parsed["keywords"])):
                             fallback_q = f"#{parsed['tags'][0]}" if parsed["tags"] else parsed["keywords"][0]
                             await self._throttle_tg()
                             messages = await self.client.get_messages(
@@ -339,7 +344,11 @@ class NovelRelayApp:
                     channel_errors[cid] = str(exc)
                     continue
 
+                min_seen_id = 0
                 for msg in (messages or []):
+                    mid = int(getattr(msg, "id", 0) or 0)
+                    if mid > 0 and (min_seen_id == 0 or mid < min_seen_id):
+                        min_seen_id = mid
                     doc_info = _extract_document_info(msg)
                     if not doc_info:
                         continue
@@ -374,9 +383,11 @@ class NovelRelayApp:
                     ):
                         continue
                     items.append(entry)
+                if min_seen_id > 0:
+                    next_offsets[cid] = min_seen_id
 
         items.sort(key=lambda x: x["ts"], reverse=True)
-        return items, channel_errors
+        return items, channel_errors, next_offsets
 
     async def handle_search(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
@@ -407,16 +418,19 @@ class NovelRelayApp:
             tg_ids = list(self.channels.keys())
 
         summary_override = str(body.get("summaryMode") or "").strip().lower()
-        limit = max(1, min(40, int(body.get("limit") or 24)))
+        limit = max(1, min(80, int(body.get("limit") or 64)))
+        page = max(1, min(20, int(body.get("page") or 1)))
         max_bytes = min(self.max_file_bytes, max(1024 * 1024, int(body.get("maxFileBytes") or self.max_file_bytes)))
         pixiv_cookie = str(body.get("pixivCookie") or "").strip()
         pixiv_min_chars = max(0, min(20000, int(body.get("pixivMinChars") if body.get("pixivMinChars") is not None else 1500)))
+        raw_offsets = body.get("tgOffsets")
+        tg_offsets = {str(k).lower(): int(v) for k, v in raw_offsets.items() if str(v).isdigit()} if isinstance(raw_offsets, dict) else {}
 
         parsed = parse_search_query(raw_query) if mode == "search" else {"tgQuery": "", "keywords": [], "tags": [], "exclude": []}
         cache_key = json.dumps({
             "mode": mode, "q": raw_query, "src": req_sources, "chs": tg_ids,
-            "limit": limit, "sm": summary_override, "mb": max_bytes,
-            "hasCk": bool(pixiv_cookie), "pmc": pixiv_min_chars,
+            "limit": limit, "page": page, "sm": summary_override, "mb": max_bytes,
+            "hasCk": bool(pixiv_cookie), "pmc": pixiv_min_chars, "off": tg_offsets,
         }, sort_keys=True)
         cached = self.search_cache.get(cache_key)
         if cached and time.monotonic() - cached[0] < 60:
@@ -424,7 +438,9 @@ class NovelRelayApp:
 
         source_errors: dict[str, str] = {}
         buckets: list[list[dict[str, Any]]] = []
-        per_source_limit = min(20, max(8, limit))
+        per_source_limit = min(40, max(16, limit))
+        paginatable_got_hits = False
+        next_tg_offsets: dict[str, int] = dict(tg_offsets)
 
         # Run enabled web adapters concurrently for fast response.
         web_tasks: list[tuple[str, Any]] = []
@@ -432,49 +448,59 @@ class NovelRelayApp:
             web_tasks.append((
                 "pixiv",
                 self.web_adapters.search_pixiv(
-                    raw_query, mode=mode, limit=per_source_limit,
+                    raw_query, mode=mode, limit=per_source_limit, page=page,
                     pixiv_cookie=pixiv_cookie, min_chars=pixiv_min_chars,
                 ),
             ))
         if "cool18" in req_sources:
             web_tasks.append((
                 "cool18",
-                self.web_adapters.search_cool18(raw_query, mode=mode, limit=per_source_limit),
+                self.web_adapters.search_cool18(raw_query, mode=mode, limit=per_source_limit, page=page),
             ))
         if "esjzone" in req_sources:
             web_tasks.append((
                 "esjzone",
-                self.web_adapters.search_esjzone(raw_query, mode=mode, limit=per_source_limit),
+                self.web_adapters.search_esjzone(raw_query, mode=mode, limit=per_source_limit, page=page),
             ))
 
         if web_tasks:
             web_results = await asyncio.gather(*(coro for _, coro in web_tasks), return_exceptions=True)
             for (src_name, _), res in zip(web_tasks, web_results):
                 if isinstance(res, Exception):
-                    LOG.warning("web source=%s failed: %s", src_name, res)
+                    LOG.warning("web source=%s page=%d failed: %s", src_name, page, res)
                     source_errors[src_name] = str(res)
                 elif isinstance(res, list) and res:
                     buckets.append(res)
+                    if src_name in ("pixiv", "cool18") or (src_name == "esjzone" and mode == "latest"):
+                        if len(res) >= 8:
+                            paginatable_got_hits = True
 
-        # Telegram channels: run only if enabled & authorized; if user explicitly requested ONLY telegram while unauthorized, report it clearly.
+        # Telegram channels: run only if enabled & authorized.
         if "telegram" in req_sources and tg_ids:
             if self.client is not None and self.authorized:
-                tg_items, tg_errs = await self._search_telegram_channels(
+                tg_items, tg_errs, next_tg_offsets = await self._search_telegram_channels(
                     mode=mode, raw_query=raw_query, parsed=parsed, target_ids=tg_ids,
                     limit=per_source_limit, summary_override=summary_override, max_bytes=max_bytes,
+                    tg_offsets=tg_offsets,
                 )
                 source_errors.update(tg_errs)
                 if tg_items:
                     buckets.append(tg_items)
+                    if len(tg_items) >= 8:
+                        paginatable_got_hits = True
             elif len(req_sources) == 1:
-                return web.json_response({"error": "Telegram 频道尚未完成登录授权（可先使用 Pixiv / 禁忌书屋 / ESJZone）"}, status=503)
+                return web.json_response({"error": "Telegram 频道尚未完成登录授权（可先使用其他书源）"}, status=503)
 
         merged = _interleave_buckets(buckets, limit)
+        has_more = bool(page < 20 and paginatable_got_hits and len(merged) > 0)
         payload = {
             "ok": True,
             "mode": mode,
             "query": raw_query,
             "parsed": parsed,
+            "page": page,
+            "hasMore": has_more,
+            "nextTgOffsets": next_tg_offsets,
             "total": len(merged),
             "items": merged,
             "channelErrors": source_errors,

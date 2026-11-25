@@ -126,10 +126,44 @@ test('NovelSearchManager 多源全流程：搜索出卡、翻页、选号下载�
       if (url.endsWith('/v1/search')) {
         const body = JSON.parse(init.body);
         assert.equal(body.query, '#纯爱');
+        assert.equal(body.limit, 64);
         assert.equal(body.pixivMinChars, 1500);
         assert.equal(body.pixivCookie, 'pixiv-secret-cookie');
         assert.deepEqual(body.sources, ['pixiv', 'cool18', 'esjzone', 'telegram']);
-        return new Response(JSON.stringify({ ok: true, items: mockItems, total: mockItems.length, channelErrors: {} }), {
+        if (body.page === 2) {
+          const moreItems = [
+            mockItems[0], // duplicate should be skipped
+            {
+              ...mockItems[0],
+              id: '2001',
+              msgId: 2001,
+              title: '第二批新加载小说1'
+            },
+            {
+              ...mockItems[1],
+              id: '2002',
+              msgId: 2002,
+              title: '第二批新加载小说2'
+            },
+            {
+              ...mockItems[2],
+              id: '2003',
+              msgId: 2003,
+              title: '第二批新加载小说3'
+            },
+            {
+              ...mockItems[0],
+              id: '2004',
+              msgId: 2004,
+              title: '第二批新加载小说4'
+            }
+          ];
+          return new Response(JSON.stringify({ ok: true, page: 2, hasMore: false, items: moreItems, total: moreItems.length, channelErrors: {} }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({ ok: true, page: 1, hasMore: true, items: mockItems, total: mockItems.length, channelErrors: {} }), {
           status: 200,
           headers: { 'content-type': 'application/json' }
         });
@@ -218,6 +252,16 @@ test('NovelSearchManager 多源全流程：搜索出卡、翻页、选号下载�
     assert.equal(forwarded.length, 2);
     assert.equal(forwarded[1].payload.nodes.length, 3);
     assert.match(forwarded[1].payload.nodes[1].data.content[0].data.text, /【6】《测试小说第6本》/);
+
+    // 4b. 在末页再发「下一页」：自动向东京续拉 page=2，去重追加 4 本（总数 11 本 -> 第 3 页显示第 11 本）
+    await manager.handle(novelSearchCommand('下一页', true), 'group:892485992', 31);
+    assert.equal(forwarded.length, 3);
+    assert.match(forwarded[2].payload.nodes[0].data.content[0].data.text, /已加载 11 本 · 第 3\/3 页/);
+    assert.match(forwarded[2].payload.nodes[1].data.content[0].data.text, /【11】《第二批新加载小说4》/);
+
+    // 4c. 已经 hasMore=false 再发「下一页」：友好提示已到末页
+    await manager.handle(novelSearchCommand('下一页', true), 'group:892485992', 32);
+    assert.match(sent.at(-1).msgs[0], /已经是最后一页/);
 
     // 5. 选序号 1 下载并上传，验证编号回退提示、转码提示与临时文件立即清理
     await manager.handle(novelSearchCommand('1', true), 'group:892485992', 4);

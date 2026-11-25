@@ -41,8 +41,8 @@ function buildNovelBlocks(session, page) {
 
   const headerLines = [
     heading,
-    `共找到 ${total} 本 · 第 ${safePage}/${totalPages} 页`,
-    `💡 直接回复序号（如 ${start + 1}）下载上传群文件；回复「下一页」「上一页」翻页。`
+    `已加载 ${total} 本 · 第 ${safePage}/${totalPages} 页${session.hasMore ? '（后面还有更多）' : ''}`,
+    `💡 直接回复序号（如 ${start + 1}）下载上传群文件；回复「下一页」「上一页」翻页${session.hasMore ? '，末页发「下一页」可继续加载更多' : ''}。`
   ];
 
   const blocks = [{

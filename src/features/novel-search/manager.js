@@ -8,6 +8,12 @@ import { buildNovelSearchNodes, formatNovelHelp, formatNovelSearchText } from '.
 
 const LIST_TTL_MS = 30 * 60 * 1000;
 const MAX_LISTS = 200;
+const DEFAULT_BATCH_SIZE = 64;
+const MAX_SESSION_ITEMS = 500;
+
+function itemDedupKey(item) {
+  return `${String(item?.source || item?.channel || '')}:${String(item?.channel || '')}:${String(item?.id || item?.msgId || '')}`;
+}
 
 const SOURCE_LABELS = Object.freeze({
   pixiv: 'Pixiv小说',
@@ -245,7 +251,15 @@ export class NovelSearchManager {
         ? command.page
         : session.page + command.direction;
       if (targetPage < 1) return reply('已经是第 1 页了。');
-      if (targetPage > totalPages) return reply(`已经是最后一页（第 ${totalPages} 页）了。`);
+      if (targetPage > totalPages) {
+        if (!session.hasMore || session.items.length >= MAX_SESSION_ITEMS) {
+          return reply(`已经是最后一页（第 ${totalPages} 页）了。`);
+        }
+        if (this.activeByChat.has(chatKey)) {
+          return reply('正在加载更多结果，请稍候。');
+        }
+        return this.startTask(chatKey, (signal) => this.loadMoreAndSend(session, chatKey, targetPage, runId, settings, signal));
+      }
       return this.sendCard(chatKey, session, targetPage, runId);
     }
 
@@ -321,7 +335,8 @@ export class NovelSearchManager {
         query,
         sources: resolved.sources,
         channels: resolved.channelIds,
-        limit: 32,
+        limit: DEFAULT_BATCH_SIZE,
+        page: 1,
         summaryMode: settings.summaryMode,
         pixivCookie: this.effectivePixivCookie(settings)
       }, settings, { fetchImpl: this.fetchImpl, signal });
@@ -346,13 +361,20 @@ export class NovelSearchManager {
         return;
       }
 
+      const seenKeys = new Set(items.map(itemDedupKey));
       const session = {
         mode,
         query,
         channelLabel: resolved.label,
+        sources: resolved.sources,
+        channelIds: resolved.channelIds,
         items,
+        seenKeys,
         pageSize: settings.pageSize,
         page: 1,
+        upstreamPage: Number(data?.page || 1),
+        hasMore: data?.hasMore === true && items.length < MAX_SESSION_ITEMS,
+        tgOffsets: data?.nextTgOffsets && typeof data.nextTgOffsets === 'object' ? data.nextTgOffsets : {},
         channelErrors: data?.channelErrors || {},
         updatedAt: Date.now()
       };
@@ -374,6 +396,56 @@ export class NovelSearchManager {
         at: startedAt
       });
       await this.send(chatKey, [`小说检索失败：${msg}`], { runId, preserveCode: false });
+    }
+  }
+
+  async loadMoreAndSend(session, chatKey, targetPage, runId, settings, signal) {
+    const nextUpstreamPage = Number(session.upstreamPage || 1) + 1;
+    try {
+      const data = await searchNovelsViaRelay({
+        mode: session.mode,
+        query: session.query,
+        sources: session.sources,
+        channels: session.channelIds,
+        limit: DEFAULT_BATCH_SIZE,
+        page: nextUpstreamPage,
+        tgOffsets: session.tgOffsets,
+        summaryMode: settings.summaryMode,
+        pixivCookie: this.effectivePixivCookie(settings)
+      }, settings, { fetchImpl: this.fetchImpl, signal });
+
+      const incoming = Array.isArray(data?.items) ? data.items : [];
+      const seen = session.seenKeys || new Set(session.items.map(itemDedupKey));
+      session.seenKeys = seen;
+      let added = 0;
+      for (const item of incoming) {
+        if (session.items.length >= MAX_SESSION_ITEMS) break;
+        const k = itemDedupKey(item);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        session.items.push(item);
+        added += 1;
+      }
+      session.upstreamPage = nextUpstreamPage;
+      if (data?.nextTgOffsets && typeof data.nextTgOffsets === 'object') {
+        session.tgOffsets = { ...session.tgOffsets, ...data.nextTgOffsets };
+      }
+      session.hasMore = data?.hasMore === true && added > 0 && session.items.length < MAX_SESSION_ITEMS;
+      session.updatedAt = Date.now();
+
+      if (added === 0) {
+        const totalPages = Math.max(1, Math.ceil(session.items.length / session.pageSize));
+        await this.send(chatKey, [`已经翻到底了（共 ${totalPages} 页，${session.items.length} 本），没有更多结果。`], { runId, preserveCode: false });
+        return;
+      }
+
+      const newTotalPages = Math.max(1, Math.ceil(session.items.length / session.pageSize));
+      const clampedPage = Math.min(targetPage, newTotalPages);
+      await this.sendCard(chatKey, session, clampedPage, runId);
+    } catch (error) {
+      if (signal?.aborted) return;
+      const msg = String(error?.message || error || '未知错误');
+      await this.send(chatKey, [`继续加载下一页失败：${msg}`], { runId, preserveCode: false });
     }
   }
 
