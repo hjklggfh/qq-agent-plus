@@ -8,7 +8,7 @@ try { ({ Window: WindowClass } = await import('happy-dom')); } catch (e) { if (e
 const skip = WindowClass ? false : 'happy-dom未安装';
 function page(t) {
   const window = new WindowClass(); t.after(() => window.happyDOM.abort());
-  const calls = [], state = { config: { pixiv: { enabled: true, hasCookie: true, chatRatings: { 'group:100001': ['r18'] } } } };
+  const calls = [], state = { config: { allow: { groups: ['100001', '100002'] }, pixiv: { enabled: true, hasCookie: true, chatRatings: { 'group:100001': ['r18'] }, meituGroups: [] } } };
   const api = async (url, options) => { calls.push({ url, options }); return { settings: options ? JSON.parse(options.body) : state.config.pixiv, overrides: {}, history: [], running: false }; };
   const context = vm.createContext({ state, api, window, $: (s) => window.document.querySelector(s), esc: (v) => String(v).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;') });
   vm.runInContext(toClassicScript(fs.readFileSync(new URL('../ui/pages/pixiv.js', import.meta.url), 'utf8')), context);
@@ -42,4 +42,23 @@ test('刷新任务不能覆盖正在输入的会话分级或网络设置', { ski
   vm.runInContext('bindPixivSection()', context); await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(doc.querySelector('#pixiv-metadata').value, 'https://example.test/{pid}');
   assert.match(doc.querySelector('#pixiv-records').textContent, /当前空闲/);
+});
+test('/美图 独立群开关默认全关，勾选并保存后写入 meituGroups', { skip }, async (t) => {
+  const { doc, calls, context } = page(t);
+  const cbs = Array.from(doc.querySelectorAll('.pixiv-meitu-group-cb'));
+  assert.equal(cbs.length, 2);
+  assert.equal(cbs.every((cb) => !cb.checked), true);
+  assert.equal(doc.querySelector('#pixiv-meitu-private').checked, false);
+  assert.equal(doc.querySelector('#pixiv-meitu-cooldown').value, '10');
+  assert.equal(doc.querySelector('#pixiv-meitu-max-mb').value, '15');
+  cbs[1].checked = true;
+  doc.querySelector('#pixiv-meitu-groups').value = '200003';
+  await vm.runInContext('savePixivSettings()', context);
+  const patch = JSON.parse(calls[0].options.body);
+  assert.deepEqual(patch.meituGroups, ['100002', '200003']);
+  assert.equal(patch.meituAllowPrivate, false);
+  assert.equal(patch.meituCooldownSeconds, 10);
+  assert.equal(patch.meituMaxImageBytes, 15 * 1048576);
+  doc.querySelector('#pixiv-meitu-groups').value = 'not-a-group';
+  await assert.rejects(vm.runInContext('savePixivSettings()', context));
 });

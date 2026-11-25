@@ -44,6 +44,35 @@ function metadataImageUrl(raw) {
     return url.href;
   } catch { return raw; }
 }
+function formatMeituCaption(item) {
+  const title = titleText(item?.title) || '（无题）';
+  const author = titleText(item?.author) || '（未知作者）';
+  const tags = (Array.isArray(item?.tags) ? item.tags : [])
+    .map((t) => titleText(typeof t === 'string' ? t : (t?.tag ?? t?.name ?? t?.translated_name ?? '')).trim())
+    .filter(Boolean)
+    .slice(0, 15);
+  const tagLine = tags.join('、').slice(0, 240);
+  const lines = [`标题: ${title}`, `作者: ${author}`];
+  if (tagLine) lines.push(`标签: ${tagLine}`);
+  lines.push(`PID: ${item.pid}`);
+  return lines.join('\n');
+}
+function meituCandidateUrls(item, hasProxy) {
+  const raw = Array.isArray(item?.imageUrls) && item.imageUrls.length
+    ? item.imageUrls
+    : (item?.imageUrl ? [item.imageUrl] : []);
+  const normalized = raw.map((u) => {
+    try {
+      const parsed = new URL(u);
+      if (parsed.hostname === 'i.pximg.net' && !hasProxy) parsed.hostname = 'i.pixiv.re';
+      return parsed.href;
+    } catch { return ''; }
+  }).filter(Boolean);
+  // 方案 A：仅保留原图(original)与官方高清(regular/master1200)，避免回落为小缩略图。
+  const preferred = normalized.filter((u) => /\/img-original\/|\/img-master\//.test(u) && !/\/c\/\d+x\d+/.test(u));
+  const list = preferred.length ? preferred : normalized.filter((u) => !/\/c\/\d+x\d+/.test(u));
+  return list.slice(0, 2);
+}
 
 export class PixivManager {
   constructor(options) {
@@ -59,6 +88,8 @@ export class PixivManager {
     this.active = null;
     this.task = null;
     this.cooldowns = new Map();
+    this.meituActive = new Map();
+    this.meituCooldowns = new Map();
     this.engine = options.engine || createPixivEngine({ stateDir: this.stateDir, getSettings: () => this.settings(), log: options.log, fetchImpl: options.fetchImpl });
     this.files = new PixivFileCache(path.join(this.dir, 'file-cache'), () => this.settings());
     this.files.sweep();
@@ -68,6 +99,20 @@ export class PixivManager {
   }
   settings() { return pixivConfig(this.options.getConfig().pixiv); }
   allowed(chatKey) { return this.settings().enabled && this.options.canRun(chatKey); }
+  meituAllowed(chatKey) {
+    if (!this.options.canRun(chatKey)) return false;
+    const s = this.settings();
+    const [kind, id] = String(chatKey || '').split(':');
+    if (kind === 'group') return s.meituGroups.includes(id);
+    if (kind === 'private') return s.meituAllowPrivate === true;
+    return false;
+  }
+  isSafeForMeitu(item) {
+    if (!item || !item.pid) return false;
+    const marked = this.overrides[item.pid];
+    if (marked) return marked.rating === 'safe';
+    return this.engine.ratingKnown(item) && this.engine.ratingOf(item) === 0;
+  }
   migrateState() {
     if (!this.settings().enabled) return;
     const old = path.join(this.options.dataDir, 'plugin-state', 'pixiv-illust');
@@ -100,8 +145,22 @@ export class PixivManager {
   }
   enforce() {
     if (this.active && (!this.allowed(this.active.chatKey) || JSON.stringify(this.settings()) !== this.active.settings)) this.active.controller.abort();
+    for (const [chatKey, entry] of this.meituActive.entries()) {
+      if (!this.meituAllowed(chatKey)) entry.controller.abort();
+    }
   }
-  async stop() { clearInterval(this.cacheTimer); this.active?.controller.abort(); await this.task; await this.engine.dispose?.(); registerBuiltinFeature({ id: 'pixiv' }); }
+  async stop() {
+    clearInterval(this.cacheTimer);
+    this.active?.controller.abort();
+    const pending = [this.task];
+    for (const entry of this.meituActive.values()) {
+      entry.controller.abort();
+      if (entry.task) pending.push(entry.task);
+    }
+    await Promise.allSettled(pending.filter(Boolean));
+    await this.engine.dispose?.();
+    registerBuiltinFeature({ id: 'pixiv' });
+  }
   cache(item) {
     if (!item || !this.engine.ratingKnown(item)) return;
     this.metadata[item.pid] = { ...item, xRestrict: this.engine.ratingOf(item), ratingKnown: true, cachedAt: Date.now() };
@@ -109,29 +168,32 @@ export class PixivManager {
     this.metadata = Object.fromEntries(entries);
     writeJson(path.join(this.dir, 'metadata.json'), this.metadata);
   }
-  async detail(pid, signal) {
-    const cached = this.metadata[pid];
-    if (cached && Date.now() - cached.cachedAt < 86400000) return cached;
+  async detail(pid, signal, { imageSize = null } = {}) {
     const s = this.settings();
+    const targetSize = imageSize || s.imageSize;
+    const cached = this.metadata[pid];
+    const cacheHasOriginal = targetSize !== 'original'
+      || (Array.isArray(cached?.imageUrls) && cached.imageUrls.some((u) => /\/img-original\//.test(u)));
+    if (cached && cacheHasOriginal && Date.now() - cached.cachedAt < 86400000) return cached;
     const template = s.metadataUrlTemplate || 'https://www.pixiv.net/ajax/illust/{pid}';
     // 默认图片链路是国内可用的 Lolicon + pixiv.re，不把官方直连当必需依赖。
     if (!s.metadataUrlTemplate && !s.proxyUrl) return { pid };
     try {
-      const raw = await this.engine.requestJson(template.replaceAll('{pid}', pid));
+      const raw = await this.engine.requestJson(template.replaceAll('{pid}', pid), { signal });
       const body = raw?.illust || raw?.body?.illust || raw?.body || (raw?.success === true ? raw.data : raw);
       if (raw.error || String(body?.id ?? body?.illust_id) !== pid) throw new Error('作品详情无效');
       const item = this.engine.normalizeItem(body);
       if (!item) throw new Error('作品详情无效');
       const count = Number(body.pageCount ?? body.page_count);
       if (Number.isInteger(count) && count > 0) item.pageCount = Math.min(10000, count);
-      item.imageUrls = this.engine.pickSizeUrls(body.urls || body.image_urls || {}, s.imageSize).map(metadataImageUrl);
+      item.imageUrls = this.engine.pickSizeUrls(body.urls || body.image_urls || {}, targetSize).map(metadataImageUrl);
       const appPages = body.meta_pages || body.pages;
-      if (Array.isArray(appPages)) item.pages = appPages.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.image_urls || p.urls || {}, s.imageSize).map(metadataImageUrl));
+      if (Array.isArray(appPages)) item.pages = appPages.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.image_urls || p.urls || {}, targetSize).map(metadataImageUrl));
       if (!item.pageCount && item.pages?.length) item.pageCount = item.pages.length;
       if (!item.pages?.length && item.pageCount > 1 && (!s.metadataUrlTemplate || template.startsWith('https://www.pixiv.net/ajax/illust/'))) {
         try {
-          const list = await this.engine.requestJson(`https://www.pixiv.net/ajax/illust/${pid}/pages`);
-          if (Array.isArray(list.body)) item.pages = list.body.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.urls || {}, s.imageSize));
+          const list = await this.engine.requestJson(`https://www.pixiv.net/ajax/illust/${pid}/pages`, { signal });
+          if (Array.isArray(list.body)) item.pages = list.body.slice(0, 1000).map((p) => this.engine.pickSizeUrls(p.urls || {}, targetSize));
         } catch { signal.throwIfAborted(); /* 用详情地址推导页码，仍保留准确页数。 */ }
       }
       this.cache(item);
@@ -166,6 +228,134 @@ export class PixivManager {
     if (this.cooldowns.size > 1000) this.cooldowns.delete(this.cooldowns.keys().next().value);
     this.task = this.run(args, chatKey, `pixiv-${messageId}`, controller, signal).finally(() => { this.active = null; this.task = null; });
     return this.task;
+  }
+  startMeitu(args, chatKey, messageId, replyMessageId = null, signal = null) {
+    if (!this.meituAllowed(chatKey)) return Promise.resolve({ ignored: true });
+    if (this.meituActive.has(chatKey)) return Promise.resolve({ content: '上一张美图还在获取中，请稍候。', isError: true, immediate: true });
+    const s = this.settings();
+    if (Date.now() - (this.meituCooldowns.get(chatKey) || 0) < s.meituCooldownSeconds * 1000) {
+      return Promise.resolve({ content: '美图请求过于频繁，请稍后再试。', isError: true, immediate: true });
+    }
+    const controller = new AbortController();
+    this.meituCooldowns.set(chatKey, Date.now());
+    if (this.meituCooldowns.size > 1000) this.meituCooldowns.delete(this.meituCooldowns.keys().next().value);
+    const entry = { controller, task: null };
+    this.meituActive.set(chatKey, entry);
+    const task = this.runMeitu(args, chatKey, `pixiv-meitu-${messageId}`, replyMessageId, controller, signal)
+      .finally(() => { if (this.meituActive.get(chatKey) === entry) this.meituActive.delete(chatKey); });
+    entry.task = task;
+    return task;
+  }
+  async runMeitu(args, chatKey, runId, replyMessageId, controller, parentSignal) {
+    const s = this.settings();
+    const timeoutMs = Math.min(Math.max(Number(s.timeoutMs) || 15000, 15000) * 3, 90000);
+    const signal = AbortSignal.any([controller.signal, ...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(timeoutMs)]);
+    const keyword = String(args?.keyword || '').trim().slice(0, 100);
+    const record = { id: randomUUID(), chatKey, format: 'meitu', ...(keyword ? { keyword } : {}), startedAt: new Date().toISOString(), status: 'running', pages: [], failedPages: [], cacheImageHits: 0, cachePdfHits: 0 };
+    this.history.push(record); this.history = this.history.slice(-50);
+    const save = () => writeJson(path.join(this.dir, 'history.json'), this.history);
+    const guard = setInterval(() => this.enforce(), 500);
+    let sending = false;
+    try {
+      if (!this.options.image) throw new Error('当前宿主不支持单图发送');
+      this.engine.loadState(); this.engine.sweepTemp?.(); save();
+      const meituSettings = {
+        ...this.engine.settings(),
+        imageSize: 'original',
+        maxImageBytes: s.meituMaxImageBytes,
+        downsampleOverBytes: 0
+      };
+      // 强制仅检索全年龄（0 = safe），永不请求 R18。
+      const found = await this.engine.searchIllusts(meituSettings, keyword, 1, new Set([0]), { signal });
+      const safeItems = (found.items || []).filter((item) => this.isSafeForMeitu(item));
+      const poolLimit = Math.max(s.poolSize, 10);
+      const exclude = new Set([...this.engine.seenSet(), ...this.engine.deadSet()]);
+      let works = this.engine.buildTryList(safeItems, exclude, poolLimit, 1, Math.max(s.retryCandidates, 3));
+      // 若同关键词下的候选恰好都已发过，允许在安全结果内重新抽卡避免空手返回。
+      if (!works.length && safeItems.length) {
+        works = this.engine.buildTryList(safeItems, this.engine.deadSet(), poolLimit, 1, Math.max(s.retryCandidates, 3));
+      }
+      if (!works.length) throw new Error(keyword ? `没有找到“${keyword}”相关的全年龄作品，请换个关键词试试。` : '暂时没有获取到可用美图，请稍后再试。');
+
+      let lastError = null;
+      const hasProxy = Boolean(this.engine.resolveProxyUrl(meituSettings));
+      for (const candidate of works) {
+        signal.throwIfAborted();
+        if (!this.meituAllowed(chatKey)) throw new Error('当前会话已关闭美图功能。');
+        let work = candidate;
+        let urls = meituCandidateUrls(work, hasProxy);
+        if (!urls.length) {
+          const detailed = await this.detail(work.pid, signal, { imageSize: 'original' });
+          if (!this.isSafeForMeitu(detailed)) continue;
+          work = { ...work, ...detailed, tags: detailed.tags?.length ? detailed.tags : work.tags };
+          urls = meituCandidateUrls(work, hasProxy);
+        }
+        if (!urls.length) continue;
+
+        let got = null;
+        try {
+          // 优先原图（不走东京 /image 压缩、不做本地 ffmpeg 降采样），超限或失败按方案 A 回退官方 regular。
+          got = await this.engine.fetchImage(
+            { ...work, imageUrl: '', imageUrls: urls, thumbnail: '' },
+            meituSettings,
+            { allowTemplate: false, skipRelay: true, skipDownsample: true, signal }
+          );
+          const buffer = fs.readFileSync(got.file);
+          if (!imageType(buffer)) throw new Error('返回内容不是支持的图片');
+          try { fs.unlinkSync(got.file); } catch { /* 临时目录后续清理 */ }
+          got = null;
+
+          if (!this.meituAllowed(chatKey)) throw new Error('当前会话已关闭美图功能。');
+          signal.throwIfAborted();
+          const caption = formatMeituCaption(work);
+          sending = true;
+          await this.options.image(chatKey, {
+            url: `base64://${buffer.toString('base64')}`,
+            bytes: buffer.length,
+            label: titleText(work.title) || `Pixiv ${work.pid}`,
+            text: caption
+          }, {
+            runId,
+            ...(replyMessageId !== null && replyMessageId !== undefined && String(replyMessageId).trim() !== ''
+              ? { replyToMessageId: replyMessageId }
+              : {}),
+            signal
+          });
+          sending = false;
+          record.pages.push({ pid: work.pid, page: 1 });
+          record.status = 'done';
+          this.cache(work);
+          this.engine.markSeen(work.pid);
+          return { content: `已发送美图 PID ${work.pid}` };
+        } catch (error) {
+          if (got?.file) { try { fs.rmSync(got.file, { force: true }); } catch { /* 保留主流程 */ } }
+          if (sending) throw error;
+          signal.throwIfAborted();
+          lastError = error;
+          record.failedPages.push({
+            pid: work.pid,
+            page: 1,
+            reason: downloadFailure(error),
+            ...(Number.isInteger(Number(error?.status)) ? { status: Number(error.status) } : {})
+          });
+          if ([404, 410].includes(Number(error?.status))) this.engine.markDead(work.pid);
+        }
+      }
+      throw new Error(lastError ? downloadFailure(lastError) : '暂时没有获取到可发送的美图，请稍后再试。');
+    } catch (error) {
+      record.status = sending ? 'send-unknown' : signal.aborted ? 'cancelled' : 'failed';
+      const content = sending
+        ? '美图发送结果未确认，请先检查聊天记录。'
+        : signal.aborted
+          ? '美图获取已取消或超时，请稍后再试。'
+          : String(error?.message || '获取美图失败').slice(0, 300);
+      record.error = content;
+      return { content, isError: true, sendUnknown: sending };
+    } finally {
+      record.finishedAt = new Date().toISOString();
+      try { save(); } catch { /* 落盘失败不触发重复发送 */ }
+      clearInterval(guard);
+    }
   }
   async run(args, chatKey, runId, controller, parentSignal) {
     const s = this.settings();

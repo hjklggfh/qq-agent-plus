@@ -9,3 +9,12 @@ export function pixivCommand(raw) {
   const link = text.match(/^https?:\/\/(?:www\.)?pixiv\.net\/(?:[a-z]{2}\/)?(?:artworks|i)\/(\d{5,12})(?:\?[^\s]*)?$/i);
   return link ? { pid: link[1], startPage: 1, ...output } : null;
 }
+
+// 随机美图直通指令：支持 `/美图` 与 `/美图 <关键词>`（调用侧已剥离指向本机器人的 @ 段）。
+export function meituCommand(raw) {
+  const text = String(raw || '').trim();
+  const match = text.match(/^\/美图(?:\s+(.+))?$/s);
+  if (!match) return null;
+  const keyword = String(match[1] || '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  return { mode: 'meitu', keyword };
+}

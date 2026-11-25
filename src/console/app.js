@@ -53,7 +53,7 @@ import { HaiguiTangManager } from '../features/haigui-tang/manager.js';
 import { haiguiTangCommand } from '../features/haigui-tang/command.js';
 import { installHaiguiTangRoutes } from '../features/haigui-tang/routes.js';
 import { parseAdminChatAccessCommand, executeAdminChatAccessCommand } from '../features/admin-chat-access.js';
-import { pixivCommand } from '../features/pixiv/command.js';
+import { pixivCommand, meituCommand } from '../features/pixiv/command.js';
 import { installPixivRoutes } from '../features/pixiv/routes.js';
 import { initJmFeature } from '../features/jm-suomingor-host.js';
 import { TrpgManager } from '../features/trpg/manager.js';
@@ -637,6 +637,7 @@ export function createApp({
   });
   const pixiv = new PixivManager({
     dataDir: DATA_DIR, getConfig, updateConfig, canRun: canRunFunctions, onebot, log: moduleLog('pixiv'),
+    image: (chatKey, payload, options) => sender.image(chatKey, payload, options),
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
@@ -1185,6 +1186,13 @@ export function createApp({
     const resSearchCommand = !isSelf && resourceSearchCommand(event.message ?? event.raw_message);
     const novelCommand = !isSelf && novelSearchCommand(commandText, novelSearch.hasList(chatKey));
     const pidCommand = !isSelf && pixivCommand(commandText);
+    const hasAnyAt = Boolean(segments?.some((segment) => segment?.type === 'at'))
+      || (!segments && /\[CQ:at,/i.test(rawMessage));
+    const meituParsed = !isSelf && (!hasAnyAt || mentionsSelf)
+      ? meituCommand(kind === 'group' ? jmCommandText : commandText)
+      : null;
+    const meituCmd = meituParsed && pixiv.meituAllowed(chatKey) ? meituParsed : null;
+    const meituConsumeSilent = Boolean(meituParsed && !meituCmd && mentionsSelf);
     const haiguiCommand = !isSelf && haiguiTangCommand(commandText, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
     const adminAccessCommand = !isSelf && kind === 'private' && senderId === id
       && senderId === String(cfgNow.admin?.ownerUin || '')
@@ -1206,7 +1214,7 @@ export function createApp({
     };
     const runtimeMode = chatRuntimeMode(chatKey);
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || novelCommand || pidCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || novelCommand || pidCommand || meituCmd || meituConsumeSilent || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1281,6 +1289,21 @@ export function createApp({
             await sender.sendTextBatch(chatKey, [result.content], { runId: `pixiv-hint-${stored.id}`, preserveCode: false });
           }
         }).catch((error) => log('[pixiv] PID 任务异常:', error?.name || 'Error'));
+      }
+      return;
+    }
+    if (meituCmd || meituConsumeSilent) {
+      store.markRead(chatKey, [stored.id]);
+      if (meituCmd && canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void pixiv.startMeitu(meituCmd, chatKey, stored.id, event.message_id).then(async (result) => {
+          if (result?.isError && !result.sendUnknown && !result.ignored && canRunFunctions(chatKey) && !orchestrator.paused) {
+            await sender.sendTextBatch(chatKey, [result.content], {
+              runId: `pixiv-meitu-hint-${stored.id}`,
+              replyToMessageId: event.message_id ?? null,
+              preserveCode: false
+            });
+          }
+        }).catch((error) => log('[pixiv] 美图任务异常:', error?.name || 'Error'));
       }
       return;
     }

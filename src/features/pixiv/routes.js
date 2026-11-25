@@ -23,6 +23,10 @@ export function installPixivRoutes(app, manager) {
         patch.chatRatings = { __replace__: patch.chatRatings.__replace__ || patch.chatRatings };
         patch.chatRatingsMigrated = true;
       }
+      if (Object.hasOwn(patch, 'meituGroups')) {
+        const list = patch.meituGroups?.__replace__ ?? patch.meituGroups;
+        patch.meituGroups = [...new Set(list.map(String))];
+      }
       app.updateConfig({ pixiv: patch }); manager.enforce();
       app.auditWrite?.('pixiv.settings', '/api/pixiv/settings', { req, ok: true });
       respond(res, 200, { ok: true, ...manager.snapshot() });
@@ -37,6 +41,7 @@ export function installPixivRoutes(app, manager) {
   });
   app.addRoute('POST', '/api/pixiv/cancel', async (req, res) => {
     manager.active?.controller.abort();
+    for (const entry of manager.meituActive?.values?.() || []) entry.controller.abort();
     app.auditWrite?.('pixiv.cancel', '/api/pixiv/cancel', { req, ok: true });
     respond(res, 200, { ok: true });
   });

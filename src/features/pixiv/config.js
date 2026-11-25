@@ -13,7 +13,9 @@ export const DEFAULT_PIXIV_CONFIG = Object.freeze({
   searchUrlTemplate: 'https://www.pixiv.net/ajax/search/artworks/{kw}?word={kw}&order=date_d&mode=all&p={page}&s_mode=s_tag&type=all&lang=zh',
   imageUrlTemplate: 'https://pixiv.re/{pid}.png', proxyUrl: '', proxyScope: 'all', imageRelayUrl: '', cookie: '',
   userAgent: '', excludeAI: false, stateCap: 2000, retryCandidates: 3,
-  deadTtlDays: 7, poolSize: 5, pageRetryOnce: 1
+  deadTtlDays: 7, poolSize: 5, pageRetryOnce: 1,
+  meituGroups: Object.freeze([]), meituAllowPrivate: false,
+  meituCooldownSeconds: 10, meituMaxImageBytes: 15 * 1024 * 1024
 });
 const RATINGS = ['safe', 'r18', 'r18g'];
 export function validRatings(value) {
@@ -24,7 +26,13 @@ export function validatePixivPatch(patch) {
   for (const [key, value] of Object.entries(patch)) {
     if (key.startsWith('has')) continue;
     if (!(key in DEFAULT_PIXIV_CONFIG)) throw new Error(`未知 PID 设置：${key}`);
-    if (['enabled', 'excludeAI', 'chatRatingsMigrated', 'cacheEnabled'].includes(key) && typeof value !== 'boolean') throw new Error('PID 开关须为布尔值');
+    if (['enabled', 'excludeAI', 'chatRatingsMigrated', 'cacheEnabled', 'meituAllowPrivate'].includes(key) && typeof value !== 'boolean') throw new Error('PID 开关须为布尔值');
+    if (key === 'meituGroups') {
+      const list = value?.__replace__ ?? value;
+      if (!Array.isArray(list) || list.length > 500 || list.some((id) => typeof id !== 'string' || !/^\d{5,15}$/.test(id))) {
+        throw new Error('美图群白名单须为最多500项群号文本数组');
+      }
+    }
     if (key === 'ratings' && !validRatings(value)) throw new Error('至少允许一种有效分级');
     const chats = value?.__replace__ ?? value;
     if (key === 'chatRatings' && (!chats || typeof chats !== 'object' || Array.isArray(chats)
@@ -49,11 +57,17 @@ export function validatePixivPatch(patch) {
     ['taskTimeoutSeconds', 30, 600], ['forwardBudgetBytes', 256 * 1024, 8 * 1024 * 1024],
     ['maxImageBytes', 64 * 1024, 16 * 1024 * 1024], ['downsampleOverBytes', 0, 16 * 1024 * 1024],
     ['downsampleMaxEdge', 256, 4096], ['downsampleQuality', 2, 31], ['cooldownSeconds', 0, 3600],
-    ['stateCap', 50, 10000], ['retryCandidates', 0, 10], ['deadTtlDays', 0, 365], ['poolSize', 1, 50], ['pageRetryOnce', 0, 2]
+    ['stateCap', 50, 10000], ['retryCandidates', 0, 10], ['deadTtlDays', 0, 365], ['poolSize', 1, 50], ['pageRetryOnce', 0, 2],
+    ['meituCooldownSeconds', 0, 3600], ['meituMaxImageBytes', 1048576, 30 * 1048576]
   ]) if (key in patch && (!Number.isInteger(patch[key]) || patch[key] < min || patch[key] > max)) throw new Error(`${key} 必须在 ${min}—${max} 之间`);
 }
 export function pixivConfig(raw = {}) {
-  return { ...structuredClone(DEFAULT_PIXIV_CONFIG), ...raw };
+  const merged = { ...structuredClone(DEFAULT_PIXIV_CONFIG), ...raw };
+  merged.meituGroups = Array.isArray(merged.meituGroups)
+    ? [...new Set(merged.meituGroups.map(String).filter((id) => /^\d{5,15}$/.test(id)))].slice(0, 500)
+    : [];
+  merged.meituAllowPrivate = merged.meituAllowPrivate === true;
+  return merged;
 }
 
 // 先于默认值合并执行。旧插件设置仅归档保留，旧插件不再装载。
