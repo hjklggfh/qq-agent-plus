@@ -49,12 +49,6 @@ import { NovelSearchManager } from '../features/novel-search/manager.js';
 import { novelSearchCommand } from '../features/novel-search/command.js';
 import { installNovelSearchRoutes } from '../features/novel-search/routes.js';
 import { PixivManager } from '../features/pixiv/manager.js';
-import { XSearchManager } from '../features/x-search/manager.js';
-import { xSearchCommand } from '../features/x-search/command.js';
-import { installXSearchRoutes } from '../features/x-search/routes.js';
-import { EhentaiManager } from '../features/ehentai/manager.js';
-import { ehentaiCommand } from '../features/ehentai/command.js';
-import { installEhentaiRoutes } from '../features/ehentai/routes.js';
 import { HaiguiTangManager } from '../features/haigui-tang/manager.js';
 import { haiguiTangCommand } from '../features/haigui-tang/command.js';
 import { installHaiguiTangRoutes } from '../features/haigui-tang/routes.js';
@@ -647,16 +641,6 @@ export function createApp({
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
-  const xSearch = new XSearchManager({
-    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, onebot, complete: chatCompletion,
-    file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
-    forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options)
-  });
-  const ehentai = new EhentaiManager({
-    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, log: moduleLog('ehentai'),
-    file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
-    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
-  });
   const haiguiTang = new HaiguiTangManager({
     dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, log: moduleLog('haigui-tang'), complete: chatCompletion,
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
@@ -1201,8 +1185,6 @@ export function createApp({
     const resSearchCommand = !isSelf && resourceSearchCommand(event.message ?? event.raw_message);
     const novelCommand = !isSelf && novelSearchCommand(commandText, novelSearch.hasList(chatKey));
     const pidCommand = !isSelf && pixivCommand(commandText);
-    const xCommand = !isSelf && xSearchCommand(commandText);
-    const ehCommand = !isSelf && ehentaiCommand(commandText, ehentai.hasList(chatKey));
     const haiguiCommand = !isSelf && haiguiTangCommand(commandText, haiguiTang.isActive(chatKey), haiguiTang.isSelecting(chatKey));
     const adminAccessCommand = !isSelf && kind === 'private' && senderId === id
       && senderId === String(cfgNow.admin?.ownerUin || '')
@@ -1224,7 +1206,7 @@ export function createApp({
     };
     const runtimeMode = chatRuntimeMode(chatKey);
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || novelCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || novelCommand || pidCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1249,7 +1231,6 @@ export function createApp({
           onChange: (feature, target) => {
             if (feature === '基础聊天') orchestrator.enforceChatControl(target);
             if (feature === '跑团') orchestrator.enforceTrpgState();
-            if (feature === 'E站') ehentai.sync();
             if (feature === '群搜图') imageSearch.enforce();
             if (feature === '群找资源') resourceSearch.enforce();
             if (feature === '群搜小说') novelSearch.enforce();
@@ -1292,18 +1273,6 @@ export function createApp({
       return;
     }
     // 明确搜图指令在入库时即消费，防止同群其他模型任务或重启重新领取。
-    if (xCommand) {
-      store.markRead(chatKey, [stored.id]);
-      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
-        void xSearch.start(xCommand, chatKey, stored.id, senderId).then(async (result) => {
-          if (result.error && canRunFunctions(chatKey) && !orchestrator.paused) {
-            await sender.sendTextBatch(chatKey, [result.error], { runId: `x-search-hint-${stored.id}`, preserveCode: false });
-          }
-          if (result.sendUnknown) log('[x-search] 发送结果待核对，未自动重发');
-        }).catch(() => log('[x-search] 指令处理失败'));
-      }
-      return;
-    }
     if (pidCommand) {
       store.markRead(chatKey, [stored.id]);
       if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
@@ -1312,18 +1281,6 @@ export function createApp({
             await sender.sendTextBatch(chatKey, [result.content], { runId: `pixiv-hint-${stored.id}`, preserveCode: false });
           }
         }).catch((error) => log('[pixiv] PID 任务异常:', error?.name || 'Error'));
-      }
-      return;
-    }
-    if (ehCommand) {
-      store.markRead(chatKey, [stored.id]);
-      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
-        void ehentai.handle(ehCommand, chatKey, stored.id).then(async (result) => {
-          if (result.error && !result.sendUnknown && canRunFunctions(chatKey) && !orchestrator.paused) {
-            try { await sender.sendTextBatch(chatKey, [result.error], { runId: `ehentai-error-${stored.id}`, preserveCode: false }); }
-            catch (error) { log('[ehentai] 错误提示发送失败:', error?.message ?? error); }
-          }
-        }).catch((error) => log('[ehentai] 指令异常:', error?.message ?? error));
       }
       return;
     }
@@ -4085,7 +4042,6 @@ export function createApp({
     resourceSearch.enforce();
     novelSearch.enforce();
     pixiv.enforce();
-    xSearch.enforce();
     dailyReport.enforce();
     for (const [chatKey, previousMode] of previousModes) {
       if (conversationConfigForChat(chatKey).mode !== previousMode) {
@@ -4813,8 +4769,6 @@ export function createApp({
     await resourceSearch.stop();
     await novelSearch.stop();
     await pixiv.stop();
-    await xSearch.stop();
-    ehentai.stop();
     onebot.close();
     await orchestrator.abortAll();
     await Promise.allSettled([...ingress.values()]);
@@ -4868,8 +4822,6 @@ export function createApp({
     auditWrite
   }, novelSearch);
   installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
-  installXSearchRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, xSearch);
-  installEhentaiRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, ehentai);
   installHaiguiTangRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, haiguiTang);
 
   return {
@@ -4879,7 +4831,6 @@ export function createApp({
     resourceSearch,
     novelSearch,
     pixiv,
-    xSearch,
     haiguiTang,
     onebot,
     store,

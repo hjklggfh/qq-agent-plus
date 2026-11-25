@@ -14,9 +14,7 @@ import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validateResourceSearchPatch } from '../features/resource-search/config.js';
 import { validateNovelSearchPatch } from '../features/novel-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
-import { validateXSearchPatch } from '../features/x-search/config.js';
 import { validateDailyReportPatch } from '../features/daily-report.js';
-import { validateEhentaiPatch } from '../features/ehentai/config.js';
 import { validateHaiguiTangPatch } from '../features/haigui-tang/config.js';
 import {
   ASR_DEFAULT_PROVIDER, ASR_PROVIDERS,
@@ -320,7 +318,6 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'resourceSearch')) validateResourceSearchPatch(rawPatch.resourceSearch);
   if (Object.hasOwn(rawPatch, 'novelSearch')) validateNovelSearchPatch(rawPatch.novelSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
-  if (Object.hasOwn(rawPatch, 'xSearch')) validateXSearchPatch(rawPatch.xSearch);
   if (Object.hasOwn(rawPatch, 'dailyReport')) {
     validateDailyReportPatch(rawPatch.dailyReport);
     validateDailyReportPatch({ content: { ...current.dailyReport?.content, ...rawPatch.dailyReport.content } });
@@ -328,7 +325,6 @@ export function updateConfig(patch) {
   if ((rawPatch.dailyReport?.enabled ?? current.dailyReport?.enabled) && !requestedAdmin.ownerUin) {
     throw new Error('启用每日报告需要配置全局管理员 QQ');
   }
-  if (Object.hasOwn(rawPatch, 'ehentai')) validateEhentaiPatch(rawPatch.ehentai);
   if (Object.hasOwn(rawPatch, 'haiguiTang')) validateHaiguiTangPatch(rawPatch.haiguiTang);
   if (Object.hasOwn(rawPatch, 'jm')) {
     const jmPatch = rawPatch.jm || {};

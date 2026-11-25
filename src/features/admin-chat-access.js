@@ -4,7 +4,6 @@ import { chatAllowed } from '../core/access.js';
 const TARGET = /^(group|private):\d{5,15}$/;
 const FEATURES = Object.freeze({
   '海龟汤': { section: 'haiguiTang', field: 'allowedChats' },
-  'E站': { section: 'ehentai', field: 'allowedChats' },
   '跑团': { section: 'trpg', field: { group: 'allowedGroups', private: 'allowedPrivate' }, idOnly: true },
   '群游戏': { section: 'groupGame', field: 'chats', kind: 'group' },
   '群日报': { section: 'groupDigest', field: 'chats', kind: 'group' },
@@ -12,7 +11,7 @@ const FEATURES = Object.freeze({
   '群找资源': { section: 'resourceSearch', field: 'allowedGroups', kind: 'group', idOnly: true },
   '群搜小说': { section: 'novelSearch', field: 'allowedGroups', kind: 'group', idOnly: true }
 });
-const ALIASES = Object.freeze({ '聊天': '基础聊天', '基础聊天': '基础聊天', 'E-Hentai': 'E站', '搜图': '群搜图', '以图搜图': '群搜图', '找资源': '群找资源', '资源检索': '群找资源', '搜小说': '群搜小说', '小说检索': '群搜小说', '禁漫': 'JM' });
+const ALIASES = Object.freeze({ '聊天': '基础聊天', '基础聊天': '基础聊天', '搜图': '群搜图', '以图搜图': '群搜图', '找资源': '群找资源', '资源检索': '群找资源', '搜小说': '群搜小说', '小说检索': '群搜小说', '禁漫': 'JM' });
 
 export function parseAdminChatAccessCommand(raw) {
   const text = String(raw || '').trim();
@@ -46,9 +45,7 @@ function basicState(cfg, target) {
 function featureStatus(cfg, target, name) {
   const entry = featureEntry(cfg, target, name);
   if (!entry) return null;
-  const owner = String(cfg.admin?.ownerUin || '');
-  const authorized = entry.allowed || name === 'E站' && target === `private:${owner}`;
-  if (!authorized) return `${name}：未授权`;
+  if (!entry.allowed) return `${name}：未授权`;
   const inactive = [];
   if (!entry.global) inactive.push('全局关闭');
   if (!chatAllowed(target, cfg)) inactive.push('基础聊天关闭');
@@ -109,7 +106,7 @@ export function executeAdminChatAccessCommand(command, options) {
   const owner = String(cfg.admin?.ownerUin || '');
   if (!owner || String(options.actorId) !== owner) return null;
   if (command.action === 'help' || command.action === 'invalid') {
-    return '功能管理指令：\n功能 列表\n功能 查看 group:群号\n功能 查看 private:QQ号\n功能 开启 group:群号 基础聊天/海龟汤/E站/跑团/群游戏/群日报/群搜图/JM\n功能 关闭 group:群号 功能名\n私聊支持基础聊天、海龟汤、E站、跑团、JM；也可用“添加/删除”代替“开启/关闭”。功能总开关仍在控制台。';
+    return '功能管理指令：\n功能 列表\n功能 查看 group:群号\n功能 查看 private:QQ号\n功能 开启 group:群号 基础聊天/海龟汤/跑团/群游戏/群日报/群搜图/群找资源/群搜小说/JM\n功能 关闭 group:群号 功能名\n私聊支持基础聊天、海龟汤、跑团、JM；也可用“添加/删除”代替“开启/关闭”。功能总开关仍在控制台。';
   }
   if (command.action === 'list') return list(cfg, options);
   if (command.action === 'show') return show(cfg, command.target, options);
@@ -146,7 +143,6 @@ export function executeAdminChatAccessCommand(command, options) {
   } else {
     const entry = featureEntry(cfg, target, feature);
     if (!entry) return `无法为 ${target} 管理「${feature}」。发送「功能」查看支持的功能和会话类型。`;
-    if (feature === 'E站' && target === `private:${owner}` && !enabled) return 'E站对管理员私聊固定开放，不能单独关闭；可在控制台关闭 E站总开关。';
     if (entry.allowed === enabled) return `${target} 的${feature}已${enabled ? '授权' : '取消授权'}。`;
     const values = new Set((cfg[entry.meta.section]?.[entry.field] || []).map(String));
     if (enabled) values.add(entry.value); else values.delete(entry.value);

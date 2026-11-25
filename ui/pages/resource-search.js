@@ -24,7 +24,7 @@ function renderResourceSearchSection(config) {
   const hasTokyoRelay = Boolean((config.imageSearch?.relayUrl && config.imageSearch?.hasRelayToken) || s.hasTokyoRelay);
   const relayHint = hasTokyoRelay
     ? `（已自动复用以图搜图东京中转 ${config.imageSearch?.relayUrl || s.tokyoRelayUrl || 'http://127.0.0.1:3220'}）`
-    : (s.effectiveProxyUrl ? `（当前生效本机代理 ${s.effectiveProxyUrl}）` : '（留空则优先复用以图搜图东京中转 3220 或 Pixiv/E站本机隧道）');
+    : (s.effectiveProxyUrl ? `（当前生效本机代理 ${s.effectiveProxyUrl}）` : '（留空则优先复用以图搜图东京中转 3220 或 Pixiv 本机隧道）');
   return `<h3>资源检索（DeepSeek 后台多轮深度检索）</h3>
     <p class="hint">发送“/找资源 游戏名”、“/求资源 游戏名”或“/搜黄油 游戏名”，也支持模糊剧情描述或附带/引用回复一张游戏截图发送“/找资源”。后台由 DeepSeek 主导多轮检索（最高 8 轮，结合高并发多站爬取与东京受控外网读页，不加载聊天人设与群聊历史，不阻塞前台正常聊天），完成后以合并转发卡片返回免费资源与正版参考。</p>
     <div class="field"><label><input id="resource-search-enabled" type="checkbox" ${s.enabled ? 'checked' : ''}> 启用资源检索</label></div>

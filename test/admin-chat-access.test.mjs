@@ -39,7 +39,7 @@ test('管理员指令拒绝越权、无效目标和不支持的会话类型', ()
   const options = { actorId: '999999', getConfig: () => config, updateConfig: () => { writes++; } };
   assert.equal(executeAdminChatAccessCommand(parseAdminChatAccessCommand('功能 开启 group:100001 海龟汤'), options), null);
   options.actorId = '123456';
-  for (const text of ['功能 关闭 private:123456 基础聊天', '功能 关闭 private:123456 E站',
+  for (const text of ['功能 关闭 private:123456 基础聊天',
     '功能 开启 private:200001 群游戏', '功能 开启 group:100001 未知功能', '功能 开启 group:abc 海龟汤']) {
     assert.ok(executeAdminChatAccessCommand(parseAdminChatAccessCommand(text), options));
   }

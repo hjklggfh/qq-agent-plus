@@ -79,8 +79,7 @@ export function resolveOverseasProxyUrl(settings = {}, options = {}) {
     settings?.proxyUrl,
     options?.proxyUrl,
     fullCfg?.resourceSearch?.proxyUrl,
-    fullCfg?.pixiv?.proxyUrl,
-    fullCfg?.ehentai?.proxyUrl
+    fullCfg?.pixiv?.proxyUrl
   ];
   for (const raw of candidates) {
     const val = typeof raw === 'string' ? raw.trim() : '';

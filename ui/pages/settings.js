@@ -36,12 +36,10 @@ import { renderImageSearchSection, bindImageSearchSection } from './image-search
 import { renderResourceSearchSection, bindResourceSearchSection } from './resource-search.js';
 import { renderNovelSearchSection, bindNovelSearchSection } from './novel-search.js';
 import { renderPixivSection, bindPixivSection } from './pixiv.js';
-import { renderXSearchSection, bindXSearchSection } from './x-search.js';
 import { renderDailyReportSection, bindDailyReportSection } from './daily-report.js';
 import { renderRecallControls, bindRecallControls } from './cross-chat-recall.js';
 import { FEATURE_CATALOG, FEATURE_SECTIONS } from '../core/feature-catalog.js';
 import { renderFeatureCenter, bindFeatureCenter, loadFeatureCenter } from './feature-center.js';
-import { renderEhentaiSection, bindEhentaiSection } from './ehentai.js';
 import { renderHaiguiTangSection, bindHaiguiTangSection } from './haigui-tang.js';
 import { renderMediaSection, bindMediaSection } from './media.js';
 /** 把设置解析成实际要应用的主题名。 */
@@ -150,9 +148,7 @@ function renderSettingsImpl() {
   if (state.settingsSection === 'resource-search') bindResourceSearchSection();
   if (state.settingsSection === 'novel-search') bindNovelSearchSection();
   if (state.settingsSection === 'pixiv') bindPixivSection();
-  if (state.settingsSection === 'x-search') bindXSearchSection();
   if (state.settingsSection === 'daily-report') bindDailyReportSection();
-  if (state.settingsSection === 'ehentai') bindEhentaiSection();
   if (state.settingsSection === 'haigui-tang') bindHaiguiTangSection();
   if (state.settingsSection === 'media') bindMediaSection(c);
 }
@@ -242,9 +238,7 @@ function renderSettingsSection(c) {
     'resource-search': () => renderResourceSearchSection(c),
     'novel-search': () => renderNovelSearchSection(c),
     'pixiv': () => renderPixivSection(c),
-    'x-search': () => renderXSearchSection(c),
     'daily-report': () => renderDailyReportSection(c),
-    'ehentai': () => renderEhentaiSection(c),
     'haigui-tang': () => renderHaiguiTangSection(c),
     media: () => renderMediaSection(c),
     jm: () => renderJmSection(c),

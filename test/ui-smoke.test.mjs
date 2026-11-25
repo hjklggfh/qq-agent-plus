@@ -222,7 +222,7 @@ test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不�
     const doc = window.document;
     assert.equal(Boolean(doc.querySelector('#feature-center')), true);
     assert.equal(Boolean(doc.querySelector('[data-global-admin-settings]')), false, 'overview is not a settings editor');
-    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 18);
+    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 16);
     const search = doc.querySelector('#feature-center-search');
     search.value = '汇报'; search.dispatchEvent(new window.Event('input'));
     assert.equal(doc.querySelectorAll('#feature-center-list article').length, 1);
@@ -237,57 +237,6 @@ test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不�
     doc.querySelector('#feature-center-list [data-feature-open="daily-report"]').click(); await settle(60);
     assert.equal(Boolean(doc.querySelector('#daily-report-time')), true);
     assert.equal(calls.every(method => method === 'GET'), true);
-    assert.deepEqual(errors, []);
-  } finally { window.happyDOM?.abort?.(); }
-});
-
-test('X 设置可保存且不回显Token，预览仅走网页API并转义帖子HTML', { skip: SKIP }, async () => {
-  const { window, errors } = loadPage();
-  await settle();
-  try {
-    const doc = window.document; const calls = [];
-    doc.querySelector('[data-tab="features"]').click();
-    await settle(60);
-    doc.querySelector('[data-section="x-search"]').click();
-    assert.equal(doc.querySelector('#x-search-enabled').checked, false);
-    assert.equal(doc.querySelector('#x-search-token').value, '');
-    const previousFetch = window.fetch;
-    window.fetch = async (url, options = {}) => {
-      if (!String(url).includes('/api/x-search')) return previousFetch(url, options);
-      calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
-      return { ok: true, status: 200, json: async () => url.includes('/preview')
-        ? { page: { user: { name: '<img src=x>', username: 'Example' }, fetchedAt: 'now', posts: [{ sensitive: true, text: '<script>bad()</script>', translation: '<img src=x>中文译文', url: 'https://x.com/Example/status/1' }] } }
-        : { settings: { enabled: true, hasBearerToken: true } } };
-    };
-    doc.querySelector('#x-search-token').value = 'test-x-token';
-    doc.querySelector('#save-cfg-btn').click(); await settle(50);
-    assert.equal(calls[0].url, '/api/x-search/settings');
-    assert.equal(calls[0].body.bearerToken, 'test-x-token');
-    assert.equal(calls[0].body.translateChinese, true);
-    assert.equal(doc.querySelector('#x-search-token').value, '');
-    assert.match(doc.querySelector('#x-search-token-label').textContent, /已保存/);
-    doc.querySelector('#save-cfg-btn').click(); await settle(50);
-    assert.equal(Object.hasOwn(calls[1].body, 'bearerToken'), false, '留空不会清除Token');
-    doc.querySelector('#x-search-preview-user').value = 'Example';
-    doc.querySelector('#x-search-preview').click(); await settle(50);
-    assert.equal(calls[2].url, '/api/x-search/preview');
-    assert.equal(doc.querySelector('#x-search-preview-result script'), null);
-    assert.equal(doc.querySelector('#x-search-preview-result img'), null);
-    assert.match(doc.querySelector('#x-search-preview-result').textContent, /bad/);
-    assert.match(doc.querySelector('#x-search-preview-result').textContent, /敏感内容/);
-    assert.match(doc.querySelector('#x-search-preview-result').textContent, /机器翻译.*中文译文/s);
-    doc.querySelector('#x-search-translate').checked = false;
-    doc.querySelector('#x-search-backend').value = 'tokyo-browser';
-    doc.querySelector('#x-search-backend').dispatchEvent(new window.Event('change'));
-    assert.equal(doc.querySelector('#x-search-official-fields').style.display, 'none');
-    assert.equal(doc.querySelector('#x-search-relay-fields').style.display, '');
-    assert.equal(doc.querySelector('#x-search-replies').disabled, true);
-    doc.querySelector('#x-search-relay-token').value = 'relay-test-token';
-    doc.querySelector('#save-cfg-btn').click(); await settle(50);
-    assert.equal(calls.at(-1).body.backend, 'tokyo-browser');
-    assert.equal(calls.at(-1).body.relayToken, 'relay-test-token');
-    assert.equal(calls.at(-1).body.translateChinese, false);
-    assert.equal(doc.querySelector('#x-search-relay-token').value, '');
     assert.deepEqual(errors, []);
   } finally { window.happyDOM?.abort?.(); }
 });
