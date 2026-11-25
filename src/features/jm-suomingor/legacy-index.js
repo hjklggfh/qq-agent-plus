@@ -33,6 +33,7 @@ import * as engine from './engine.js';
 import { validateImage } from './image-download.js';
 import * as pdfBridge from './pdf.js';
 import { uploadFile, groupQuota, deleteGroupFile, deleteIncompleteGroupFiles, humanSize } from './upload.js';
+import { JmOversizeError, rawDownloadByteLimit, formatPageLimitMessage, removeRejectedAlbumDir } from './limits.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
 import { searchCardNodes, deliverSearchCard } from './search.js';
@@ -759,21 +760,49 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
     ? (c.multiChapter ? album.series : album.series.slice(0, 1))
     : [{ id: album.id, name: album.name, sort: 1 }];
 
+  // 闸门 1：下载前整本总页数预检（逐章只拉轻量 photoInfo，累计超过 maxPages 立即拒绝，0 字节图片下载）
+  const chapterPlans = [];
+  let plannedPages = 0;
+  for (let i = 0; i < chapters.length; i++) {
+    ensureAlive(task);
+    const chapter = chapters[i];
+    try {
+      const photo = await api0.photoInfo(chapter.id);
+      const count = Array.isArray(photo?.images) ? photo.images.length : 0;
+      plannedPages += count;
+      if (plannedPages > c.maxPages) {
+        throw new JmOversizeError(formatPageLimitMessage({
+          albumId: album.id,
+          title: toSimplified(album.name),
+          chaptersCount: chapters.length,
+          scannedChapters: i + 1,
+          plannedPages,
+          maxPages: c.maxPages,
+        }), { stage: 'preflight' });
+      }
+      chapterPlans.push({ chapter, photo, error: null });
+    } catch (error) {
+      if (error?.code === 'JM_OVERSIZE') throw error;
+      chapterPlans.push({ chapter, photo: null, error });
+    }
+  }
+
   const albumDir = path.join(downloadRoot(), `jm-${album.id}`, engine.sanitizeSegment(`${album.id}-${album.name}`, `JM${album.id}`));
   await fsp.mkdir(albumDir, { recursive: true });
 
   const totals = { total: 0, ok: 0, fail: 0, pages: 0 };
   const failed = [];
   const chapterResults = [];
+  const byteLimit = rawDownloadByteLimit(c);
+  let downloadedBytes = 0;
+  let oversizeReason = '';
 
-  for (let i = 0; i < chapters.length; i++) {
+  for (let i = 0; i < chapterPlans.length; i++) {
     ensureAlive(task);
-    const chapter = chapters[i];
-    let photo;
-    try {
-      photo = await api0.photoInfo(chapter.id);
-    } catch (error) {
-      failed.push({ chapter: chapter.id, error: `章节信息读取失败：${error?.message ?? error}` });
+    if (oversizeReason) break;
+    const { chapter, photo, error: photoError } = chapterPlans[i];
+    if (photoError || !photo) {
+      failed.push({ chapter: chapter.id, error: `章节信息读取失败：${photoError?.message ?? photoError}` });
       onProgress?.({ stage: 'download', chapter: i + 1, chapters: chapters.length, ...totals });
       continue;
     }
@@ -783,12 +812,8 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
       continue;
     }
 
-    let names = photo.images.map((n, idx) => engine.imageFileName(n, idx + 1));
-    let skipped = 0;
-    if (names.length > c.maxPages) {
-      skipped = names.length - c.maxPages;
-      names = names.slice(0, c.maxPages);
-    }
+    const names = photo.images.map((n, idx) => engine.imageFileName(n, idx + 1));
+    const skipped = 0;
 
     const chapterDir = chapters.length > 1
       ? path.join(
@@ -808,9 +833,11 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
     let cursor = 0;
     const worker = async () => {
       for (;;) {
+        if (oversizeReason) return;
         const idx = cursor++;
         if (idx >= names.length) return;
         await waitIfPaused(task);
+        if (oversizeReason) return;
         const target = path.join(chapterDir, names[idx]);
         totals.total += 1;
         try {
@@ -828,6 +855,14 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
             totals.ok += 1;
           }
           pages[idx] = target;
+          // 闸门 2：下载中实时累计原图字节，超出熔断阈值立即中止并发下载
+          if (byteLimit > 0) {
+            try { downloadedBytes += fs.statSync(target).size; } catch {}
+            if (downloadedBytes > byteLimit && !oversizeReason) {
+              oversizeReason = `已下载原图累计 ${humanSize(downloadedBytes)}，预计超过单文件上限 ${c.maxUploadMB} MB，已中止下载并清理临时文件。`;
+              return;
+            }
+          }
         } catch (error) {
           totals.fail += 1;
           failed.push({ chapter: chapter.id, error: `${names[idx]}：${error?.message ?? error}` });
@@ -845,6 +880,7 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
     imageStats.imageMs += Date.now() - imageStartedAt;
     ensureAlive(task);
     onProgress?.({ stage: 'download', chapter: i + 1, chapters: chapters.length, ...totals });
+    if (oversizeReason) break;
 
     chapterResults.push({
       id: photo.id || chapter.id,
@@ -853,6 +889,11 @@ async function downloadAlbum({ albumId, chatKey, onProgress, control }) {
       skipped,
       pages: pages.filter(Boolean),
     });
+  }
+
+  if (oversizeReason) {
+    await removeRejectedAlbumDir(path.dirname(albumDir), downloadRoot());
+    throw new JmOversizeError(`JM${album.id}《${toSimplified(album.name)}》${oversizeReason}`, { stage: 'download' });
   }
 
   // scramble_id 每次现查（写死会把本来正常的图弄花）
@@ -1139,7 +1180,10 @@ async function runJob(job) {
       const limit = c.maxUploadMB * 1024 * 1024;
       if (size > limit) {
         if (c.rejectOversize) {
-          uploadNote = `⚠️ 文件 ${humanSize(size)} 超过单文件上限 ${c.maxUploadMB} MB，按设置没有上传（可调大上限或允许分卷）`;
+          // 闸门 3：合成后仍超单文件上限并拒绝上传时，立刻清理无法交付的本地目录，避免滞留数 GB 垃圾
+          const removed = await removeRejectedAlbumDir(path.dirname(dl.albumDir), downloadRoot());
+          const msg = `JM${dl.album.id}《${toSimplified(dl.album.name)}》合成文件 ${humanSize(size)} 超过单文件上限 ${c.maxUploadMB} MB，已拒绝上传${removed ? '并清理本地临时文件' : ''}。`;
+          throw new JmOversizeError(msg, { stage: 'upload' });
         } else {
           const parts = splitForUpload(deliverPath, limit);
           uploadNote = `📦 文件 ${humanSize(size)} 超过 ${c.maxUploadMB} MB，已分成 ${parts.length} 卷上传`;
@@ -1307,6 +1351,16 @@ async function runJob(job) {
       record.finishedAt = Date.now();
       pushHistory(record);
       log(`JM${albumId} 已按群指令删除（不作为失败处理）`);
+      return record;
+    }
+    if (error?.code === 'JM_OVERSIZE') {
+      record.stage = 'rejected';
+      record.ok = false;
+      record.error = error.message;
+      record.finishedAt = Date.now();
+      pushHistory(record);
+      await say(`⛔ ${error.message}`);
+      log(`JM${albumId} 因超限已拒绝（阶段：${error.stage || 'unknown'}）：${error.message}`);
       return record;
     }
     record.stage = 'failed';
