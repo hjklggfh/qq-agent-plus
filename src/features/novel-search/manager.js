@@ -202,18 +202,16 @@ export class NovelSearchManager {
   }
 
   async sendCard(chatKey, session, page, runId) {
-    const built = buildNovelSearchNodes(session, page);
+    const built = buildNovelSearchNodes(session, page, {
+      selfId: this.onebot?.selfId,
+      name: this.onebot?.selfNickname
+    });
     session.page = built.page;
     session.updatedAt = Date.now();
     if (typeof this.forward === 'function') {
       try {
-        await this.forward(chatKey, built.nodes, {
-          runId,
-          prompt: `小说检索（第 ${built.page}/${built.totalPages} 页，共 ${session.items.length} 本）`,
-          summary: `查看 ${built.count} 本小说详情`,
-          source: '小说检索'
-        });
-        return;
+        const sent = await this.forward(chatKey, { nodes: built.nodes, label: built.label }, { runId });
+        if (!sent?.failed?.length) return;
       } catch { /* 合并转发失败时自动回退纯文本 */ }
     }
     await this.send(chatKey, [formatNovelSearchText(session, built.page)], { runId, preserveCode: false });

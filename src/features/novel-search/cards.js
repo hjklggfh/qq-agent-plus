@@ -20,7 +20,7 @@ function formatNovelItem(item, index) {
   return lines.join('\n');
 }
 
-export function buildNovelSearchNodes(session, page) {
+function buildNovelBlocks(session, page) {
   const total = session.items.length;
   const totalPages = Math.max(1, Math.ceil(total / session.pageSize));
   const safePage = Math.max(1, Math.min(totalPages, page));
@@ -41,24 +41,44 @@ export function buildNovelSearchNodes(session, page) {
     headerLines.push(`⚠️ 部分源暂时不可用：${Object.keys(session.channelErrors).join('、')}`);
   }
 
-  const nodes = [{
-    name: '小说检索',
-    content: headerLines.join('\n')
+  const blocks = [{
+    title: '小说检索',
+    text: headerLines.join('\n')
   }];
 
   for (let i = 0; i < slice.length; i += 1) {
     const globalIdx = start + i + 1;
-    nodes.push({
-      name: `第 ${globalIdx} 本`,
-      content: formatNovelItem(slice[i], globalIdx)
+    blocks.push({
+      title: `第 ${globalIdx} 本`,
+      text: formatNovelItem(slice[i], globalIdx)
     });
   }
-  return { nodes, page: safePage, totalPages, count: slice.length };
+
+  const label = session.mode === 'latest'
+    ? `小说最新更新${session.channelLabel ? ` · ${session.channelLabel}` : ''}（第 ${safePage}/${totalPages} 页）`
+    : `小说检索 ${session.query}（第 ${safePage}/${totalPages} 页）`;
+
+  return { blocks, label, page: safePage, totalPages, count: slice.length };
+}
+
+export function buildNovelSearchNodes(session, page, options = {}) {
+  const { blocks, label, page: safePage, totalPages, count } = buildNovelBlocks(session, page);
+  const uin = String(options.selfId || '');
+  const defaultName = String(options.name || '小说检索').slice(0, 40);
+  const nodes = blocks.map((block) => ({
+    type: 'node',
+    data: {
+      uin,
+      name: String(block.title || defaultName).slice(0, 40),
+      content: [{ type: 'text', data: { text: block.text } }]
+    }
+  }));
+  return { nodes, label, page: safePage, totalPages, count };
 }
 
 export function formatNovelSearchText(session, page) {
-  const { nodes } = buildNovelSearchNodes(session, page);
-  return nodes.map((n) => n.content).join('\n\n');
+  const { blocks } = buildNovelBlocks(session, page);
+  return blocks.map((b) => b.text).join('\n\n');
 }
 
 export function formatNovelHelp(settings) {

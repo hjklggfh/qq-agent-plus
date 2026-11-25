@@ -185,9 +185,9 @@ test('NovelSearchManager 多源全流程：搜索出卡、翻页、选号下载�
       dataDir: tmpRoot,
       getConfig: () => cfg,
       canRun: () => true,
-      onebot: { call: async () => ({}) },
+      onebot: { selfId: '3809305541', selfNickname: 'Gemi本咪', call: async () => ({}) },
       send: async (chatKey, msgs) => { sent.push({ chatKey, msgs }); },
-      forward: async (chatKey, nodes, opts) => { forwarded.push({ chatKey, nodes, opts }); },
+      forward: async (chatKey, payload, opts) => { forwarded.push({ chatKey, payload, opts }); return { sent: [1], failed: [] }; },
       fetchImpl,
       uploadImpl
     });
@@ -203,18 +203,21 @@ test('NovelSearchManager 多源全流程：搜索出卡、翻页、选号下载�
     await manager.handle(novelSearchCommand('/搜小说 #纯爱'), 'group:111111', 1);
     assert.match(sent.at(-1).msgs[0], /未获准/);
 
-    // 3. 搜索并出第 1 页卡片（5 条 + 1 头节点）
+    // 3. 搜索并出第 1 页合并转发卡片（5 条 + 1 头节点，符合 OneBot v11 node 规范）
     await manager.handle(novelSearchCommand('/搜小说 #纯爱'), 'group:892485992', 2);
     assert.equal(manager.hasList('group:892485992'), true);
     assert.equal(forwarded.length, 1);
-    assert.equal(forwarded[0].nodes.length, 6);
-    assert.match(forwarded[0].nodes[1].content, /【1】《测试小说第1本》/);
+    assert.equal(typeof forwarded[0].payload.label, 'string');
+    assert.equal(forwarded[0].payload.nodes.length, 6);
+    assert.equal(forwarded[0].payload.nodes[1].type, 'node');
+    assert.equal(forwarded[0].payload.nodes[1].data.uin, '3809305541');
+    assert.match(forwarded[0].payload.nodes[1].data.content[0].data.text, /【1】《测试小说第1本》/);
 
     // 4. 翻页到第 2 页（剩余 2 条 + 1 头节点）
     await manager.handle(novelSearchCommand('下一页', true), 'group:892485992', 3);
     assert.equal(forwarded.length, 2);
-    assert.equal(forwarded[1].nodes.length, 3);
-    assert.match(forwarded[1].nodes[1].content, /【6】《测试小说第6本》/);
+    assert.equal(forwarded[1].payload.nodes.length, 3);
+    assert.match(forwarded[1].payload.nodes[1].data.content[0].data.text, /【6】《测试小说第6本》/);
 
     // 5. 选序号 1 下载并上传，验证编号回退提示、转码提示与临时文件立即清理
     await manager.handle(novelSearchCommand('1', true), 'group:892485992', 4);
