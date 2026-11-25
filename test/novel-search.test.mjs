@@ -230,13 +230,14 @@ test('NovelSearchManager 多源全流程：搜索出卡、翻页、选号下载�
     assert.match(doneMsg, /编号文件名/);
     assert.match(doneMsg, /gb18030 转为 UTF-8/);
 
-    // 6. 帮助文案与卡片纯函数覆盖
+    // 6. 帮助文案（简洁且不暴露平台名）与卡片纯函数覆盖
     const help = formatNovelHelp(novelSearchConfig(cfg.novelSearch));
-    assert.match(help, /Pixiv 小说/);
-    assert.match(help, /禁忌书屋/);
-    assert.match(help, /ESJZone/);
+    assert.match(help, /\/搜小说 关键词/);
+    assert.match(help, /回复序号/);
+    assert.doesNotMatch(help, /Cool18|ESJZone|Pixiv/);
     const built = buildNovelSearchNodes({ mode: 'latest', query: '', channelLabel: '禁忌书屋', items: mockItems, pageSize: 5 }, 1);
     assert.equal(built.totalPages, 2);
+    assert.doesNotMatch(built.nodes[1].data.content[0].data.text, /Pixiv小说|禁忌书屋|ESJZone/);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

@@ -338,13 +338,10 @@ export class NovelSearchManager {
       });
 
       if (!items.length) {
-        const hint = data?.channelErrors && Object.keys(data.channelErrors).length
-          ? `\n⚠️ 部分书源查询异常：${Object.keys(data.channelErrors).join('、')}`
-          : '';
         await this.send(chatKey, [
           mode === 'latest'
-            ? `暂未获取到近期小说更新。${hint}`
-            : `没有找到与「${query}」匹配的小说。可以换个关键词、简化 #标签 或指定单书源（如 /禁忌书屋、/ESJ、/P站小说）再试试。${hint}`
+            ? '暂未获取到近期小说更新，请稍后再试。'
+            : `没有找到与「${query}」匹配的小说，可以换个关键词、简化 #标签 或去掉部分限制再试试。`
         ], { runId, preserveCode: false });
         return;
       }
@@ -391,7 +388,7 @@ export class NovelSearchManager {
     const itemId = String(item.id || item.msgId || '');
 
     await this.send(chatKey, [
-      `📥 正在获取《${item.title}》（${item.channelLabel || item.channel || itemSource} · ${item.sizeText || 'TXT'}）并上传群文件，请稍候…`
+      `📥 正在获取《${item.title}》并上传群文件，请稍候…`
     ], { runId: `${runId}-start`, preserveCode: false });
 
     try {
