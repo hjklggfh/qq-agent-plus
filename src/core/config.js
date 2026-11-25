@@ -12,6 +12,7 @@ import { validateKnowledgePatch } from '../llm/knowledge-search.js';
 import { validateTrpgPatch } from '../features/trpg/config.js';
 import { validateImageSearchPatch } from '../features/image-search/config.js';
 import { validateResourceSearchPatch } from '../features/resource-search/config.js';
+import { validateNovelSearchPatch } from '../features/novel-search/config.js';
 import { validatePixivPatch } from '../features/pixiv/config.js';
 import { validateXSearchPatch } from '../features/x-search/config.js';
 import { validateDailyReportPatch } from '../features/daily-report.js';
@@ -317,6 +318,7 @@ export function updateConfig(patch) {
   if (Object.hasOwn(rawPatch, 'trpg')) validateTrpgPatch(rawPatch.trpg);
   if (Object.hasOwn(rawPatch, 'imageSearch')) validateImageSearchPatch(rawPatch.imageSearch);
   if (Object.hasOwn(rawPatch, 'resourceSearch')) validateResourceSearchPatch(rawPatch.resourceSearch);
+  if (Object.hasOwn(rawPatch, 'novelSearch')) validateNovelSearchPatch(rawPatch.novelSearch);
   if (Object.hasOwn(rawPatch, 'pixiv')) validatePixivPatch(rawPatch.pixiv);
   if (Object.hasOwn(rawPatch, 'xSearch')) validateXSearchPatch(rawPatch.xSearch);
   if (Object.hasOwn(rawPatch, 'dailyReport')) {

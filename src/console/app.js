@@ -45,6 +45,9 @@ import { installImageSearchRoutes } from '../features/image-search/routes.js';
 import { ResourceSearchManager } from '../features/resource-search/manager.js';
 import { resourceSearchCommand } from '../features/resource-search/command.js';
 import { installResourceSearchRoutes } from '../features/resource-search/routes.js';
+import { NovelSearchManager } from '../features/novel-search/manager.js';
+import { novelSearchCommand } from '../features/novel-search/command.js';
+import { installNovelSearchRoutes } from '../features/novel-search/routes.js';
 import { PixivManager } from '../features/pixiv/manager.js';
 import { XSearchManager } from '../features/x-search/manager.js';
 import { xSearchCommand } from '../features/x-search/command.js';
@@ -633,6 +636,11 @@ export function createApp({
     forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
     send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
   });
+  const novelSearch = new NovelSearchManager({
+    dataDir: DATA_DIR, getConfig, canRun: canRunFunctions, onebot,
+    forward: (chatKey, payload, options) => sender.forward(chatKey, payload, options),
+    send: (chatKey, messages, options) => sender.sendTextBatch(chatKey, messages, options)
+  });
   const pixiv = new PixivManager({
     dataDir: DATA_DIR, getConfig, updateConfig, canRun: canRunFunctions, onebot, log: moduleLog('pixiv'),
     file: (chatKey, payload, options) => sender.file(chatKey, payload, options),
@@ -1191,6 +1199,7 @@ export function createApp({
     const trpgManaged = !isSelf && trpg.handlesInput(chatKey, String(senderId));
     const searchCommand = !isSelf && imageSearchCommand(event.message ?? event.raw_message);
     const resSearchCommand = !isSelf && resourceSearchCommand(event.message ?? event.raw_message);
+    const novelCommand = !isSelf && novelSearchCommand(commandText, novelSearch.hasList(chatKey));
     const pidCommand = !isSelf && pixivCommand(commandText);
     const xCommand = !isSelf && xSearchCommand(commandText);
     const ehCommand = !isSelf && ehentaiCommand(commandText, ehentai.hasList(chatKey));
@@ -1215,7 +1224,7 @@ export function createApp({
     };
     const runtimeMode = chatRuntimeMode(chatKey);
     const stored = isSelf ? store.appendSelf(chatKey, message) : store.appendIncoming(chatKey, message, {
-      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
+      recordOnly: passiveFileOnly || runtimeMode !== 'normal' || arrivedInactive || !isTimeActive(chatKey) || Boolean(adminAccessCommand || (searchCommand || resSearchCommand || novelCommand || pidCommand || xCommand || ehCommand || haiguiCommand) && !(trpgCommand || trpgManaged || trpg.narratorActive(chatKey)))
     });
     if (stored.duplicate) return;
     if (!isSelf) identityPilot?.observeMessage(chatKey, stored);
@@ -1243,6 +1252,7 @@ export function createApp({
             if (feature === 'E站') ehentai.sync();
             if (feature === '群搜图') imageSearch.enforce();
             if (feature === '群找资源') resourceSearch.enforce();
+            if (feature === '群搜小说') novelSearch.enforce();
             if (feature === '群日报') backgroundTasks.reconcile().catch(error => log('[background] 配置同步失败：', error?.message || error));
             auditWrite('admin-chat.access-update', target, { after: { feature, actorId: senderId } });
             emit('chat-update', target);
@@ -1340,6 +1350,13 @@ export function createApp({
       store.markRead(chatKey, [stored.id]);
       if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
         await resourceSearch.start(resSearchCommand, chatKey, stored.id);
+      }
+      return;
+    }
+    if (novelCommand) {
+      store.markRead(chatKey, [stored.id]);
+      if (canRunFunctions(chatKey) && !orchestrator.paused && !arrivedInactive) {
+        void novelSearch.handle(novelCommand, chatKey, stored.id).catch((error) => log('[novel-search] 指令异常:', error?.message ?? error));
       }
       return;
     }
@@ -4066,6 +4083,7 @@ export function createApp({
     let closedThreads = 0;
     imageSearch.enforce();
     resourceSearch.enforce();
+    novelSearch.enforce();
     pixiv.enforce();
     xSearch.enforce();
     dailyReport.enforce();
@@ -4793,6 +4811,7 @@ export function createApp({
     await jmFeature?.deactivate?.();
     await imageSearch.stop();
     await resourceSearch.stop();
+    await novelSearch.stop();
     await pixiv.stop();
     await xSearch.stop();
     ehentai.stop();
@@ -4843,6 +4862,11 @@ export function createApp({
     updateConfig,
     auditWrite
   }, resourceSearch);
+  installNovelSearchRoutes({
+    addRoute: (method, routePath, handler) => router.add(method, routePath, handler),
+    updateConfig,
+    auditWrite
+  }, novelSearch);
   installPixivRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, pixiv);
   installXSearchRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, xSearch);
   installEhentaiRoutes({ addRoute: (method, routePath, handler) => router.add(method, routePath, handler), updateConfig, auditWrite }, ehentai);
@@ -4853,6 +4877,7 @@ export function createApp({
     trpg,
     imageSearch,
     resourceSearch,
+    novelSearch,
     pixiv,
     xSearch,
     haiguiTang,

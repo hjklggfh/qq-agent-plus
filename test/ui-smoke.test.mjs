@@ -222,7 +222,7 @@ test('功能总览可筛选、刷新与跳转，状态刷新保留输入且不�
     const doc = window.document;
     assert.equal(Boolean(doc.querySelector('#feature-center')), true);
     assert.equal(Boolean(doc.querySelector('[data-global-admin-settings]')), false, 'overview is not a settings editor');
-    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 17);
+    assert.equal(doc.querySelectorAll('#feature-center-list article').length, 18);
     const search = doc.querySelector('#feature-center-search');
     search.value = '汇报'; search.dispatchEvent(new window.Event('input'));
     assert.equal(doc.querySelectorAll('#feature-center-list article').length, 1);

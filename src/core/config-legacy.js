@@ -16,6 +16,7 @@ import { normalizeMomentWindows } from '../features/moment-schedule.js';
 import { DEFAULT_TRPG_CONFIG } from '../features/trpg/config.js';
 import { DEFAULT_IMAGE_SEARCH_CONFIG } from '../features/image-search/config.js';
 import { DEFAULT_RESOURCE_SEARCH_CONFIG } from '../features/resource-search/config.js';
+import { DEFAULT_NOVEL_SEARCH_CONFIG } from '../features/novel-search/config.js';
 import { DEFAULT_PIXIV_CONFIG, migratePixivConfig } from '../features/pixiv/config.js';
 import { DEFAULT_X_SEARCH_CONFIG } from '../features/x-search/config.js';
 import { DEFAULT_DAILY_REPORT_CONFIG } from '../features/daily-report.js';
@@ -45,6 +46,7 @@ export const DEFAULT_CONFIG = {
   haiguiTang: structuredClone(DEFAULT_HAIGUI_TANG_CONFIG),
   imageSearch: structuredClone(DEFAULT_IMAGE_SEARCH_CONFIG),
   resourceSearch: structuredClone(DEFAULT_RESOURCE_SEARCH_CONFIG),
+  novelSearch: structuredClone(DEFAULT_NOVEL_SEARCH_CONFIG),
   trpg: { ...DEFAULT_TRPG_CONFIG },
   // JM 禁漫下载是宿主内置功能，不经过 plugins.enabled 或能力审批。
   jm: {
