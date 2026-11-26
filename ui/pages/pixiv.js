@@ -17,12 +17,13 @@ function renderPixivSection(config) {
   <div class="field"><label>PDF 每次最多页数</label><input id="pixiv-pdf-pages" type="number" min="1" max="1000" value="${esc(s.maxPdfPages ?? 500)}"></div>
   <div class="field"><label>PDF 图片总量／文件上限（MB）</label><input id="pixiv-pdf-mb" type="number" min="1" max="512" value="${esc((s.pdfMaxBytes ?? 268435456) / 1048576)}"></div></div>
   <p class="hint">发送“PID 作品号 PDF”打包作品，或“PID 作品号 21-40 PDF”指定页；末尾加“图片”可临时改回卡片。PDF 不受卡片批次大小限制，分级与下载限制仍生效。需要 Python 3、Pillow，与 JM 共用逐页处理队列；缺页或总页数未知会标为部分页面。PDF 会转为高质量 JPEG，沿用下方尺寸与压缩设置，不能保证无损原图。</p>
-  <h4>/美图 随机原图（独立群开关）</h4><p class="hint">群聊发送“/美图”、“@机器人 /美图”或“/美图 关键词”，由宿主直接引用回复单张全年龄插画（不发 PDF、不发 R18、不消耗聊天模型）。优先发送无损原图，超过单张上限或原图不可用时自动回退官方高清（regular）。默认所有群关闭，请手动勾选需要开启的群。</p>
+  <h4>/美图 随机高清图（独立群开关）</h4><p class="hint">群聊发送“/美图”、“@机器人 /美图”或“/美图 关键词”，由宿主直接引用回复单张全年龄插画（不发 PDF、不发 R18、不消耗聊天模型）。优先拉取原图并经中转或本地压缩（按设定最长边缩放为 JPEG），超限或原图不可用时自动回退官方高清（regular）。默认所有群关闭，请手动勾选需要开启的群。</p>
   ${allowGroups.length ? `<div class="field"><label>按群开启 /美图</label><div id="pixiv-meitu-group-list">${allowGroups.map((id) => `<label style="margin-right:12px"><input type="checkbox" class="pixiv-meitu-group-cb" value="${esc(id)}" ${meituGroups.includes(id) ? 'checked' : ''}> 群 ${esc(id)}</label>`).join('')}</div></div>` : ''}
   <div class="field"><label>${allowGroups.length ? '其他允许使用 /美图 的群号（每行一个，可选）' : '允许使用 /美图 的群号（每行一个，空名单表示全部关闭）'}</label><textarea id="pixiv-meitu-groups" rows="2" placeholder="每行一个群号">${esc(extraMeituGroups.join('\n'))}</textarea></div>
   <div class="field"><label><input id="pixiv-meitu-private" type="checkbox" ${s.meituAllowPrivate ? 'checked' : ''}> 允许私聊使用 /美图（仍受宿主私聊白名单限制）</label></div>
   <div class="field-row"><div class="field"><label>/美图 同会话冷却（秒）</label><input id="pixiv-meitu-cooldown" type="number" min="0" max="3600" value="${esc(s.meituCooldownSeconds ?? 10)}"></div>
-  <div class="field"><label>/美图 原图上限（MB，超限回退高清）</label><input id="pixiv-meitu-max-mb" type="number" min="1" max="30" step="1" value="${esc(Math.round((s.meituMaxImageBytes ?? 15 * 1048576) / 1048576))}"></div></div>
+  <div class="field"><label>/美图 原图上限（MB，超限回退高清）</label><input id="pixiv-meitu-max-mb" type="number" min="1" max="30" step="1" value="${esc(Math.round((s.meituMaxImageBytes ?? 15 * 1048576) / 1048576))}"></div>
+  <div class="field"><label>/美图 压缩最长边（像素）</label><input id="pixiv-meitu-max-edge" type="number" min="256" max="4096" step="1" value="${esc(s.meituMaxEdge ?? 1600)}"></div></div>
   <div class="field"><label>默认允许分级</label>${['safe', 'r18', 'r18g'].map((r) => `<label><input id="pixiv-rating-${r}" type="checkbox" ${(s.ratings || ['safe']).includes(r) ? 'checked' : ''}> ${esc({ safe: '全年龄', r18: 'R18', r18g: 'R18G' }[r])}</label>`).join(' ')}</div>
   <div class="field"><label>按会话设置分级</label><div id="pixiv-chat-ratings">${Object.entries(s.chatRatings || {}).map(([chat, ratings]) => pixivRatingRow(chat, ratings)).join('')}</div><button class="btn" type="button" id="pixiv-chat-add">添加群聊／私聊覆盖</button><div class="hint">没有单独设置的会话沿用默认。删除覆盖后点击保存，恢复默认分级。仍受宿主聊天白名单约束；旧会话分级自动带入，保存立即生效。</div></div>
   <div class="field"><label>无法确认作品分级时</label><select id="pixiv-unknown"><option value="deny" ${s.unknownRatingPolicy !== 'adult-only' ? 'selected' : ''}>拒绝发送，提示核实作品</option><option value="adult-only" ${s.unknownRatingPolicy === 'adult-only' ? 'selected' : ''}>仅在同时允许 R18、R18G 的会话发送，并标明未知</option></select></div>
@@ -73,7 +74,8 @@ async function savePixivSettings() {
       maxImageBytes: Math.round(Number($('#pixiv-max-image').value) * 1048576), downsampleOverBytes: Math.round(Number($('#pixiv-compress').value) * 1024), downsampleMaxEdge: Number($('#pixiv-edge').value),
       meituGroups, meituAllowPrivate: $('#pixiv-meitu-private').checked,
       meituCooldownSeconds: Number($('#pixiv-meitu-cooldown').value),
-      meituMaxImageBytes: Math.round(Number($('#pixiv-meitu-max-mb').value) * 1048576) };
+      meituMaxImageBytes: Math.round(Number($('#pixiv-meitu-max-mb').value) * 1048576),
+      meituMaxEdge: Number($('#pixiv-meitu-max-edge').value) };
     for (const [field, id] of [['cookie', 'cookie'], ['proxyUrl', 'proxy']]) {
       if ($(`#pixiv-clear-${id}`).checked) patch[field] = '';
       else if ($(`#pixiv-${id}`).value.trim()) patch[field] = $(`#pixiv-${id}`).value.trim();

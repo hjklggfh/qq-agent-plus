@@ -51,14 +51,17 @@ test('/美图 独立群开关默认全关，勾选并保存后写入 meituGroups
   assert.equal(doc.querySelector('#pixiv-meitu-private').checked, false);
   assert.equal(doc.querySelector('#pixiv-meitu-cooldown').value, '10');
   assert.equal(doc.querySelector('#pixiv-meitu-max-mb').value, '15');
+  assert.equal(doc.querySelector('#pixiv-meitu-max-edge').value, '1600');
   cbs[1].checked = true;
   doc.querySelector('#pixiv-meitu-groups').value = '200003';
+  doc.querySelector('#pixiv-meitu-max-edge').value = '2048';
   await vm.runInContext('savePixivSettings()', context);
   const patch = JSON.parse(calls[0].options.body);
   assert.deepEqual(patch.meituGroups, ['100002', '200003']);
   assert.equal(patch.meituAllowPrivate, false);
   assert.equal(patch.meituCooldownSeconds, 10);
   assert.equal(patch.meituMaxImageBytes, 15 * 1048576);
+  assert.equal(patch.meituMaxEdge, 2048);
   doc.querySelector('#pixiv-meitu-groups').value = 'not-a-group';
   await assert.rejects(vm.runInContext('savePixivSettings()', context));
 });

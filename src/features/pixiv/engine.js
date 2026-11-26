@@ -678,10 +678,17 @@ export function createPixivEngine(options) {
     }
     return h;
   }
+  function effectiveProxyUrl(s, url) {
+    try {
+      const official = /(^|\.)(pixiv\.net|pximg\.net)$/.test(new URL(url).hostname);
+      return s.proxyScope === 'official' && !official ? '' : resolveProxyUrl(s);
+    } catch {
+      return resolveProxyUrl(s);
+    }
+  }
   async function doFetch(url, accept, timeoutMs, { minimal = false, controller = null, method = 'GET', redirect = 'follow', quiet = false, signal = null } = {}) {
     const s = settings();
-    const official = /(^|\.)(pixiv\.net|pximg\.net)$/.test(new URL(url).hostname);
-    const proxyUrl = s.proxyScope === 'official' && !official ? '' : resolveProxyUrl(s);
+    const proxyUrl = effectiveProxyUrl(s, url);
     const dispatcher = await dispatcherFor(proxyUrl);
     const ms = Math.max(3000, Number(timeoutMs) || 15000);
     const ac = controller ?? new AbortController();
@@ -842,18 +849,37 @@ export function createPixivEngine(options) {
     if (!total) throw new Error('图片内容为空');
     return Buffer.concat(chunks);
   }
-  async function downloadToTemp(url, timeoutMs, maxBytes, { skipRelay = false, signal = null } = {}) {
+  async function downloadToTemp(url, timeoutMs, maxBytes, { skipRelay = false, signal = null, settingsOverride = null } = {}) {
     const ms = Math.max(3000, Number(timeoutMs) || 15000);
     const cap = Math.max(64 * 1024, Number(maxBytes) || DEFAULTS.maxImageBytes);
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), ms);
     const activeSignal = signal || operationSignal;
     try {
-      const s = settings();
-      const relayed = !skipRelay && s.imageRelayUrl && new URL(url).hostname === 'i.pximg.net';
-      const resp = relayed ? await fetchRelayedImage(url, s, { fetchImpl: options.fetchImpl,
-        signal: activeSignal ? AbortSignal.any([ac.signal, activeSignal]) : ac.signal })
-        : await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', ms, { controller: ac, signal: activeSignal });
+      const s = settingsOverride ? { ...settings(), ...settingsOverride } : settings();
+      const relayed = Boolean(!skipRelay && s.imageRelayUrl && new URL(url).hostname === 'i.pximg.net');
+      const transportProxy = relayed ? s.imageRelayUrl : effectiveProxyUrl(s, url);
+      let resp;
+      if (relayed) {
+        try {
+          resp = await fetchRelayedImage(url, { ...s, maxImageBytes: cap, timeoutMs: ms }, {
+            fetchImpl: options.fetchImpl,
+            signal: activeSignal ? AbortSignal.any([ac.signal, activeSignal]) : ac.signal
+          });
+        } catch (error) {
+          if (activeSignal?.aborted) throw error;
+          if (isNetError(error)) {
+            noteNetFailure();
+            const wrapped = new Error(describeFetchError(error, ms, transportProxy, url));
+            wrapped.netError = true;
+            wrapped.hardNetError = isHardNetError(error);
+            throw wrapped;
+          }
+          throw error;
+        }
+      } else {
+        resp = await doFetch(url, 'image/avif,image/webp,image/png,image/*,*/*;q=0.8', ms, { controller: ac, signal: activeSignal });
+      }
       if (!resp.ok) {
         const e = new Error(describeImageHttp(resp.status));
         e.status = resp.status;
@@ -874,10 +900,10 @@ export function createPixivEngine(options) {
       try {
         buf = await readBodyCapped(resp, cap, ac);
       } catch (error) {
-        if (error?.tooBig) throw error;
+        if (error?.tooBig || activeSignal?.aborted) throw error;
         if (isNetError(error)) {
           noteNetFailure();
-          const wrapped = new Error(describeFetchError(error, ms, resolveProxyUrl(settings()), url));
+          const wrapped = new Error(describeFetchError(error, ms, transportProxy, url));
           wrapped.netError = true;
           wrapped.hardNetError = isHardNetError(error);
           throw wrapped;
@@ -890,7 +916,7 @@ export function createPixivEngine(options) {
       const file = path.join(tempDir(), `pixiv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}${ext}`);
       fs.writeFileSync(file, buf);
       const sourceUrl = validatedOriginUrl(url, resp.headers.get('x-origin-url'));
-      return { file, bytes: buf.length, ...(sourceUrl ? { sourceUrl } : {}) };
+      return { file, bytes: buf.length, relayed, ...(sourceUrl ? { sourceUrl } : {}) };
     } finally {
       clearTimeout(timer);
     }
@@ -1095,12 +1121,12 @@ export function createPixivEngine(options) {
       for (let attempt = 0; attempt <= retryOnce; attempt += 1) { activeSignal?.throwIfAborted();
         if (attempt > 0 && hardFail) break;
         try {
-          const got = await downloadToTemp(urls[i], s.timeoutMs, s.maxImageBytes, { skipRelay, signal: activeSignal });
+          const got = await downloadToTemp(urls[i], s.timeoutMs, s.maxImageBytes, { skipRelay, signal: activeSignal, settingsOverride: s });
           try {
             api?.log?.info?.(`[pixiv] 取图成功 ${item.pid}：${Math.round(got.bytes / 1024)}KB`
-              + `（第 ${i + 1}/${urls.length} 个候选${attempt ? `，瞬时失败后重试第 ${attempt} 次` : ''}，档位 ${s.imageSize}）`);
+              + `（第 ${i + 1}/${urls.length} 个候选${got.relayed ? '，中转压缩' : ''}${attempt ? `，瞬时失败后重试第 ${attempt} 次` : ''}，档位 ${s.imageSize}）`);
           } catch { /* 保留主流程。 */ }
-        if (skipDownsample) {
+        if (skipDownsample || got.relayed) {
           return { ...got, downsized: false, url: got.sourceUrl || urls[i] };
         }
         const final = await downsampleToJpeg(got.file, {
@@ -1127,7 +1153,7 @@ export function createPixivEngine(options) {
           }
           if (i + 1 < urls.length) {
             const why = error?.tooBig ? error.message : String(error?.message ?? error).slice(0, 60);
-            try { api?.log?.info?.(`[pixiv] 候选地址不可用（${why}），改试 PID 简写形式`); } catch { /* 保留主流程。 */ }
+            try { api?.log?.info?.(`[pixiv] 候选地址不可用（${why}），改试下一个候选地址`); } catch { /* 保留主流程。 */ }
           }
           break;
         }

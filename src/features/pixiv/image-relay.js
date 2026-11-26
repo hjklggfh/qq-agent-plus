@@ -12,8 +12,10 @@ export async function fetchRelayedImage(raw, settings, options = {}) {
   if (url.protocol !== 'https:' || url.hostname !== 'i.pximg.net' || url.port || url.username || url.password || url.search || url.hash) throw new Error('仅可中转官方图片地址');
   const endpoint = validateImageRelay(settings.imageRelayUrl);
   const fetchImpl = options.fetchImpl || undiciFetch;
+  const maxBytes = Math.max(65536, Math.min(16 * 1024 * 1024, Math.round(Number(settings.maxImageBytes) || 5 * 1024 * 1024)));
+  const maxEdge = Math.max(256, Math.min(4096, Math.round(Number(settings.downsampleMaxEdge) || 1200)));
+  const timeoutSeconds = Math.max(3, Math.min(60, Math.ceil((Number(settings.timeoutMs) || 15000) / 1000)));
   return fetchImpl.call(null, endpoint, { method: 'POST', redirect: 'error', signal: options.signal,
     headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url.href,
-      maxBytes: settings.maxImageBytes, maxEdge: settings.downsampleMaxEdge,
-      timeoutSeconds: Math.max(3, Math.min(60, Math.ceil(settings.timeoutMs / 1000))) }) });
+      maxBytes, maxEdge, timeoutSeconds }) });
 }

@@ -57,17 +57,19 @@ function formatMeituCaption(item) {
   lines.push(`PID: ${item.pid}`);
   return lines.join('\n');
 }
-function meituCandidateUrls(item, hasProxy) {
+function meituCandidateUrls(item, useOfficialHost) {
   const raw = Array.isArray(item?.imageUrls) && item.imageUrls.length
     ? item.imageUrls
     : (item?.imageUrl ? [item.imageUrl] : []);
-  const normalized = raw.map((u) => {
+  const normalized = [];
+  for (const u of raw) {
     try {
       const parsed = new URL(u);
-      if (parsed.hostname === 'i.pximg.net' && !hasProxy) parsed.hostname = 'i.pixiv.re';
-      return parsed.href;
-    } catch { return ''; }
-  }).filter(Boolean);
+      if (parsed.hostname === 'i.pximg.net' && !useOfficialHost) parsed.hostname = 'i.pixiv.re';
+      else if (parsed.hostname === 'i.pixiv.re' && useOfficialHost) parsed.hostname = 'i.pximg.net';
+      if (!normalized.includes(parsed.href)) normalized.push(parsed.href);
+    } catch { /* 忽略无效地址 */ }
+  }
   // 方案 A：仅保留原图(original)与官方高清(regular/master1200)，避免回落为小缩略图。
   const preferred = normalized.filter((u) => /\/img-original\/|\/img-master\//.test(u) && !/\/c\/\d+x\d+/.test(u));
   const list = preferred.length ? preferred : normalized.filter((u) => !/\/c\/\d+x\d+/.test(u));
@@ -248,6 +250,7 @@ export class PixivManager {
   }
   async runMeitu(args, chatKey, runId, replyMessageId, controller, parentSignal) {
     const s = this.settings();
+    const startedMs = Date.now();
     const timeoutMs = Math.min(Math.max(Number(s.timeoutMs) || 15000, 15000) * 3, 90000);
     const signal = AbortSignal.any([controller.signal, ...(parentSignal ? [parentSignal] : []), AbortSignal.timeout(timeoutMs)]);
     const keyword = String(args?.keyword || '').trim().slice(0, 100);
@@ -263,7 +266,8 @@ export class PixivManager {
         ...this.engine.settings(),
         imageSize: 'original',
         maxImageBytes: s.meituMaxImageBytes,
-        downsampleOverBytes: 0
+        downsampleOverBytes: s.downsampleOverBytes > 0 ? s.downsampleOverBytes : 800 * 1024,
+        downsampleMaxEdge: s.meituMaxEdge
       };
       // 强制仅检索全年龄（0 = safe），永不请求 R18。
       const found = await this.engine.searchIllusts(meituSettings, keyword, 1, new Set([0]), { signal });
@@ -275,31 +279,34 @@ export class PixivManager {
       if (!works.length && safeItems.length) {
         works = this.engine.buildTryList(safeItems, this.engine.deadSet(), poolLimit, 1, Math.max(s.retryCandidates, 3));
       }
+      this.options.log?.info?.(`[meitu] ${chatKey} 检索完成（${found.backend}，候选 ${works.length}/${safeItems.length}，耗时 ${Date.now() - startedMs}ms）`);
       if (!works.length) throw new Error(keyword ? `没有找到“${keyword}”相关的全年龄作品，请换个关键词试试。` : '暂时没有获取到可用美图，请稍后再试。');
 
       let lastError = null;
-      const hasProxy = Boolean(this.engine.resolveProxyUrl(meituSettings));
+      const useOfficialHost = Boolean(this.engine.resolveProxyUrl(meituSettings) || meituSettings.imageRelayUrl);
       for (const candidate of works) {
         signal.throwIfAborted();
         if (!this.meituAllowed(chatKey)) throw new Error('当前会话已关闭美图功能。');
         let work = candidate;
-        let urls = meituCandidateUrls(work, hasProxy);
+        let urls = meituCandidateUrls(work, useOfficialHost);
         if (!urls.length) {
           const detailed = await this.detail(work.pid, signal, { imageSize: 'original' });
           if (!this.isSafeForMeitu(detailed)) continue;
           work = { ...work, ...detailed, tags: detailed.tags?.length ? detailed.tags : work.tags };
-          urls = meituCandidateUrls(work, hasProxy);
+          urls = meituCandidateUrls(work, useOfficialHost);
         }
         if (!urls.length) continue;
 
         let got = null;
         try {
-          // 优先原图（不走东京 /image 压缩、不做本地 ffmpeg 降采样），超限或失败按方案 A 回退官方 regular。
+          // 优先拉取原图并走中转或本地压缩（最长边 meituMaxEdge），超限或不可用时按方案 A 回退官方 regular。
           got = await this.engine.fetchImage(
             { ...work, imageUrl: '', imageUrls: urls, thumbnail: '' },
             meituSettings,
-            { allowTemplate: false, skipRelay: true, skipDownsample: true, signal }
+            { allowTemplate: false, skipRelay: false, skipDownsample: false, signal }
           );
+          const gotRelayed = Boolean(got.relayed);
+          const gotDownsized = Boolean(got.downsized);
           const buffer = fs.readFileSync(got.file);
           if (!imageType(buffer)) throw new Error('返回内容不是支持的图片');
           try { fs.unlinkSync(got.file); } catch { /* 临时目录后续清理 */ }
@@ -326,12 +333,14 @@ export class PixivManager {
           record.status = 'done';
           this.cache(work);
           this.engine.markSeen(work.pid);
+          this.options.log?.info?.(`[meitu] ${chatKey} 发送成功 PID ${work.pid}（${Math.round(buffer.length / 1024)}KB，${gotRelayed ? '中转压缩' : (gotDownsized ? '本地压缩' : '原图')}，总耗时 ${Date.now() - startedMs}ms）`);
           return { content: `已发送美图 PID ${work.pid}` };
         } catch (error) {
           if (got?.file) { try { fs.rmSync(got.file, { force: true }); } catch { /* 保留主流程 */ } }
           if (sending) throw error;
           signal.throwIfAborted();
           lastError = error;
+          this.options.log?.warn?.(`[meitu] ${chatKey} 候选 PID ${work.pid} 下载失败：${String(error?.message || error).slice(0, 200)}`);
           record.failedPages.push({
             pid: work.pid,
             page: 1,
@@ -350,6 +359,7 @@ export class PixivManager {
           ? '美图获取已取消或超时，请稍后再试。'
           : String(error?.message || '获取美图失败').slice(0, 300);
       record.error = content;
+      this.options.log?.warn?.(`[meitu] ${chatKey} 结束（${record.status}，耗时 ${Date.now() - startedMs}ms）：${content}；raw=${String(error?.message || error).slice(0, 200)}`);
       return { content, isError: true, sendUnknown: sending };
     } finally {
       record.finishedAt = new Date().toISOString();

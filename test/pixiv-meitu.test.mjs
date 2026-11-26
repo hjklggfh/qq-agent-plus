@@ -40,17 +40,21 @@ test('config 默认全关并严格校验美图配置', () => {
   assert.equal(cfg.meituAllowPrivate, false);
   assert.equal(cfg.meituCooldownSeconds, 10);
   assert.equal(cfg.meituMaxImageBytes, 15 * 1024 * 1024);
+  assert.equal(cfg.meituMaxEdge, 1600);
   assert.equal(DEFAULT_PIXIV_CONFIG.meituGroups.length, 0);
 
   assert.doesNotThrow(() => validatePixivPatch({
     meituGroups: ['747206342', '892485992'],
     meituAllowPrivate: true,
     meituCooldownSeconds: 10,
-    meituMaxImageBytes: 15 * 1024 * 1024
+    meituMaxImageBytes: 15 * 1024 * 1024,
+    meituMaxEdge: 2048
   }));
   assert.throws(() => validatePixivPatch({ meituGroups: ['bad'] }), /群白名单/);
   assert.throws(() => validatePixivPatch({ meituCooldownSeconds: -1 }), /meituCooldownSeconds/);
   assert.throws(() => validatePixivPatch({ meituMaxImageBytes: 1024 }), /meituMaxImageBytes/);
+  assert.throws(() => validatePixivPatch({ meituMaxEdge: 128 }), /meituMaxEdge/);
+  assert.throws(() => validatePixivPatch({ meituMaxEdge: 8192 }), /meituMaxEdge/);
 });
 
 test('默认全关：未授权群静默忽略，不发请求不发消息', async (t) => {
@@ -79,10 +83,11 @@ test('默认全关：未授权群静默忽略，不发请求不发消息', async
   assert.equal(sentImages, 0);
 });
 
-test('/美图 强制全年龄、优先无损原图不走压缩中转、单条引用图文回复且10s冷却有效', async (t) => {
+test('/美图 强制全年龄、配置图片中转时回写 i.pximg.net 走压缩中转、单条引用图文回复且10s冷却有效', async (t) => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixiv-meitu-ok-'));
   t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const requests = [];
+  const relayBodies = [];
   const sentImages = [];
   const sentTexts = [];
   const sentFiles = [];
@@ -95,11 +100,15 @@ test('/美图 强制全年龄、优先无损原图不走压缩中转、单条引
         outputFormat: 'pdf',
         ratings: ['safe', 'r18', 'r18g'],
         chatRatings: { 'group:747206342': ['safe', 'r18', 'r18g'] },
+        proxyUrl: 'http://127.0.0.1:3222',
+        proxyScope: 'official',
         imageRelayUrl: 'http://127.0.0.1:3222/image',
         downsampleOverBytes: 1,
+        downsampleMaxEdge: 1200,
         meituGroups: ['747206342'],
         meituCooldownSeconds: 10,
-        meituMaxImageBytes: 15 * 1024 * 1024
+        meituMaxImageBytes: 20 * 1024 * 1024,
+        meituMaxEdge: 1600
       }
     }),
     updateConfig: () => {},
@@ -109,7 +118,7 @@ test('/美图 强制全年龄、优先无损原图不走压缩中转、单条引
     send: async (chatKey, msgs) => { sentTexts.push({ chatKey, msgs }); },
     file: async (chatKey, payload) => { sentFiles.push({ chatKey, payload }); },
     forward: async () => { throw new Error('should not use forward'); },
-    fetchImpl: async (url) => {
+    fetchImpl: async (url, init) => {
       requests.push(String(url));
       if (String(url).startsWith('https://api.lolicon.app/setu/v2')) {
         const u = new URL(url);
@@ -141,8 +150,14 @@ test('/美图 强制全年龄、优先无损原图不走压缩中转、单条引
           ]
         });
       }
-      if (String(url).includes('113383502_p0.png')) {
-        return imageResponse(PNG_1X1);
+      if (String(url) === 'http://127.0.0.1:3222/image') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        relayBodies.push(body);
+        assert.equal(body.url, 'https://i.pximg.net/img-original/img/2023/11/14/00/00/00/113383502_p0.png');
+        assert.equal(body.maxEdge, 1600);
+        // 超过中转端 16MB 限制时自动截断到 16MB，避免 400
+        assert.equal(body.maxBytes, 16 * 1024 * 1024);
+        return imageResponse(PNG_1X1, { contentType: 'image/jpeg' });
       }
       throw new Error(`unexpected fetch: ${url}`);
     }
@@ -160,12 +175,119 @@ test('/美图 强制全年龄、优先无损原图不走压缩中转、单条引
     sentImages[0].payload.text,
     '标题: 水着マリー\n作者: のみお\n标签: ブルーアーカイブ、碧蓝档案、伊落マリー、水着\nPID: 113383502'
   );
-  assert.ok(requests.every((u) => !u.includes('/image')));
+  assert.equal(relayBodies.length, 1);
+  assert.ok(requests.every((u) => !u.includes('i.pixiv.re')));
 
   // 10s 冷却拦截
   const second = await manager.startMeitu({ mode: 'meitu', keyword: '' }, 'group:747206342', '202', 88002);
   assert.equal(second.isError, true);
   assert.match(second.content, /过于频繁/);
+});
+
+test('配置仅代理(proxyScope=official)无中转时，i.pixiv.re 回写为 i.pximg.net；中转返回 413 时自动回退 regular', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixiv-meitu-relay413-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const relayUrls = [];
+  const sentImages = [];
+
+  const manager = new PixivManager({
+    dataDir,
+    getConfig: () => ({
+      pixiv: {
+        enabled: true,
+        proxyUrl: 'http://127.0.0.1:3222',
+        proxyScope: 'official',
+        imageRelayUrl: 'http://127.0.0.1:3222/image',
+        meituGroups: ['892485992'],
+        meituCooldownSeconds: 0,
+        meituMaxImageBytes: 15 * 1024 * 1024,
+        meituMaxEdge: 1600
+      }
+    }),
+    updateConfig: () => {},
+    canRun: () => true,
+    onebot: { selfId: '999999' },
+    image: async (chatKey, payload, opts) => { sentImages.push({ chatKey, payload, opts }); },
+    send: async () => {},
+    forward: async () => {},
+    fetchImpl: async (url, init) => {
+      if (String(url).startsWith('https://api.lolicon.app/setu/v2')) {
+        return jsonResponse({
+          error: '',
+          data: [{
+            pid: 148421699,
+            title: 'HugeOriginal',
+            author: 'anon',
+            r18: false,
+            tags: ['Original'],
+            urls: {
+              original: 'https://i.pixiv.re/img-original/img/2026/08/14/20/15/50/148421699_p0.png',
+              regular: 'https://i.pixiv.re/img-master/img/2026/08/14/20/15/50/148421699_p0_master1200.jpg'
+            }
+          }]
+        });
+      }
+      if (String(url) === 'http://127.0.0.1:3222/image') {
+        const body = JSON.parse(String(init?.body || '{}'));
+        relayUrls.push(body.url);
+        if (body.url.includes('img-original')) return new Response('', { status: 413 });
+        if (body.url.includes('img-master')) return imageResponse(PNG_1X1, { contentType: 'image/jpeg' });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }
+  });
+  t.after(() => manager.stop());
+
+  const res = await manager.startMeitu({ mode: 'meitu', keyword: '' }, 'group:892485992', '251', 88051);
+  assert.equal(res.isError, undefined);
+  assert.equal(sentImages.length, 1);
+  assert.deepEqual(relayUrls, [
+    'https://i.pximg.net/img-original/img/2026/08/14/20/15/50/148421699_p0.png',
+    'https://i.pximg.net/img-master/img/2026/08/14/20/15/50/148421699_p0_master1200.jpg'
+  ]);
+});
+
+test('proxyScope=official 下直连非官方域名读取流超时，报错不得误标已走代理', async (t) => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pixiv-meitu-err-'));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const manager = new PixivManager({
+    dataDir,
+    getConfig: () => ({
+      pixiv: {
+        enabled: true,
+        proxyUrl: 'http://127.0.0.1:3222',
+        proxyScope: 'official',
+        imageRelayUrl: '',
+        timeoutMs: 3000,
+        pageRetryOnce: 0
+      }
+    }),
+    updateConfig: () => {},
+    canRun: () => true,
+    onebot: { selfId: '999999' },
+    image: async () => {},
+    send: async () => {},
+    forward: async () => {},
+    fetchImpl: async () => new Response(new ReadableStream({
+      pull() {
+        return Promise.reject(new DOMException('The operation was aborted', 'AbortError'));
+      }
+    }), { status: 200, headers: { 'content-type': 'image/png' } })
+  });
+  t.after(() => manager.stop());
+
+  await assert.rejects(
+    manager.engine.fetchImage(
+      { pid: '123456', imageUrls: ['https://i.pixiv.re/img-original/img/2026/01/01/00/00/00/123456_p0.png'] },
+      manager.engine.settings(),
+      { allowTemplate: false, skipRelay: true, skipDownsample: true }
+    ),
+    (err) => {
+      assert.match(err.message, /当前是直连/);
+      assert.doesNotMatch(err.message, /已走代理/);
+      return true;
+    }
+  );
 });
 
 test('方案 A：原图超过 15MB 上限时自动回退同一作品官方 regular 高清图', async (t) => {

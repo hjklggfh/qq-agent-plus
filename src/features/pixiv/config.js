@@ -15,7 +15,7 @@ export const DEFAULT_PIXIV_CONFIG = Object.freeze({
   userAgent: '', excludeAI: false, stateCap: 2000, retryCandidates: 3,
   deadTtlDays: 7, poolSize: 5, pageRetryOnce: 1,
   meituGroups: Object.freeze([]), meituAllowPrivate: false,
-  meituCooldownSeconds: 10, meituMaxImageBytes: 15 * 1024 * 1024
+  meituCooldownSeconds: 10, meituMaxImageBytes: 15 * 1024 * 1024, meituMaxEdge: 1600
 });
 const RATINGS = ['safe', 'r18', 'r18g'];
 export function validRatings(value) {
@@ -58,7 +58,7 @@ export function validatePixivPatch(patch) {
     ['maxImageBytes', 64 * 1024, 16 * 1024 * 1024], ['downsampleOverBytes', 0, 16 * 1024 * 1024],
     ['downsampleMaxEdge', 256, 4096], ['downsampleQuality', 2, 31], ['cooldownSeconds', 0, 3600],
     ['stateCap', 50, 10000], ['retryCandidates', 0, 10], ['deadTtlDays', 0, 365], ['poolSize', 1, 50], ['pageRetryOnce', 0, 2],
-    ['meituCooldownSeconds', 0, 3600], ['meituMaxImageBytes', 1048576, 30 * 1048576]
+    ['meituCooldownSeconds', 0, 3600], ['meituMaxImageBytes', 1048576, 30 * 1048576], ['meituMaxEdge', 256, 4096]
   ]) if (key in patch && (!Number.isInteger(patch[key]) || patch[key] < min || patch[key] > max)) throw new Error(`${key} 必须在 ${min}—${max} 之间`);
 }
 export function pixivConfig(raw = {}) {
