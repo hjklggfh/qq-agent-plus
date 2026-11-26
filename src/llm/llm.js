@@ -2,7 +2,7 @@
 // 支持工具调用、usage 统计和可选模型。
 import { getConfig } from '../core/config.js';
 import { stripLoneSurrogates } from '../core/util.js';
-import { normalizeThinkingIntent, resolveThinkingPatch, modelServiceById, modelServiceOfBaseUrl, effectiveThinkingRaw, hostOf } from '../core/provider-presets.js';
+import { normalizeThinkingIntent, resolveThinkingPatch, modelServiceById, modelServiceOfBaseUrl, effectiveThinkingRaw, hostOf, DEFAULT_OFF_PATCH } from '../core/provider-presets.js';
 import { resolveModelPrice, priceAt } from '../pricing/model-prices.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { assertTimeAllowed, watchTimeWindow } from '../core/time-gate.js';
@@ -83,6 +83,10 @@ export function isRetryableError(error) {
   // PERSONA_HANDED_BACK）。按可重试处理，批次会自动回到队列而不是标成 failed。
   if (error?.code === 'PERSONA_HANDED_BACK') return true;
   const msg = String(error?.message ?? error ?? '');
+
+  // 超时（含 Node AbortSignal.timeout 的 "aborted due to timeout"）必须排在 aborted 之前，
+  // 否则会被下面的 /aborted/ 误杀成"主动取消"而不重试、不切兜底。
+  if (isTimeoutError(error)) return true;
 
   // 主动中止（用户/系统取消）：重试没有意义
   if (/aborted|中止|已取消|cancel/i.test(msg)) return false;
@@ -230,8 +234,46 @@ export function trimForModerationRetry(messages) {
   return lastUser ? [...systems, lastUser] : systems;
 }
 
+function isTimeoutError(error) {
+  const msg = String(error?.message ?? error ?? '');
+  return error?.name === 'TimeoutError' || /模型请求超时|请求超时|ETIMEDOUT|timed out|timeout/i.test(msg);
+}
+
+/** 历史消息里是否存在"调用了工具但没有 reasoning_content"的 assistant 消息（例如前一轮由 Gemini 等非 DeepSeek 模型产出）。 */
+function hasAssistantToolCallsWithoutReasoning(messages) {
+  return Array.isArray(messages) && messages.some((m) => (
+    m?.role === 'assistant'
+    && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
+    && !String(m.reasoning_content || '').trim()
+  ));
+}
+
+/** 跨渠道切兜底时剥掉上一家厂商私有的 tool_call 扩展字段（如 Google thought_signature），只保留标准 OpenAI 结构。 */
+function stripVendorToolCallExtras(messages) {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map((m) => {
+    if (m?.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) return m;
+    return {
+      ...m,
+      tool_calls: m.tool_calls.map((tc) => ({
+        id: tc.id,
+        type: tc.type || 'function',
+        function: tc.function
+      }))
+    };
+  });
+}
+
+function disableThinkingFor(serviceId, customParams) {
+  const resolved = resolveThinkingPatch(serviceId, 'off', customParams);
+  const patch = resolved?.patch && Object.keys(resolved.patch).length
+    ? resolved.patch
+    : DEFAULT_OFF_PATCH;
+  return { mode: 'off', patch, approx: false, effectiveOff: true, serviceId };
+}
+
 /** 同一个模型内部的"带重试 + 审核拦截重试"完整走法；抽出来给主模型和兜底模型共用。 */
-async function runCompletionWithRetries(args, retries) {
+async function runCompletionWithRetries(args, retries, retryBudget = null) {
   let lastError = null;
   let moderationRetried = false;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -251,6 +293,18 @@ async function runCompletionWithRetries(args, retries) {
       lastError = error;
       if (args.signal?.aborted || attempt >= retries || !isRetryableError(error)) throw error;
       const wait = 1000 * Math.pow(2, attempt);   // 1s, 2s
+      if (retryBudget?.canFallback) {
+        const timedOut = isTimeoutError(error);
+        // 有可用兜底时，主模型超时最多额外重试 1 次（共 2 次），避免连续 3 次卡满 timeoutMs 撞上 Run deadline。
+        if (timedOut && attempt >= 1) throw error;
+        if (retryBudget.deadlineAt > 0) {
+          const remainingAfterWait = retryBudget.deadlineAt - Date.now() - wait;
+          const requiredForNextTry = timedOut
+            ? retryBudget.primaryTimeoutMs + retryBudget.fallbackReserveMs
+            : retryBudget.fallbackReserveMs;
+          if (remainingAfterWait <= requiredForNextTry) throw error;
+        }
+      }
       log.warn(`[llm] 请求失败（第 ${attempt + 1} 次尝试），${wait}ms 后重试：${error?.message ?? error}`);
       await delay(wait, undefined, { signal: args.signal });
     }
@@ -293,17 +347,54 @@ function pickFallback(args) {
 
 /**
  * 带重试 + 兜底模型的对话请求。
- * 主模型彻底失败（重试耗尽 / 认证欠费类错误），或两轮都被服务商审核拦下时，
+ * 主模型彻底失败（重试耗尽 / 认证欠费类错误 / 剩余时间不足以再等主模型重试），或两轮都被服务商审核拦下时，
  * 自动改用 config.api.fallback 里配置的备用模型再试一次（只切一次，不递归）。
  *
  * `args.noFallback`：本次调用禁止兜底。第二人设用它 ——
  * "Claude 的词配上兜底模型的脑子"比不回答更糟（人设与模型是绑定的）。
+ * `args.useFallback`：同一 run 内已切兜底后的后续工具轮次，直接继续走兜底模型，
+ * 避免中途跳回主模型导致跨厂商 tool_calls 协议字段不兼容（如 Gemini 报缺 thought_signature）。
  */
 export async function chatCompletionWithRetry(args, retries = 2) {
+  const apiNow = effectiveApi();
+  const primaryBase = String(apiNow.baseUrl || '');
+  const invokeFallback = async (fb, fbRetries) => {
+    const preChannelChanged = Boolean(fb.baseUrl) && hostOf(fb.baseUrl) !== hostOf(primaryBase);
+    const fbMessages = preChannelChanged ? stripVendorToolCallExtras(args.messages) : args.messages;
+    const fbResponse = await runCompletionWithRetries(
+      { ...args, messages: fbMessages, model: '', overrides: fb, useFallback: false },
+      fbRetries
+    );
+    // 2026-10-06 复审 P3：标记本次是否真的换了渠道（兜底端点与主渠道 host 不同）。
+    // 同渠道换模型不算换渠道 —— vendor 不变；跨渠道时调用方把成本记到实际渠道名下。
+    const channelChanged = Boolean(fbResponse.originBaseUrl)
+      && hostOf(fbResponse.originBaseUrl) !== hostOf(primaryBase);
+    return { ...fbResponse, viaFallback: true, channelChanged };
+  };
+
+  if (args?.useFallback === true && args?.noFallback !== true) {
+    const stickyFb = pickFallback(args);
+    if (stickyFb) {
+      args.signal?.throwIfAborted();
+      return invokeFallback(stickyFb, Math.min(retries, 1));
+    }
+  }
+
+  const candidateFb = args?.noFallback !== true ? pickFallback(args) : null;
+  const primaryTimeoutMs = Math.max(5000, Number(args.overrides?.timeoutMs ?? apiNow.timeoutMs) || 180000);
+  const retryBudget = candidateFb
+    ? {
+      canFallback: true,
+      deadlineAt: Number(args.deadlineAt) || 0,
+      primaryTimeoutMs,
+      fallbackReserveMs: Math.min(Math.max(1000, Number(candidateFb.timeoutMs) || primaryTimeoutMs), 45000)
+    }
+    : null;
+
   let response = null;
   let primaryError = null;
   try {
-    response = await runCompletionWithRetries(args, retries);
+    response = await runCompletionWithRetries(args, retries, retryBudget);
   } catch (error) {
     primaryError = error;
   }
@@ -311,7 +402,7 @@ export async function chatCompletionWithRetry(args, retries = 2) {
   const shouldFallback = primaryError
     ? isFallbackWorthy(primaryError)
     : isModerationRefusal(response);
-  const fb = shouldFallback && args?.noFallback !== true ? pickFallback(args) : null;
+  const fb = shouldFallback ? candidateFb : null;
   if (!fb || args.signal?.aborted) {
     if (primaryError) throw primaryError;
     // 兜底不可用时把**本次结果**如实返回；null 只能来自内部异常路径（throw null 已被上面堵死），
@@ -324,13 +415,7 @@ export async function chatCompletionWithRetry(args, retries = 2) {
     ? `失败（${String(primaryError?.message ?? primaryError).slice(0, 90)}）`
     : '两轮都被审核拦截';
   log.warn(`[llm] 主模型${why}，改用兜底模型 ${fb.model}`);
-  const fbResponse = await runCompletionWithRetries({ ...args, model: '', overrides: fb }, 1);
-  // 2026-10-06 复审 P3：标记本次是否真的换了渠道（兜底端点与主渠道 host 不同）。
-  // 同渠道换模型不算换渠道 —— vendor 不变；跨渠道时调用方把成本记到实际渠道名下。
-  const primaryBase = String(effectiveApi().baseUrl || '');
-  const channelChanged = Boolean(fbResponse.originBaseUrl)
-    && hostOf(fbResponse.originBaseUrl) !== hostOf(primaryBase);
-  return { ...fbResponse, viaFallback: true, channelChanged };
+  return invokeFallback(fb, 1);
 }
 
 /**
@@ -367,10 +452,19 @@ export async function chatCompletion({
   const api = overrides || effectiveApi();
   // 聊天这类"随口回一句"的任务关掉思考：省一半输出 token、少 1~3 秒；
   // 判断/写作类（表情包要不要收、说说、空间互动、身份评估）不传 purpose，继续思考。
-  const thinking = thinkingFor(purpose, overrides);
-  const thinkingOff = thinking.effectiveOff;
+  let thinking = thinkingFor(purpose, overrides);
+  let thinkingOff = thinking.effectiveOff;
+  const targetModel = String(model || api.model || '').trim();
+  const missingToolReasoning = hasAssistantToolCallsWithoutReasoning(messages);
+  const requiresReasoningInThinking = thinking.serviceId === 'deepseek'
+    || /\bdeepseek\b/i.test(targetModel);
+  if (!thinkingOff && missingToolReasoning && requiresReasoningInThinking) {
+    thinking = disableThinkingFor(thinking.serviceId, getConfig()?.api?.thinkingParams);
+    thinkingOff = true;
+    log.warn(`[llm] 历史工具调用缺少 reasoning_content，本次对 ${targetModel || api.baseUrl} 临时关闭思考模式以兼容跨模型切换`);
+  }
   const body = {
-    model: String(model || api.model || '').trim(),
+    model: targetModel,
     messages: messages.map(({ role, content, tool_calls, tool_call_id, name, reasoning_content }) => ({
       role,
       // 请求前兜底：字符串里若有孤立代理项（只可能来自把 emoji 切两半的错误截断），
@@ -469,13 +563,30 @@ export async function chatCompletion({
       // "invalid_request_error"，会误判成参数被拒——白重试一次还打误导日志（审查 2026-09-28）。
       const paramRejected = res.status === 400 && patchKeys.length
         && /thinking|reasoning/i.test(text);
+      const reasoningRequiredRejected = res.status === 400 && !thinkingOff
+        && missingToolReasoning && /reasoning_content/i.test(text);
       if (paramRejected) {
         const retryBody = { ...body };
         for (const k of patchKeys) delete retryBody[k];
-        if (!thinkingParamRejectedWarned.has(api.model)) {
-          thinkingParamRejectedWarned.add(api.model);
-          log.warn('[llm] 模型拒绝思考参数，已去掉后重试（每个模型提示一次）：', api.model, '|', text.slice(0, 160));
+        if (!thinkingParamRejectedWarned.has(targetModel || api.model)) {
+          thinkingParamRejectedWarned.add(targetModel || api.model);
+          log.warn('[llm] 模型拒绝思考参数，已去掉后重试（每个模型提示一次）：', targetModel || api.model, '|', text.slice(0, 160));
         }
+        res = await send(retryBody);
+        if (!res.ok) text = await res.text();
+      } else if (reasoningRequiredRejected) {
+        const offThinking = disableThinkingFor(thinking.serviceId, getConfig()?.api?.thinkingParams);
+        const retryBody = {
+          ...body,
+          ...offThinking.patch,
+          messages: body.messages.map((m) => {
+            if (!m || !('reasoning_content' in m)) return m;
+            const copy = { ...m };
+            delete copy.reasoning_content;
+            return copy;
+          })
+        };
+        log.warn('[llm] 服务端要求回传 reasoning_content 但历史缺少该字段，临时关闭思考后重试一次：', targetModel || api.baseUrl);
         res = await send(retryBody);
         if (!res.ok) text = await res.text();
       }

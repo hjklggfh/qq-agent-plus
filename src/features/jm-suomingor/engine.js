@@ -44,7 +44,8 @@ export const IMAGE_DOMAINS = [
 ];
 // CDN 可能返回不同编码版本；仅在两个主节点间优选，其余保留原有顺序兜底。
 export const IMAGE_ADAPTIVE_DOMAINS = ['cdn-msp.jmapiproxy2.cc', 'cdn-msp.jmapiproxy1.cc'];
-export const DEFAULT_API_DOMAINS = ['www.cdnhjk.net', 'www.cdngwc.cc', 'www.cdngwc.net', 'www.cdngwc.club'];
+// 优先把活跃 API 域名排在前面（www.cdnhjk.net / www.cdngwc.cc 已实测返回 nginx 404，保留靠后作兜底）
+export const DEFAULT_API_DOMAINS = ['www.cdngwc.net', 'www.cdngwc.club', 'www.cdnhjk.net', 'www.cdngwc.cc'];
 export const DEFAULT_WEB_DOMAINS = ['18comic.vip', '18comic.org', 'jm-comic2.cc', 'jm-comic3.cc'];
 
 export const IMAGE_SUFFIXES = ['.jpg', '.jpeg', '.webp', '.png', '.gif'];
@@ -147,6 +148,21 @@ export function decodeApiEnvelope(text, ts) {
   const pad = plain.length ? plain[plain.length - 1] : 0;
   const body = pad > 0 && pad <= 16 && pad <= plain.length ? plain.subarray(0, plain.length - pad) : plain;
   return JSON.parse(body.toString('utf8'));
+}
+
+/** 识别禁漫活跃接口返回的合法空信封（如 {"code":200,"data":[]}），表示资源不存在/结果为空而非域名失效。 */
+export function isEmptyApiEnvelope(text) {
+  try {
+    const json = JSON.parse(String(text));
+    if (!json || typeof json !== 'object') return false;
+    if (Number(json.code) !== 200) return false;
+    if (json.errorMsg) return false;
+    return json.data === null
+      || json.data === ''
+      || (Array.isArray(json.data) && json.data.length === 0);
+  } catch {
+    return false;
+  }
 }
 
 /** 网页兜底解析：抓 og:url 取 ID、var page_arr 取图片名、var scramble_id、og:image。 */
@@ -275,6 +291,11 @@ export function createClient(options = {}) {
           signal,
         });
         const buf = Buffer.from(await res.arrayBuffer());
+        if (res.status >= 500 && res.status <= 504 && attempt < retries) {
+          lastError = `HTTP ${res.status}`;
+          await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+          continue;
+        }
         return {
           ok: res.status >= 200 && res.status < 300,
           status: res.status,
@@ -317,6 +338,20 @@ export function createClient(options = {}) {
           },
         });
         if (res.ok) {
+          if (isEmptyApiEnvelope(res.text)) {
+            if (apiPath.startsWith('/album?') || apiPath.startsWith('/chapter?')) {
+              const idMatch = apiPath.match(/[?&]id=(\d+)/);
+              const targetLabel = apiPath.startsWith('/chapter?')
+                ? `章节 ${idMatch?.[1] || ''}`.trim()
+                : `本子 JM${idMatch?.[1] || ''}`.trim();
+              const err = new Error(`${targetLabel} 不存在或已被删除`);
+              err.code = 'JM_NOT_FOUND';
+              throw err;
+            }
+            if (apiOnly || apiPath.startsWith('/latest?')) {
+              return { total: 0, content: [] };
+            }
+          }
           try {
             const data = decodeApiEnvelope(res.text, ts);
             if (data !== null) return data;

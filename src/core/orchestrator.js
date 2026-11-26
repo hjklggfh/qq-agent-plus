@@ -1258,6 +1258,7 @@ export class Orchestrator {
     const [kind, chatId] = String(chatKey).split(':');
     let controller = null;
     let runTimer = null;
+    let deadlineAt = 0;
     let releaseTimeGuard = null;
     let seq = 0;
     let session = waitingSessionId ? this.sessions.get(waitingSessionId) : null;
@@ -1306,6 +1307,7 @@ export class Orchestrator {
       session.leaseId = lease?.id || session.id;
       controller = new AbortController();
       this.controllers.set(chatKey, controller);
+      deadlineAt = Date.now() + runTimeoutMs;
       runTimer = setTimeout(() => controller.abort(new Error('Run deadline exceeded')), runTimeoutMs);
       releaseTimeGuard = watchTimeWindow((error) => controller.abort(error), chatKey);
       this.emit('chat-update', chatKey);
@@ -1330,7 +1332,7 @@ export class Orchestrator {
 
     try {
       const runResult = await this.#runAgent(session, { kind, chatId, chatKey, triggerEntries, proactive, privateProactive, wakeNote, paced, seq,
-        manual, contextLimit: tierResult.count, tierInfo: tierResult, conversation, signal: controller.signal });
+        manual, contextLimit: tierResult.count, tierInfo: tierResult, conversation, signal: controller.signal, deadlineAt });
       controller.signal.throwIfAborted();
       if (conversation.mode === 'lifecycle') {
         const handoff = this.#commitSessionHandoff(session, { chatKey, triggerEntries });
@@ -1720,7 +1722,7 @@ export class Orchestrator {
   /** 明确被叫到却没有任何可见发送时，最多再请求一次模型；仍失败只发固定说明。 */
   async #ensureDirectedReply({
     session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
-    manual, signal, runLimits, replyRepairAttempted, roundsExhausted
+    manual, signal, runLimits, replyRepairAttempted, roundsExhausted, stickToFallback = false, deadlineAt = 0
   }) {
     if (replyRepairAttempted && session.sent.length) {
       session.replyCorrection = 'corrected';
@@ -1762,8 +1764,10 @@ export class Orchestrator {
           messages: correctionMessages,
           tools: toOpenAiTools(sendTools),
           signal,
+          deadlineAt,
           purpose: 'chat',
-          model: session.model || undefined,
+          model: stickToFallback ? '' : (session.model || undefined),
+          useFallback: stickToFallback,
           noFallback: session.chatProfile === 'alt'
         });
         signal.throwIfAborted();
@@ -1847,7 +1851,8 @@ export class Orchestrator {
     contextLimit = null,
     tierInfo = null,
     conversation = null,
-    signal
+    signal,
+    deadlineAt = 0
   }) {
     const cfg = getConfig();
     const conversationCfg = conversation || conversationConfigForChat(chatKey);
@@ -2262,6 +2267,7 @@ export class Orchestrator {
     let replyRepairPending = false;
     let replyRepairTranscriptStart = -1;
     let webSearchCount = 0;
+    let stickToFallback = false;
     session.activity = '';
     session.webSearchCount = 0;
     const markActivity = (activity) => {
@@ -2326,9 +2332,11 @@ export class Orchestrator {
           messages,
           tools: roundTools,
           signal,
+          deadlineAt,
           cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
           purpose: 'chat',
-          model: activeModel,
+          model: stickToFallback ? '' : activeModel,
+          useFallback: stickToFallback,
           // 第二人设值班时不许兜底：宁可这一轮交还默认人设重答，
           // 也不要"Claude 的词配别家的脑子"。
           noFallback: altActive
@@ -2344,6 +2352,7 @@ export class Orchestrator {
         throw error;
       }
       signal.throwIfAborted();
+      if (response.viaFallback && !altActive) stickToFallback = true;
       session.model = response.model || session.model;
       // 2026-10-06 复审 P3：兜底模型接管且端点真的换了渠道时，成本要记到实际渠道名下
       //（model-prices 的约定就是"会话用它自己记录的 vendor"）—— 否则渠道价/渠道价目表
@@ -2597,7 +2606,8 @@ export class Orchestrator {
     signal.throwIfAborted();
     await this.#ensureDirectedReply({
       session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
-      manual, signal, runLimits, replyRepairAttempted, roundsExhausted: !finish && !completed
+      manual, signal, runLimits, replyRepairAttempted, roundsExhausted: !finish && !completed,
+      stickToFallback, deadlineAt
     });
     // 轮次用尽是"干不完活"的护栏，不是"需要人工核对"的故障：与 token 预算同口径，
     // 当作本轮正常收尾（已经说的话照常发出、消息正常 ack），并在会话里标注原因。
@@ -2631,9 +2641,12 @@ export class Orchestrator {
       ...(terminalReasoning ? { reasoning_content: terminalReasoning } : {})
     });
     const containsInlineImage = hasInlineImage(providerTranscriptDelta);
+    const rolloverReason = containsInlineImage
+      ? 'multimodal-context'
+      : (stickToFallback ? 'fallback-model' : '');
     return {
-      providerTranscriptDelta: containsInlineImage ? [] : providerTranscriptDelta,
-      forceThreadRollover: containsInlineImage ? 'multimodal-context' : ''
+      providerTranscriptDelta: rolloverReason ? [] : providerTranscriptDelta,
+      forceThreadRollover: rolloverReason
     };
   }
 

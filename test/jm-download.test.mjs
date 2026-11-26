@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import sharp from 'sharp';
 import { createImageDownloader, validateImage } from '../src/features/jm-suomingor/image-download.js';
-import { createClient, UA_APP } from '../src/features/jm-suomingor/engine.js';
+import { createClient, DEFAULT_API_DOMAINS, isEmptyApiEnvelope, UA_APP } from '../src/features/jm-suomingor/engine.js';
 
 const image = await sharp(crypto.randomBytes(96 * 128 * 3), { raw: { width: 96, height: 128, channels: 3 } }).png().toBuffer();
 const response = () => new Response(image, { headers: { 'content-type': 'image/png', 'content-length': String(image.length) } });
@@ -188,4 +188,46 @@ test('未列入主节点池的 CDN 只保留兜底，不因测速而接管正常
     { domains: ['primary.test', 'backup.test', 'legacy.test'], adaptiveDomains: ['primary.test', 'backup.test'] });
   for (let i = 0; i < 32; i++) await client.downloadImage('123', `${i}.png`);
   assert.equal(requests.includes('legacy.test'), false);
+});
+
+test('JM 活跃 API 域名排在前面，且空信封 {"code":200,"data":[]} 立即识别为本子不存在而非全域名失效', async () => {
+  assert.deepEqual(DEFAULT_API_DOMAINS.slice(0, 2), ['www.cdngwc.net', 'www.cdngwc.club']);
+  assert.equal(isEmptyApiEnvelope('{"code":200,"data":[]}'), true);
+  assert.equal(isEmptyApiEnvelope('{"code":200,"data":""}'), true);
+  assert.equal(isEmptyApiEnvelope('{"code":200,"data":"abc"}'), false);
+  assert.equal(isEmptyApiEnvelope('<html>404</html>'), false);
+
+  const visited = [];
+  const client = createClient({
+    timeoutMs: () => 500,
+    fetchImpl: async (url) => {
+      visited.push(String(url));
+      return new Response('{"code":200,"data":[]}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+  });
+  await assert.rejects(
+    client.albumInfo('130641'),
+    (err) => err?.code === 'JM_NOT_FOUND' && /本子 JM130641 不存在或已被删除/.test(String(err?.message))
+  );
+  assert.equal(visited.length, 1, '活跃接口明确返回空数据时不应继续轮询其余 7 个域名');
+  assert.match(visited[0], /www\.cdngwc\.net\/album\?id=130641/);
+
+  const rankEmpty = await client.jmApi('/categories/filter?page=1&order=mv_w&c=0&o=mv_w');
+  assert.deepEqual(rankEmpty, { total: 0, content: [] });
+});
+
+test('JM httpGet 遇到上游瞬时 500/502 会自动重试一次并成功', async () => {
+  let calls = 0;
+  const client = createClient({
+    timeoutMs: () => 500,
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) return new Response('bad gateway', { status: 502 });
+      return new Response('ok', { status: 200 });
+    }
+  });
+  const res = await client.httpGet('https://www.cdngwc.net/categories/filter', { retries: 1, asText: true });
+  assert.equal(res.ok, true);
+  assert.equal(res.text, 'ok');
+  assert.equal(calls, 2);
 });

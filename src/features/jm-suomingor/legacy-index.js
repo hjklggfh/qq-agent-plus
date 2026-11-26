@@ -1488,7 +1488,8 @@ function splitForUpload(filePath, maxBytes) {
 function humanize(msg) {
   const s = String(msg);
   if (/所有禁漫域名都连不上/.test(s)) return s;
-  if (/album_missing|本子.*不存在|章节.*不存在/.test(s)) return `这本子不存在或已被删除（原文：${s}）`;
+  if (/本子.*不存在|章节.*不存在/.test(s)) return s;
+  if (/album_missing/.test(s)) return `这本子不存在或已被删除（原文：${s}）`;
   if (/Restricted Access|ip地区|HTTP 403/.test(s)) return `站点拒绝了本机 IP（可能需要挂代理，或在设置里换域名）。原文：${s}`;
   if (/超时|TimeoutError/.test(s)) return `请求超时（可能是网络慢或被限速）。可以调大「单次请求超时」。原文：${s}`;
   return s;

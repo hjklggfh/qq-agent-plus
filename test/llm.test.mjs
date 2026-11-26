@@ -142,5 +142,171 @@ describe('LLM client', () => {
     assert.ok(response, '绝不能返回 null（调用方会直接读 response.model 而崩）');
     assert.equal(calls, 1, 'retries=0 时不该再重试');
     assert.match(String(response.message?.content || ''), /high risk/i, '如实返回服务商的拦截文案');
-  })
+  });
+
+  it('跨厂商从 Gemini 切到 DeepSeek 兜底且历史含无 reasoning_content 的 tool_calls：自动关思考并剥离 Google 专有字段', async (t) => {
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; setRuntimeConfig(structuredClone(DEFAULT_CONFIG)); });
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.api.baseUrl = 'http://127.0.0.1:18046/v1beta/openai';
+    cfg.api.apiKey = 'GEMINI-KEY';
+    cfg.api.model = 'gemini-3.5-flash-lite';
+    cfg.api.thinking = 'on';
+    cfg.api.fallback = {
+      enabled: true,
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'DS-KEY',
+      model: 'deepseek-flash',
+      timeoutMs: 60000
+    };
+    setRuntimeConfig(cfg);
+
+    const seen = [];
+    globalThis.fetch = async (url, request) => {
+      const href = String(url);
+      const body = JSON.parse(request.body);
+      seen.push({ href, body });
+      if (href.includes('127.0.0.1:18046')) {
+        return new Response('{"error":{"code":503,"message":"overloaded"}}', { status: 503 });
+      }
+      return Response.json({
+        model: 'deepseek-flash',
+        choices: [{ message: { content: 'ok' } }],
+        usage: { total_tokens: 10 }
+      });
+    };
+
+    const messages = [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          extra_content: { google: { thought_signature: 'SIG-ABC' } },
+          function: { name: 'send_message', arguments: '{"messages":["hello"]}' }
+        }]
+      },
+      { role: 'tool', tool_call_id: 'call_1', name: 'send_message', content: '{"sent":1}' }
+    ];
+
+    const res = await chatCompletionWithRetry({ messages, purpose: 'chat' }, 0);
+    assert.equal(res.viaFallback, true);
+    assert.equal(res.channelChanged, true);
+    const dsReq = seen.find((item) => item.href.includes('api.deepseek.com'));
+    assert.ok(dsReq, '应切到 DeepSeek 兜底');
+    assert.deepEqual(dsReq.body.thinking, { type: 'disabled' }, '历史 tool_calls 缺 reasoning_content 时应对 DeepSeek 临时关思考');
+    assert.equal(dsReq.body.messages[1].tool_calls[0].extra_content, undefined, '跨渠道应剥离 Google 私有 extra_content');
+    assert.equal(messages[1].tool_calls[0].extra_content.google.thought_signature, 'SIG-ABC', '不原地污染调用方 messages');
+  });
+
+  it('表外网关在无 reasoning_content 历史下报 400 reasoning_content：自动关闭思考重试一次成功', async (t) => {
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; setRuntimeConfig(structuredClone(DEFAULT_CONFIG)); });
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.api.baseUrl = 'https://proxy.example.com/v1';
+    cfg.api.apiKey = 'PROXY-KEY';
+    cfg.api.model = 'custom-reasoner';
+    cfg.api.thinking = 'on';
+    setRuntimeConfig(cfg);
+
+    const bodies = [];
+    globalThis.fetch = async (_url, request) => {
+      const body = JSON.parse(request.body);
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return new Response(
+          JSON.stringify({ error: { message: 'The `reasoning_content` in the thinking mode must be passed back to the API.' } }),
+          { status: 400, headers: { 'content-type': 'application/json' } }
+        );
+      }
+      return Response.json({ choices: [{ message: { content: 'recovered' } }] });
+    };
+
+    const res = await chatCompletion({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'send_message', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'c1', name: 'send_message', content: '{"sent":1}' }
+      ],
+      purpose: 'chat'
+    });
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].thinking, undefined);
+    assert.deepEqual(bodies[1].thinking, { type: 'disabled' });
+    assert.equal(res.message.content, 'recovered');
+  });
+
+  it('useFallback=true 直接沿用兜底模型不再打主渠道', async (t) => {
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; setRuntimeConfig(structuredClone(DEFAULT_CONFIG)); });
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.api.baseUrl = 'https://primary.example.com/v1';
+    cfg.api.apiKey = 'K1';
+    cfg.api.model = 'gemini-3.5-flash-lite';
+    cfg.api.fallback = {
+      enabled: true,
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'K2',
+      model: 'deepseek-flash'
+    };
+    setRuntimeConfig(cfg);
+
+    const urls = [];
+    globalThis.fetch = async (url) => {
+      urls.push(String(url));
+      return Response.json({ model: 'deepseek-flash', choices: [{ message: { content: 'sticky-ok' } }] });
+    };
+
+    const res = await chatCompletionWithRetry({
+      messages: [{ role: 'user', content: 'hi' }],
+      useFallback: true
+    }, 2);
+    assert.equal(res.viaFallback, true);
+    assert.equal(res.channelChanged, true);
+    assert.equal(urls.length, 1);
+    assert.match(urls[0], /api\.deepseek\.com/);
+  });
+
+  it('主模型遇超时且剩余 deadline 不足以再等一次超时+兜底：立即切兜底避免撞 Run deadline', async (t) => {
+    const original = globalThis.fetch;
+    t.after(() => { globalThis.fetch = original; setRuntimeConfig(structuredClone(DEFAULT_CONFIG)); });
+    const cfg = structuredClone(DEFAULT_CONFIG);
+    cfg.api.baseUrl = 'https://primary.example.com/v1';
+    cfg.api.apiKey = 'K1';
+    cfg.api.model = 'gemini-3.5-flash-lite';
+    cfg.api.timeoutMs = 60000;
+    cfg.api.fallback = {
+      enabled: true,
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'K2',
+      model: 'deepseek-flash',
+      timeoutMs: 60000
+    };
+    setRuntimeConfig(cfg);
+
+    let primaryCalls = 0;
+    let fallbackCalls = 0;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('primary.example.com')) {
+        primaryCalls += 1;
+        const err = new Error('The operation was aborted due to timeout');
+        err.name = 'TimeoutError';
+        throw err;
+      }
+      fallbackCalls += 1;
+      return Response.json({ model: 'deepseek-flash', choices: [{ message: { content: 'saved-by-fallback' } }] });
+    };
+
+    // 仅剩 90s（< 60s 主模型 + 45s 兜底预留）：主模型第一次超时后应立即切兜底，不再重试
+    const res = await chatCompletionWithRetry({
+      messages: [{ role: 'user', content: 'hi' }],
+      deadlineAt: Date.now() + 90_000
+    }, 2);
+    assert.equal(primaryCalls, 1, '剩余时间不足以再等一次主模型超时时，应跳过重试直接切兜底');
+    assert.equal(fallbackCalls, 1);
+    assert.equal(res.viaFallback, true);
+    assert.equal(res.message.content, 'saved-by-fallback');
+  });
 });

@@ -2028,6 +2028,105 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.ok(modelCalls >= 1, '有 @ 时应运行');
   });
 
+  it('单次 run 内切到兜底后后续工具轮次继续粘在兜底（不回跳主模型触发 thought_signature 400），下一条新发言自动恢复主模型', async (t) => {
+    const { runner, cfg, append } = fixture(t);
+    cfg.api.baseUrl = 'https://primary.example.com/v1';
+    cfg.api.apiKey = 'PRIMARY-KEY';
+    cfg.api.model = 'gemini-3.5-flash-lite';
+    cfg.api.thinking = 'on';
+    cfg.api.fallback = {
+      enabled: true,
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKey: 'DS-KEY',
+      model: 'deepseek-flash',
+      timeoutMs: 60000
+    };
+    setRuntimeConfig(cfg);
+
+    let failPrimaryFirstRun = true;
+    const seen = [];
+    globalThis.fetch = async (url, options) => {
+      const href = String(url);
+      const body = JSON.parse(options.body);
+      seen.push({ href, model: body.model, messages: body.messages });
+      if (href.includes('primary.example.com')) {
+        if (failPrimaryFirstRun) {
+          return new Response('{"error":{"message":"unauthorized"}}', { status: 401 });
+        }
+        // 模拟 Gemini：如果收到历史中不带 thought_signature 的 tool_calls，立即报 400
+        const hasUnsignedCall = body.messages.some((m) => (
+          m?.role === 'assistant'
+          && Array.isArray(m.tool_calls)
+          && m.tool_calls.some((tc) => !tc.extra_content?.google?.thought_signature)
+        ));
+        if (hasUnsignedCall) {
+          return new Response('Function call is missing a thought_signature', { status: 400 });
+        }
+        const hasToolResult = body.messages.some((m) => m.role === 'tool');
+        if (!hasToolResult) {
+          return Response.json({
+            model: 'gemini-3.5-flash-lite',
+            choices: [{
+              message: {
+                tool_calls: [{
+                  id: 'gm-call-1',
+                  type: 'function',
+                  extra_content: { google: { thought_signature: 'SIG-RUN2' } },
+                  function: { name: 'send_message', arguments: JSON.stringify({ messages: ['主模型恢复回复'] }) }
+                }]
+              }
+            }],
+            usage: { total_tokens: 10 }
+          });
+        }
+        return Response.json({
+          model: 'gemini-3.5-flash-lite',
+          choices: [{ message: { content: '' } }],
+          usage: { total_tokens: 10 }
+        });
+      }
+      // 兜底 DeepSeek：第 1 轮调用 send_message，第 2 轮收尾
+      const hasToolResult = body.messages.some((m) => m.role === 'tool');
+      if (!hasToolResult) {
+        return Response.json({
+          model: 'deepseek-flash',
+          choices: [{
+            message: {
+              reasoning_content: '兜底先发消息',
+              tool_calls: [{
+                id: 'ds-call-1',
+                type: 'function',
+                function: { name: 'send_message', arguments: JSON.stringify({ messages: ['兜底回复'] }) }
+              }]
+            }
+          }],
+          usage: { total_tokens: 15 }
+        });
+      }
+      return Response.json({
+        model: 'deepseek-flash',
+        choices: [{ message: { content: '' } }],
+        usage: { total_tokens: 12 }
+      });
+    };
+
+    // 第 1 次发言（Run 1）：Round 1 主模型失败切 DeepSeek → Round 2 应继续打 DeepSeek，不能回跳主模型
+    append(1, '第一条消息');
+    await runner.wake('group:1');
+    const firstRunCalls = seen.slice();
+    assert.equal(firstRunCalls.filter((x) => x.href.includes('primary.example.com')).length, 1, 'Run 1 仅第 1 轮尝试主模型，切兜底后后续轮次不回跳主模型');
+    assert.equal(firstRunCalls.filter((x) => x.href.includes('api.deepseek.com')).length, 2, 'Run 1 的 Round 1 和 Round 2 均由兜底模型连续完成');
+
+    // 第 2 次新发言（Run 2）：主模型已恢复，必须自动回到主模型，不锁死在 DeepSeek
+    failPrimaryFirstRun = false;
+    seen.length = 0;
+    append(2, '第二条消息');
+    await runner.wake('group:1');
+    assert.equal(seen.length, 2);
+    assert.ok(seen.every((x) => x.href.includes('primary.example.com')), '下一次新发言应全程重新使用主模型');
+    assert.ok(seen.every((x) => x.model === 'gemini-3.5-flash-lite'));
+  });
+
 });
 
 describe('proactiveProbability（冷场开话题的发言概率）', () => {
