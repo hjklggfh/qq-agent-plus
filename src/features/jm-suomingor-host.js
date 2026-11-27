@@ -81,10 +81,18 @@ function hostToolContext(ctx, runtime) {
         failed: Array.isArray(result?.failed) ? result.failed.length : 0
       };
     },
-    forward: async (nodes, label = '') => sender.forward(chatKey, { nodes, label }, {
-      runId: ctx?.session?.leaseId,
-      signal: ctx?.signal
-    }),
+    forward: async (nodes, label = '', forwardOptions = {}) => {
+      const isFallbackCandidate = forwardOptions?.fallbackCandidate === true;
+      const baseRunId = ctx?.session?.leaseId;
+      const runId = isFallbackCandidate && baseRunId
+        ? `${baseRunId}:jm-card:${Number(forwardOptions?.attempt) || 1}`
+        : baseRunId;
+      return sender.forward(chatKey, { nodes, label }, {
+        runId,
+        signal: ctx?.signal,
+        ...(isFallbackCandidate ? { deferNoReceiptIncident: true } : {})
+      });
+    },
     onebot: scopedOnebot(runtime.onebot, chatKey)
   };
 }

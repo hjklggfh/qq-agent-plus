@@ -1,4 +1,5 @@
 import { IMAGE_DOMAINS, UA_APP, firstString, asArray } from './engine.js';
+import { isNoReceiptError } from '../../core/error-explain.js';
 import sharp from 'sharp';
 
 const PER_CARD = 5;
@@ -81,7 +82,7 @@ export function searchFallbackNodes({ rows, pages, total }, page, bot = {}) {
     return node([text(/^\d{2,9}$/.test(albumId)
       ? `${number}. JM${albumId}` : `${number}. 本页没有更多作品`)], bot);
   });
-  nodes.push(node([text(`搜索结果简版：第 ${page}/${pages} 页，共 ${total} 部。发送序号可获取资源；发送「上一页」或「下一页」翻页。完整详情和封面可在私聊搜索查看。`)], bot));
+  nodes.push(node([text(`搜索结果简版：第 ${page}/${pages} 页，共 ${total} 部。发送序号可获取资源；发送「上一页」「下一页」或「第N页」翻页。完整详情和封面可在私聊搜索查看。`)], bot));
   return nodes;
 }
 
@@ -95,19 +96,98 @@ export function searchDetailNodes(nodes) {
   }));
 }
 
+export function formatSearchDegradedNotice(kind) {
+  if (kind === '详情版') {
+    return 'ℹ️ 原带封面搜索卡片未能正常显示（疑似触发 QQ 群转发限制），已自动降级为无图详情版；发送序号仍可正常下载，查看封面请改用私聊搜索。';
+  }
+  if (kind === '编号简版') {
+    return 'ℹ️ 原搜索卡片及无图详情版均未能正常显示（疑似触发 QQ 群转发限制），已自动降级为编号简版；发送序号仍可正常下载，查看详情和封面请改用私聊搜索。';
+  }
+  return '';
+}
+
+function isAuthoritativeGroupMessage(message) {
+  return Boolean(message) && (message.message_seq == null || Number(message.message_seq) > 0);
+}
+
+async function fetchGroupHistory(onebot, chatId, count = 50) {
+  if (!onebot?.call) return null;
+  let history;
+  try {
+    history = await onebot.call('get_group_msg_history', {
+      group_id: Number(chatId), message_seq: 0, count
+    });
+  } catch { return null; }
+  return Array.isArray(history?.messages) ? history.messages : null;
+}
+
+export async function captureGroupHistoryBaseline(onebot, chatId) {
+  const messages = await fetchGroupHistory(onebot, chatId, 20);
+  if (!messages) return null;
+  let maxSeq = 0;
+  let hasSeqField = false;
+  const knownIds = new Set();
+  for (const message of messages) {
+    if (message?.message_id != null) knownIds.add(String(message.message_id));
+    if (message?.message_seq != null) {
+      const seq = Number(message.message_seq);
+      if (Number.isFinite(seq) && seq > 0) {
+        hasSeqField = true;
+        if (seq > maxSeq) maxSeq = seq;
+      }
+    }
+  }
+  return { maxSeq, hasSeqField, knownIds };
+}
+
+function isLikelySelfForward(message, selfId) {
+  const sender = message?.user_id ?? message?.sender?.user_id;
+  if (selfId && sender != null && String(sender) !== String(selfId)) return false;
+  if (Array.isArray(message?.message) && message.message.length > 0) {
+    return message.message.some((segment) => String(segment?.type || '') === 'forward');
+  }
+  if (typeof message?.raw_message === 'string' && message.raw_message.trim()) {
+    return /\[CQ:forward\b|聊天记录|合并转发/.test(message.raw_message);
+  }
+  // 测试桩或精简历史未带消息段时保守按可能上屏处理，避免误判重发。
+  return true;
+}
+
+function isNewerThanBaseline(message, baseline) {
+  if (!isAuthoritativeGroupMessage(message)) return false;
+  if (baseline.hasSeqField && message.message_seq != null) {
+    const seq = Number(message.message_seq);
+    if (Number.isFinite(seq) && seq > 0) return seq > baseline.maxSeq;
+    return false;
+  }
+  return message.message_id != null && !baseline.knownIds.has(String(message.message_id));
+}
+
+export async function groupForwardAppearedAfter(onebot, chatId, baseline, { selfId = '', attempts = 2, delayMs = 1500 } = {}) {
+  if (!onebot?.call || !baseline) return null;
+  const totalAttempts = Math.max(1, Number(attempts) || 1);
+  const waitMs = Math.max(0, Number(delayMs) || 0);
+  for (let attempt = 0; attempt < totalAttempts; attempt++) {
+    if (waitMs > 0) {
+      const stepDelay = attempt === 0 ? Math.min(waitMs, 1200) : waitMs;
+      await new Promise((resolve) => setTimeout(resolve, stepDelay));
+    }
+    const messages = await fetchGroupHistory(onebot, chatId, 20);
+    if (!messages) return null;
+    const matched = messages.find((message) => isNewerThanBaseline(message, baseline) && isLikelySelfForward(message, selfId));
+    if (matched) return { appeared: true, messageId: matched.message_id ?? null };
+  }
+  return { appeared: false, messageId: null };
+}
+
 export async function groupForwardVisible(onebot, chatId, messageId, { attempts = 3, delayMs = 1500 } = {}) {
   if (!onebot?.call || messageId == null) return null;
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (attempt && delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-    let history;
-    try {
-      history = await onebot.call('get_group_msg_history', {
-        group_id: Number(chatId), message_seq: 0, count: 50
-      });
-    } catch { return null; }
-    if (!Array.isArray(history?.messages)) return null;
-    if (history.messages.some((message) => String(message?.message_id) === String(messageId)
-      && (message.message_seq == null || Number(message.message_seq) > 0))) return true;
+    const messages = await fetchGroupHistory(onebot, chatId, 50);
+    if (!messages) return null;
+    if (messages.some((message) => String(message?.message_id) === String(messageId)
+      && isAuthoritativeGroupMessage(message))) return true;
   }
   return false;
 }
@@ -118,12 +198,44 @@ export async function deliverSearchCard(ctx, result, { query, page, verifyOption
     { kind: '详情版', label: 'JM搜索详情版', nodes: searchDetailNodes(result.nodes) },
     { kind: '编号简版', label: 'JM搜索结果简版', nodes: searchFallbackNodes(result, page, { selfId: ctx.selfId }) }
   ];
-  for (const variant of variants) {
-    const sent = await ctx.forward(variant.nodes, variant.label);
-    if (ctx.kind !== 'group') return { kind: variant.kind, visible: null, messageId: sent?.message_id };
+  const isGroup = ctx.kind === 'group';
+  for (let index = 0; index < variants.length; index += 1) {
+    const variant = variants[index];
+    const isLast = index === variants.length - 1;
+    const canFallback = isGroup && !isLast;
+    const baseline = canFallback ? await captureGroupHistoryBaseline(ctx.onebot, ctx.chatId) : null;
+    let sent;
+    try {
+      sent = await ctx.forward(
+        variant.nodes,
+        variant.label,
+        canFallback ? { fallbackCandidate: true, attempt: index + 1 } : undefined
+      );
+    } catch (error) {
+      if (!canFallback || !isNoReceiptError(error) || !baseline) {
+        error?.reportIncident?.();
+        throw error;
+      }
+      const check = await groupForwardAppearedAfter(ctx.onebot, ctx.chatId, baseline, {
+        selfId: ctx.selfId,
+        ...(verifyOptions || {})
+      });
+      if (check === null) {
+        error?.reportIncident?.();
+        throw error;
+      }
+      if (check.appeared) {
+        error?.reconcileOutbox?.({ delivered: true, messageId: check.messageId });
+        return { kind: variant.kind, visible: true, messageId: check.messageId };
+      }
+      // 群历史正常返回且未出现本条卡片，确认已被 QQ 静默吞掉，核销未知态后降级至下一档。
+      error?.reconcileOutbox?.({ delivered: false });
+      continue;
+    }
+    if (!isGroup) return { kind: variant.kind, visible: null, messageId: sent?.message_id };
     const visible = await groupForwardVisible(ctx.onebot, ctx.chatId, sent?.message_id, verifyOptions);
     // 查询失败或无消息 ID 时送达未知，不能当作失败连续补发。
-    if (visible !== false || variant.kind === '编号简版') {
+    if (visible !== false || isLast) {
       return { kind: variant.kind, visible, messageId: sent?.message_id };
     }
   }
@@ -159,8 +271,8 @@ export async function searchCardNodes(client, { query, page, bot = {}, format = 
     return node([text(lines.join('\n')), cover], bot);
   }));
   while (nodes.length < PER_CARD) nodes.push(node([text(`${(page - 1) * PER_CARD + nodes.length + 1}. 本页没有更多作品`)], bot));
-  const next = page < result.pages ? `\n下一页：发送「下一页」（或「JM搜索 ${query} 第${page + 1}页」）` : '';
-  const prev = page > 1 ? `\n上一页：发送「上一页」（或「JM搜索 ${query} 第${page - 1}页」）` : '';
+  const next = page < result.pages ? `\n下一页：发送「下一页」或「第${page + 1}页」（也可发「JM搜索 ${query} 第${page + 1}页」）` : '';
+  const prev = page > 1 ? `\n上一页：发送「上一页」或「第${page - 1}页」（也可发「JM搜索 ${query} 第${page - 1}页」）` : '';
   nodes.push(node([text(`搜索「${query}」：第 ${page}/${result.pages} 页，共 ${result.total} 部作品。\n发送作品序号即可下载。${prev}${next}`)], bot));
   return { ...result, nodes };
 }

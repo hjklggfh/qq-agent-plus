@@ -95,3 +95,41 @@ it('结果未知的失败仍记成 unknown（持有待人工核对）', async ()
   assert.equal(store.listUnknownOperations('group:1').length, 1, '未知写入要出现在待核对清单里');
   store.close();
 });
+
+it('deferNoReceiptIncident：允许调用方在核验群历史后再核销 outbox 或补报 incident', async (t) => {
+  const caseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-forward-defer-'));
+  const store = new ChatStore(0, { dataDir: caseDir });
+  t.after(() => { store.close(); fs.rmSync(caseDir, { recursive: true, force: true }); });
+  t.mock.method(globalThis, 'fetch', async () => ({
+    ok: true, status: 200,
+    json: async () => ({
+      status: 'failed', retcode: 100,
+      message: 'group message delivery was not confirmed: QQ returned no message receipt'
+    })
+  }));
+  const bot = new OneBotClient({ httpUrl: 'http://127.0.0.1:1' });
+  bot.getGroupInfo = async () => ({});
+  bot.getGroupMemberInfo = async () => ({});
+  const incidents = [];
+  const sender = new SendQueue({ store, onebot: bot, onIncident: (_error, details) => incidents.push(details) });
+  const payload = { nodes: [{ type: 'node', data: { uin: '1', name: 'test', content: [{ type: 'text', data: { text: 'test' } }] } }] };
+
+  let caught = null;
+  try {
+    await sender.forward('group:1', payload, { deferNoReceiptIncident: true });
+  } catch (err) {
+    caught = err;
+  }
+  assert.ok(caught);
+  assert.equal(incidents.length, 0, '延后上报开启时不立即推送 incident');
+  assert.equal(outboxState(store, 'group:1'), 'unknown');
+  assert.equal(store.getChatMeta('group:1').held, 1);
+
+  caught.reconcileOutbox({ delivered: false });
+  assert.equal(outboxState(store, 'group:1'), 'failed');
+  assert.equal(store.getChatMeta('group:1').held, 0, '核销为未送达后不阻塞会话');
+
+  caught.reportIncident();
+  caught.reportIncident();
+  assert.equal(incidents.length, 1, '补报 incident 应保持幂等');
+});

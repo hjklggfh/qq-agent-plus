@@ -36,7 +36,7 @@ import { uploadFile, groupQuota, deleteGroupFile, deleteIncompleteGroupFiles, hu
 import { JmOversizeError, rawDownloadByteLimit, formatPageLimitMessage, removeRejectedAlbumDir } from './limits.js';
 // 每日更新采集器（2026-10-06）：collect 给 cron 用，digest 给「更新JM」工具用
 import { collect as collectDaily, buildDigestFromState, sendDigest, loadDigestItems, renderDigestImage, sendDigestImage, renderAlbumImage, cleanTitle, fetchSiteCover } from './daily_updates.mjs';
-import { searchCardNodes, deliverSearchCard } from './search.js';
+import { searchCardNodes, deliverSearchCard, formatSearchDegradedNotice } from './search.js';
 import { rememberSearchPage, searchSenderId } from './search-session.js';
 import { classifyJmDirectCommand, isSilentWhenChatDenied } from './direct-command.js';
 import { createRankService, normalizeRankKind, normalizeRankCategory, rankDisplayInfo } from './rankings.js';
@@ -1792,9 +1792,19 @@ export function setup(injected) {
             }
             return { content: '搜索卡片送达尚未确认，请核对群历史；不要自动重发或宣称已送达。' };
           }
-          if (delivery.kind !== '搜索') warn(`JM 群搜索已降级送达：${chatKey} kind=${delivery.kind}`);
+          if (delivery.kind !== '搜索') {
+            warn(`JM 群搜索已降级送达：${chatKey} kind=${delivery.kind}`);
+            const degradedNotice = formatSearchDegradedNotice(delivery.kind);
+            if (degradedNotice) {
+              await sendDirectToolText(ctx, chatKey, degradedNotice);
+            }
+          }
         }
-        return { content: `已发送「${query}」第 ${page}/${result.pages} 页${delivery.kind}卡片，请勿重复发送。` };
+        return {
+          content: delivery.kind !== '搜索'
+            ? `已自动降级发送「${query}」第 ${page}/${result.pages} 页${delivery.kind}卡片，并已向群内说明降级原因，请勿重复发送。`
+            : `已发送「${query}」第 ${page}/${result.pages} 页${delivery.kind}卡片，请勿重复发送。`
+        };
       } catch (error) {
         // 外部发送可能已生效：不自动重发卡片；但群里若完全无回音会让群友误以为卡死，
         // 遇到 QQ 无回执时补发一条中性短提示告知状况（失败静默，绝不二次抛错）。
@@ -2298,7 +2308,7 @@ const JM_CONTROL_OWNER_ID = '2118530760';
         '📖 JM 漫画全部指令\n\n'
         + '📥 下载与搜索\n'
         + '• jm123456（或发 /album/123456 链接）— 下载本子并合成 PDF\n'
-        + '• JM搜索 关键词 [第N页] — 搜索漫画（出卡后可发「下一页」「上一页」或选序号）\n\n'
+        + '• JM搜索 关键词 [第N页] — 搜索漫画（出卡后可发「下一页」「上一页」「第N页」或选序号）\n\n'
         + '🏆 热门榜单（可加空格+数字临时指定条数，或前缀「刷新」跳过缓存）\n'
         + `• 今日JM / JM日榜 / JM周榜 / JM月榜 / JM热门 — 全站榜单（默认前 ${c.rankTopN} 本）\n`
         + `• JM同人日榜 / JM同人周榜 / JM同人月榜 / JM同人热门 — 同人分类榜（默认前 ${c.rankCategoryTopN} 本）\n`
@@ -3037,7 +3047,7 @@ export function promptSections() {
       + `6. JM 功能按群开关：有人说「开启JM」「关闭JM」「JM群列表」「JM所有群开放」时，调用 ${toolId('group_toggle')}（结果由工具自己发，不要复述）。\n`
       + `7. 对方问进度或「怎么没动静」时，调用 ${toolId('task_status')}；问「本地有哪几本」用 ${toolId('library')}；`
       + `问「支持 PDF 吗 / 磁盘满了吗 / 群文件还有空间吗」用 ${toolId('storage')}。\n`
-      + `8. 群友说「JM搜索 关键词」时，调用 ${toolId('search')}，传 query 和 page。搜索后可直接说「下一页」「上一页」翻页，`
+      + `8. 群友说「JM搜索 关键词」时，调用 ${toolId('search')}，传 query 和 page。搜索后可直接说「下一页」「上一页」「第N页」翻页，`
       + '或发卡片里的序号下载对应作品；这些固定指令由宿主处理，不要复述搜索卡片。\n'
       + '9. 你只需要用一两句话简短回应（本子名 + 页数 + 是否开始处理），**不要复述目录、不要罗列文件名**。\n'
       + '10. 失败时把工具返回的原因如实转达，并给出可照做的下一步，不要编造成功。\n'

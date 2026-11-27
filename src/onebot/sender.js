@@ -7,6 +7,7 @@ import { getConfig, DEFAULT_CONFIG } from '../core/config.js';
 import { sleep, randInt, createSendChain, formatClockTime } from '../core/util.js';
 import { mdToPlain, splitForQQ } from '../llm/md-to-plain.js';
 import { assertCanSend } from '../core/access.js';
+import { isNoReceiptError } from '../core/error-explain.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('sender');
@@ -269,22 +270,51 @@ export class SendQueue {
         log.warn('[sender] 发送失败后 outbox 记账也失败（该行留在 sending，待人工核对）:',
           accountingError?.message ?? accountingError);
       }
-      try {
-        const incident = this.onIncident(error, {
-          source: 'sender',
-          category: 'external_write',
-          severity: outcome === 'unknown' ? 'critical' : 'error',
-          outcome,
-          chatKey,
-          operationId: id,
-          details: {
-            type: payload?.type || 'unknown',
-            runId: options.runId || '',
-            ...(payload?.label ? { label: String(payload.label).slice(0, 60) } : {})
-          }
+      let incidentReported = false;
+      const reportIncident = () => {
+        if (incidentReported) return;
+        incidentReported = true;
+        try {
+          const incident = this.onIncident(error, {
+            source: 'sender',
+            category: 'external_write',
+            severity: outcome === 'unknown' ? 'critical' : 'error',
+            outcome,
+            chatKey,
+            operationId: id,
+            details: {
+              type: payload?.type || 'unknown',
+              runId: options.runId || '',
+              ...(payload?.label ? { label: String(payload.label).slice(0, 60) } : {})
+            }
+          });
+          if (incident && error && typeof error === 'object') error.incidentCaptured = true;
+        } catch { /* 异常记录失败不能改变原发送结果 */ }
+      };
+      if (options.deferNoReceiptIncident === true && outcome === 'unknown' && isNoReceiptError(error) && error && typeof error === 'object') {
+        const reconcileOutbox = ({ delivered = false, messageId = null } = {}) => {
+          try {
+            if (delivered) {
+              this.store.finishSend(id, { messageId });
+            } else {
+              this.store.finishSend(id, {
+                error: error?.message ?? error,
+                outcome: 'failed'
+              });
+            }
+          } catch { /* 核销记账失败不影响主流程 */ }
+        };
+        Object.defineProperty(error, 'reportIncident', {
+          value: reportIncident,
+          configurable: true
         });
-        if (incident && error && typeof error === 'object') error.incidentCaptured = true;
-      } catch { /* 异常记录失败不能改变原发送结果 */ }
+        Object.defineProperty(error, 'reconcileOutbox', {
+          value: reconcileOutbox,
+          configurable: true
+        });
+      } else {
+        reportIncident();
+      }
       throw error;
     }
   }

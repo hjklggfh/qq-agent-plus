@@ -53,6 +53,17 @@ export function resolveSearchFollowup({ chatKey, senderId, text, now = Date.now(
       ? { type: 'page', query: state.query, page: state.page - 1 }
       : { type: 'notice', text: '已经是第一页了。' };
   }
+  const jumpPage = /^(?:JM\s*)?第\s*(\d{1,5})\s*页$/iu.exec(command);
+  if (jumpPage) {
+    const targetPage = Number(jumpPage[1]);
+    if (!Number.isSafeInteger(targetPage) || targetPage < 1) {
+      return { type: 'notice', text: `页码需在 1～${state.pages} 之间。` };
+    }
+    if (targetPage > state.pages) {
+      return { type: 'notice', text: `搜索「${state.query}」共 ${state.pages} 页，请发送 1～${state.pages} 之间的页码。` };
+    }
+    return { type: 'page', query: state.query, page: targetPage };
+  }
   const number = /^(\d{1,5})$/u.exec(command);
   if (!number) return null;
   const index = Number(number[1]);
