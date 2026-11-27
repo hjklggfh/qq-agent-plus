@@ -130,6 +130,7 @@ import { currentProviders } from './providers.js';
 import { buildSlangContextForChat } from '../console/asset-observer.js';
 import { parseInlineToolCalls } from '../tools/inline-tools.js';
 import { createLogger, newTraceId, withTrace } from './logger.js';
+import { isBillingOrAuthFailure } from './error-explain.js';
 import { ttsConfigured } from '../llm/tts-openai.js';
 
 const log = createLogger('orchestrator');
@@ -2543,11 +2544,12 @@ export class Orchestrator {
           // 工具报错也写一行 journal（Issue #17 反馈：只进控制台异常面板、journal 里查不到，
           // 排查时容易漏）。同一判定口径：reportIncident:false 的工具照旧不刷。
           // 脱敏走 incident-pilot 同款规则——错误串里可能带上 URL 查询串里的 access_token。
-          log.warn(`[tool] ${name} 出错：${redactText(String(result.content || '工具执行失败').replace(/\s+/g, ' '), 160)}`);
-          this.getIncidentPilot()?.capture(new Error(String(result.content || '工具执行失败')), {
+          const toolErrText = String(result.content || '工具执行失败');
+          log.warn(`[tool] ${name} 出错：${redactText(toolErrText.replace(/\s+/g, ' '), 160)}`);
+          this.getIncidentPilot()?.capture(new Error(toolErrText), {
             source: `tool:${name}`,
             category: 'tool',
-            severity: 'warning',
+            severity: isBillingOrAuthFailure(toolErrText) ? 'error' : 'warning',
             chatKey,
             sessionId: session.id,
             details: { tool: name }

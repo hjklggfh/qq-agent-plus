@@ -86,6 +86,11 @@ import {
   inactiveIncidentPilotStatus,
   incidentDatabasePath
 } from '../pilots/incident-pilot.js';
+import {
+  classifyModuleLogSeverity,
+  explainError,
+  formatIncidentNotification
+} from '../core/error-explain.js';
 import { safeFetchBinary } from '../llm/safe-fetch.js';
 import { integrationStatus, updateSnowLumaPassword } from './integrations.js';
 import { AutoUpdateManager, autoUpdatePending, readAutoUpdateState } from '../auto-update.js';
@@ -570,7 +575,7 @@ export function createApp({
     incidentPilot?.capture(error, {
       source,
       category: 'module',
-      severity: 'error'
+      severity: classifyModuleLogSeverity(source, error?.message ?? error)
     });
   };
   const onebot = new OneBotClient({
@@ -713,30 +718,27 @@ export function createApp({
       emit,
       log,
       notifyAvailable: () => onebot.connected === true,
-      notify: async (incident, ownerUin) => {
+      notify: async (incident, ownerUin, meta = {}) => {
         const userId = String(ownerUin || '').trim();
         if (!onebot.connected) {
           throw Object.assign(new Error('OneBot 未连接，告警等待发送'), {
             beforeWrite: true
           });
         }
-        const severity = {
-          critical: '严重',
-          error: '错误',
-          warning: '警告',
-          info: '信息'
-        }[incident.severity] || incident.severity;
-        const text = [
-          '【实验功能 · QQ Agent 异常】',
-          `等级：${severity}`,
-          `模块：${incident.source}`,
-          ...(incident.chatKey ? [`会话：${incident.chatKey}`] : []),
-          `结果：${incident.message}`,
-          `次数：${incident.count}`,
-          `编号：${incident.id}`,
-          '',
-          '处理入口：控制台 → 异常'
-        ].join('\n');
+        let chatName = '';
+        const groupMatch = /^group:(\d+)$/.exec(String(incident?.chatKey || ''));
+        if (groupMatch && typeof orchestrator?.getChatName === 'function') {
+          try {
+            chatName = await Promise.race([
+              orchestrator.getChatName(groupMatch[1]),
+              new Promise((resolve) => setTimeout(() => resolve(''), 800))
+            ]) || '';
+          } catch { chatName = ''; }
+        }
+        const text = formatIncidentNotification(incident, {
+          chatName,
+          escalationCount: Number(meta?.escalationCount) || 0
+        });
         const data = await onebot.sendText('private', userId, text);
         store.appendSelf(`private:${userId}`, {
           mid: data?.message_id ?? null,
@@ -5100,7 +5102,8 @@ function buildSessionView(s, store, options = {}) {
     persona: s.persona || personaLabelOfPrompt(s.systemPrompt),
     threadState: lifecycle?.state || s.threadState || null,
     lifecycle,
-    sessionMetrics: buildSessionMetrics(s)
+    sessionMetrics: buildSessionMetrics(s),
+    ...(s.error ? { errorExplain: explainError(s.error, { source: 'orchestrator' }) } : {})
   };
 }
 

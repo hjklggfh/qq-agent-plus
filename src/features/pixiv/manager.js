@@ -22,15 +22,15 @@ function downloadFailure(error) {
   if (status >= 500 && status <= 599) return `图片接口暂时异常（HTTP ${status}），请稍后再试。`;
   if (status === 429) return '图片接口限流（HTTP 429），请稍后再试。';
   if (status === 403) return '图片接口拒绝访问（HTTP 403）。';
-  if ([404, 410].includes(status)) return `图片接口返回 HTTP ${status}，当前无法取得图片；不能据此确认作品已删除。`;
+  if ([404, 410].includes(status)) return `暂无法获取图片（图片接口返回 HTTP ${status}，可能接口异常或作品受限，不能据此确认作品已删除）。`;
   if (error?.tooBig) return '图片超过单张下载上限，可在 PID 设置调整下载大小或图片尺寸。';
   const message = String(error?.message || '');
-  if (/超时|timeout|timed out|abort/i.test(message)) return '图片下载超时，请稍后再试或调大单次请求超时。';
+  if (/超时|timeout|timed out|abort/i.test(message)) return '图片下载超时，请稍后再试。';
   if (error?.code === 'ENOSPC') return '服务器磁盘空间不足，无法保存图片。';
   if (['EACCES', 'EPERM'].includes(error?.code)) return '服务器无法写入图片临时目录。';
-  if (error?.netError) return '图片接口连接失败，请稍后再试。';
+  if (error?.netError) return '暂时无法连接图片接口，请稍后再试；若持续失败请联系管理员检查线路。';
   if (/不是图片/.test(message)) return '图片接口返回的内容不是支持的图片。';
-  return '图片下载失败，请稍后再试；详细原因请查看任务记录。';
+  return '图片下载失败，请稍后再试。';
 }
 function metadataImageUrl(raw) {
   try {
@@ -580,13 +580,13 @@ export class PixivManager {
       signal.throwIfAborted();
       if (!record.pages.length) {
         const failure = record.failedPages[0];
-        throw new Error(failure ? `PID ${failure.pid} 取图失败：${failure.reason}` : '本次没有取得可发送的图片，请检查图片接口及指定范围。');
+        throw new Error(failure ? `PID ${failure.pid} 取图失败：${failure.reason}` : '本次没有取得可发送的图片，请稍后再试或确认页码范围。');
       }
       await notify(summaries.join('\n\n'));
       return { content: `已发送 ${record.pages.length} 张图片${pdf ? '（PDF）' : ''}，完成提示已发到会话，不要重复发送。` };
     } catch (error) {
       record.status = sending ? 'send-unknown' : signal.aborted ? 'cancelled' : record.pages.length ? 'partial' : 'failed';
-      const content = sending ? '发送结果未确认，已停止后续发送，请先检查 QQ 会话。' : signal.aborted ? 'PID 任务已取消或超时，已发送页面保留，不自动重试。' : String(error.message).slice(0, 350);
+      const content = sending ? '发送结果未确认，已停止后续发送，请先核对聊天记录。' : signal.aborted ? 'PID 任务已取消或超时，已发送页面保留，不自动重试。' : String(error.message).slice(0, 350);
       record.error = content;
       return { content, isError: true, sendUnknown: sending };
     } finally {

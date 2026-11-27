@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { classifyTransportFailure } from '../onebot/sender.js';
+import { formatGroupNetworkError } from '../core/error-explain.js';
 import { safeFetchPublicBinary } from '../llm/safe-fetch.js';
 import {
   pickDouyinLinks,
@@ -56,9 +57,7 @@ export function normalizeDouyinDedupUrl(rawUrl) {
 }
 
 function formatDouyinError(error) {
-  const msg = String(error?.message ?? error ?? '未知错误').trim();
-  if (/aborted|timeout/i.test(msg)) return `请求超时（${msg}）`;
-  return msg.slice(0, 180);
+  return formatGroupNetworkError(error, '下载或转发');
 }
 
 function normalizeConfig(config = {}) {
@@ -158,7 +157,7 @@ export class DouyinAutoForward {
             task.mediaSent
               ? '抖音内容已发送，但说明发送失败；不会重复发送内容。'
               : task.uncertain
-                ? '抖音转发发送结果未知，请先核对聊天记录；为避免重复发送，本次不会自动重试。'
+                ? '抖音内容发送结果未知（未收到 QQ 送达回执，为避免重复发送本次不会自动重试，请先核对聊天记录）。'
                 : `抖音转发失败：${formatDouyinError(error)}`
           );
         } catch (noticeError) {

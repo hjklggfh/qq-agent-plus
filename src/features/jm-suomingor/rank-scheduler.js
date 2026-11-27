@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { nextAtFromHHMM } from '../../core/reminders.js';
 import { todayKey } from '../../core/util.js';
+import { formatGroupNetworkError } from '../../core/error-explain.js';
 import { RANK_META, normalizeRankKind } from './rankings.js';
 
 const VALID_KINDS = ['daily', 'weekly', 'monthly', 'total'];
@@ -18,8 +19,7 @@ function explainPushError(error) {
   if (/no message receipt|delivery was not confirmed|retcode=100/i.test(raw)) {
     return 'QQ 服务端未确认消息回执（可能图片触发了风控拦截或群消息发送失败）';
   }
-  if (/timeout|超时|fetch failed|econn/i.test(raw)) return `请求超时或网络波动（${raw.slice(0, 80)}）`;
-  return raw.slice(0, 120);
+  return formatGroupNetworkError(raw, '榜单拉取');
 }
 
 function minuteOfHHMM(hhmm) {

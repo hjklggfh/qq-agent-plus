@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { imageType } from '../../core/image-type.js';
+import { isNoReceiptError, FORWARD_UNCERTAIN_HINTS } from '../../core/error-explain.js';
 import { MAX_IMAGE_BYTES } from '../image-search/common.js';
 import { searchSegments } from '../image-search/command.js';
 import { imageSearchConfig } from '../image-search/config.js';
@@ -259,6 +260,11 @@ export class ResourceSearchManager {
             ? 'QQ 未返回回执（疑似群聊外链或封面触发风控拦截）'
             : rawMsg.slice(0, 120);
           try { this.save(); } catch { /* 不重试外发。 */ }
+          if (nodes && chatKind === 'group' && isNoReceiptError(sendErr)) {
+            try {
+              await this.send(chatKey, [FORWARD_UNCERTAIN_HINTS.generic], { runId: `${runId}-uncertain-hint`, preserveCode: false });
+            } catch { /* 补发提示失败静默 */ }
+          }
         }
       }
     } catch (error) {
@@ -269,7 +275,7 @@ export class ResourceSearchManager {
         const msg = String(error?.message ?? error);
         const hint = /请提供|仅支持|未检测到|已全部关闭/.test(msg)
           ? msg
-          : '资源检索未完成，请检查 DeepSeek 密钥或目标站点网络状态后重试。';
+          : '资源检索未完成（检索服务暂时异常或目标站点无法连接），请稍后再试；若持续失败请联系管理员排查。';
         try {
           await this.send(chatKey, [hint], { runId: `${runId}-error`, preserveCode: false });
         } catch { /* 无自动重试。 */ }

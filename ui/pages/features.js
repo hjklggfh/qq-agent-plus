@@ -1362,13 +1362,20 @@ function renderIncidentFeaturePageImpl(c, status, incidents = [], options = {}) 
       </div>
       <div class="table-wrap"><table class="usage-table incident-table">
         <thead><tr><th>时间</th><th>等级</th><th>来源</th><th>会话</th><th>异常</th><th>次数</th><th>状态</th><th></th></tr></thead>
-        <tbody>${incidents.map((incident) => `<tr>
+        <tbody>${incidents.map((incident) => {
+          const exp = incident.explain || null;
+          const sourceLabel = exp?.sourceLabel || incident.source || '-';
+          const headline = exp?.title || String(incident.message || incident.code || '').slice(0, 160);
+          const advice = exp?.advice || '';
+          const rawMsg = String(incident.message || '');
+          return `<tr>
           <td>${esc(fmtTime(incident.lastAt))}</td>
           <td><span class="incident-severity severity-${esc(incident.severity)}">${esc(INCIDENT_SEVERITY_LABELS[incident.severity] || incident.severity)}</span></td>
-          <td>${esc(incident.source || '-')}</td>
+          <td title="${esc(incident.source || '')}">${esc(sourceLabel)}</td>
           <td>${esc(incident.chatKey || '-')}</td>
-          <td><details><summary>${esc(String(incident.message || incident.code || '').slice(0, 160))}${String(incident.message || '').length > 160 ? ' …（点开看全文）' : ''}</summary>
+          <td><details><summary>${esc(headline.slice(0, 160))}${headline.length > 160 ? ' …' : ''}${advice ? `<div class="muted" style="font-size:12px;margin-top:2px;font-weight:400">${esc(advice)}</div>` : ''}</summary>
             <div class="incident-detail"><code>${esc(incident.code)}</code>
+              ${rawMsg ? `<div style="word-break:break-all">原始信息：${esc(rawMsg)}</div>` : ''}
               ${incident.sessionId ? `<div>Session：${esc(incident.sessionId)}</div>` : ''}
               ${incident.operationId ? `<div>Operation：${esc(incident.operationId)}</div>` : ''}
               ${incident.notifyError ? `<div>告警：${esc(incident.notifyError)}</div>` : ''}
@@ -1381,7 +1388,8 @@ function renderIncidentFeaturePageImpl(c, status, incidents = [], options = {}) 
             ${incident.state !== 'resolved' ? `<button type="button" class="btn btn-small" data-incident-resolve="${esc(incident.id)}">解决</button>` : ''}
             ${incident.state === 'resolved' ? `<button type="button" class="icon-btn" data-incident-delete="${esc(incident.id)}" title="删除日志" aria-label="删除日志">×</button>` : ''}
           </div></td>
-        </tr>`).join('')}</tbody>
+        </tr>`;
+        }).join('')}</tbody>
       </table></div>
       ${incidents.length ? '' : '<div class="empty-hint">当前筛选条件下没有异常日志</div>'}
     </section>`;

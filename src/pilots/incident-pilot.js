@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { openDatabase } from '../core/sqlite.js';
 import { redactText } from '../core/redact.js';
+import { explainError } from '../core/error-explain.js';
 
 const DB_NAME = 'incident-pilot.sqlite';
 const INCIDENT_STATES = new Set(['open', 'acknowledged', 'resolved']);
@@ -49,6 +50,11 @@ function incidentView(row) {
     firstAt: Number(row.first_at) || 0,
     lastAt: Number(row.last_at) || 0,
     message: row.safe_message || '',
+    explain: explainError(row.safe_message || row.code || '', {
+      source: row.source,
+      code: row.code,
+      details
+    }),
     details,
     stackHash: row.stack_hash || '',
     notifyState: row.notify_state || 'none',
@@ -325,6 +331,7 @@ export class IncidentPilotManager {
       Math.max(1, Number(this.config()?.incidentPilot?.duplicateWindowMinutes) || 10)
     ) * 60000;
     let incident;
+    let escalationCount = 0;
     // 拿不到写锁（别的连接占着）时直接放弃这次记录：
     // 绝不能让"记录异常"本身抛出去，把会话收尾也一起弄坏。
     let inTransaction = false;
@@ -344,18 +351,30 @@ export class IncidentPilotManager {
         const severity = SEVERITY_ORDER[normalized.severity] > SEVERITY_ORDER[existing.severity]
           ? normalized.severity
           : existing.severity;
+        const nextCount = (Number(existing.count) || 0) + 1;
         this.db.prepare(`
-          UPDATE incidents SET severity=?, count=count+1, last_at=?,
+          UPDATE incidents SET severity=?, count=?, last_at=?,
             safe_message=?, details_json=?, version=version+1
           WHERE id=?
         `).run(
           severity,
+          nextCount,
           now,
           normalized.message,
           JSON.stringify(details),
           existing.id
         );
         incident = this.get(existing.id);
+        const rawEscalate = this.config()?.incidentPilot?.escalateAtCount;
+        const escalateAt = rawEscalate === undefined ? 3 : Math.max(0, Math.floor(Number(rawEscalate) || 0));
+        if (
+          escalateAt >= 2
+          && nextCount === escalateAt
+          && existing.notify_state === 'sent'
+          && this.#shouldNotify(severity)
+        ) {
+          escalationCount = nextCount;
+        }
       } else {
         const id = `inc_${crypto.randomUUID().replaceAll('-', '').slice(0, 16)}`;
         const shouldNotify = this.#shouldNotify(normalized.severity);
@@ -394,6 +413,7 @@ export class IncidentPilotManager {
     }
     this.emit('incident-pilot-update', { id: incident.id, chatKey, state: incident.state });
     if (incident.notifyState === 'pending') this.#queueNotification(incident.id);
+    else if (escalationCount > 0) this.#queueEscalation(incident.id, escalationCount);
     return incident;
   }
 
@@ -606,6 +626,24 @@ export class IncidentPilotManager {
         this.lastError = String(error?.message ?? error);
         this.log(`[incident-pilot] 管理员告警失败：${this.lastError}`);
       });
+  }
+
+  #queueEscalation(id, escalationCount) {
+    this.notifyChain = this.notifyChain
+      .then(() => this.#notifyEscalation(id, escalationCount))
+      .catch((error) => {
+        this.lastError = String(error?.message ?? error);
+        this.log(`[incident-pilot] 管理员连续异常追报失败：${this.lastError}`);
+      });
+  }
+
+  async #notifyEscalation(id, escalationCount) {
+    if (!this.active || !this.notify || !this.notifyAvailable()) return;
+    const incident = this.get(id);
+    if (!incident || incident.state === 'resolved') return;
+    const ownerUin = String(this.config()?.incidentPilot?.ownerUin || '').trim();
+    if (!/^\d{5,15}$/.test(ownerUin)) return;
+    await this.notify(incident, ownerUin, { escalationCount });
   }
 
   async #notifyIncident(id) {

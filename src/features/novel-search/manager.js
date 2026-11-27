@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { uploadFile, FILENAME_COMPATIBILITY_NOTE } from '../jm-suomingor/upload.js';
+import { formatGroupUploadError, formatGroupNetworkError } from '../../core/error-explain.js';
 import { novelSearchConfig } from './config.js';
 import { checkNovelRelayHealth, downloadNovelViaRelay, searchNovelsViaRelay } from './client.js';
 import { buildNovelSearchNodes, formatNovelHelp, formatNovelSearchText } from './cards.js';
@@ -395,7 +396,7 @@ export class NovelSearchManager {
         error: msg.slice(0, 160),
         at: startedAt
       });
-      await this.send(chatKey, [`小说检索失败：${msg}`], { runId, preserveCode: false });
+      await this.send(chatKey, [`小说检索失败：${formatGroupNetworkError(error, '小说检索')}`], { runId, preserveCode: false });
     }
   }
 
@@ -444,8 +445,7 @@ export class NovelSearchManager {
       await this.sendCard(chatKey, session, clampedPage, runId);
     } catch (error) {
       if (signal?.aborted) return;
-      const msg = String(error?.message || error || '未知错误');
-      await this.send(chatKey, [`继续加载下一页失败：${msg}`], { runId, preserveCode: false });
+      await this.send(chatKey, [`继续加载下一页失败：${formatGroupNetworkError(error, '加载下一页')}`], { runId, preserveCode: false });
     }
   }
 
@@ -501,7 +501,7 @@ export class NovelSearchManager {
           error: errText.slice(0, 160),
           at: startedAt
         });
-        await this.send(chatKey, [`❌ 《${item.title}》上传失败：${errText}`], { runId: `${runId}-fail`, preserveCode: false });
+        await this.send(chatKey, [`❌ 《${item.title}》上传失败：${formatGroupUploadError(up)}`], { runId: `${runId}-fail`, preserveCode: false });
         return;
       }
 
@@ -541,7 +541,7 @@ export class NovelSearchManager {
         error: msg.slice(0, 160),
         at: startedAt
       });
-      await this.send(chatKey, [`❌ 获取《${item.title}》失败：${msg}`], { runId: `${runId}-err`, preserveCode: false });
+      await this.send(chatKey, [`❌ 获取《${item.title}》失败：${formatGroupNetworkError(error, '下载小说')}`], { runId: `${runId}-err`, preserveCode: false });
     } finally {
       fs.rmSync(tmpFile, { force: true });
     }

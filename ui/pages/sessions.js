@@ -649,7 +649,14 @@ function renderSessionDetail(s, {
         </div>`);
     }
   }
-  if (s.error) html.push(`<div class="session-error">${esc(s.error)}</div>`);
+  if (s.error) {
+    const exp = s.errorExplain;
+    if (exp?.title) {
+      html.push(`<div class="session-error"><div><strong>${esc(exp.title)}</strong></div>${exp.advice ? `<div class="muted" style="margin-top:4px">${esc(exp.advice)}</div>` : ''}<details style="margin-top:6px"><summary>查看原始报错</summary><div style="margin-top:4px;word-break:break-all">${esc(s.error)}</div></details></div>`);
+    } else {
+      html.push(`<div class="session-error">${esc(s.error)}</div>`);
+    }
+  }
   if (s.finishReason) html.push(`<div class="bubble bubble-user">finish：${esc(s.finishReason)}</div>`);
   html.push('</div>');
 

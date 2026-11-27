@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { classifyTransportFailure } from '../onebot/sender.js';
+import { formatGroupNetworkError } from '../core/error-explain.js';
 import { safeFetchPublicBinary } from '../llm/safe-fetch.js';
 import {
   pickBiliLink, pickBareVideoToken, resolveLink, fetchVideoInfo, getPlayUrl,
@@ -61,9 +62,7 @@ export function normalizeBilibiliDedupUrl(rawUrl) {
 }
 
 function formatBiliError(error) {
-  const msg = String(error?.message ?? error ?? '未知错误').trim();
-  if (/aborted|timeout/i.test(msg)) return `请求超时（${msg}）`;
-  return msg.slice(0, 180);
+  return formatGroupNetworkError(error, '下载或转发');
 }
 
 function normalizeConfig(config = {}) {
@@ -202,7 +201,7 @@ export class BilibiliAutoForward {
             task.videoSent
               ? 'B站视频已发送，但说明发送失败；不会重复发送视频。'
               : task.uncertain
-                ? 'B站转发发送结果未知，请先核对聊天记录；为避免重复发送，本次不会自动重试。'
+                ? 'B站视频发送结果未知（未收到 QQ 送达回执，为避免重复发送本次不会自动重试，请先核对聊天记录）。'
                 : `B站视频转发失败：${formatBiliError(error)}`
           );
         } catch (noticeError) {

@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openDatabase } from './sqlite.js';
 import { budgetStatus } from './budget.js';
+import { formatHealthAlert, formatHealthRecovery } from './error-explain.js';
 
 const OUTBOUND_STALE_MS = 6 * 60 * 60 * 1000;   // 入站静默窗口：6 小时没人说话＝静默期（原名出站水位，
                                                 // 2026-10-02 判据改版后只用于比较入站时间）
@@ -248,7 +249,7 @@ export async function runHealthCheck(opts = {}) {
         // 最需要告警的故障场景下最容易发不出去；原来只在 count===3 那一次尝试，
         // 一次瞬时失败就等于整段故障期静默（2026-09-30 审查 P1）。
         if (count >= NOTIFY_AFTER_STREAK && next.lastNotifiedAt == null) {
-          const sent = await tryNotify(notify, `【QQ Agent 健康告警】${c.name} 连续 ${count} 次检查失败：${c.detail || '无详情'}（每 5 分钟巡检一次，恢复后会通知）`);
+          const sent = await tryNotify(notify, formatHealthAlert(c, count));
           if (sent.ok) {
             state.streaks[c.name].lastNotifiedAt = now;
             delete state.streaks[c.name].notifyError;
@@ -260,7 +261,7 @@ export async function runHealthCheck(opts = {}) {
       } else if (prev.count >= NOTIFY_AFTER_STREAK) {
         // 恢复通知同样看结果：发失败了照常清零连击（已经恢复是事实），但记下失败痕迹 ——
         // 成功后要把痕迹清掉，否则留一条"上次恢复没发出去"的陈旧诊断（2026-09-30 复审）。
-        const sent = await tryNotify(notify, `【QQ Agent 健康恢复】${c.name} 已恢复正常`);
+        const sent = await tryNotify(notify, formatHealthRecovery(c));
         if (sent.ok) {
           notified.push(`恢复:${c.name}`);
           delete state.recoveryNotifyError;

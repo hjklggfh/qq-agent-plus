@@ -1224,8 +1224,11 @@ export class QzoneInteractionManager {
         this.state.accountId = runSelfId;
         this.#save();
       }
+    } else if (!runSelfId) {
+      this.log(`[qzone-interactions] QQ 协议端暂未获取到登录账号（历史状态属于 ${this.state.accountId}），本轮跳过执行；等待 QQ 重连即可，无需清理状态文件`);
+      return;
     } else if (this.state.accountId !== runSelfId) {
-      this.log(`[qzone-interactions] QQ 登录账号已改变（状态属于 ${this.state.accountId}，当前 ${runSelfId || '未知'}），本轮跳过执行；如确认切换账号，请清空 qzone-interactions 状态文件`);
+      this.log(`[qzone-interactions] QQ 登录账号已改变（状态属于 ${this.state.accountId}，当前 ${runSelfId}），本轮跳过执行；如确认切换账号，请清空 qzone-interactions 状态文件`);
       return;
     }
     const cfg = normalizedConfig();

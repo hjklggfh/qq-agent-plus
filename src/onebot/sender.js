@@ -277,7 +277,11 @@ export class SendQueue {
           outcome,
           chatKey,
           operationId: id,
-          details: { type: payload?.type || 'unknown', runId: options.runId || '' }
+          details: {
+            type: payload?.type || 'unknown',
+            runId: options.runId || '',
+            ...(payload?.label ? { label: String(payload.label).slice(0, 60) } : {})
+          }
         });
         if (incident && error && typeof error === 'object') error.incidentCaptured = true;
       } catch { /* 异常记录失败不能改变原发送结果 */ }
@@ -475,7 +479,7 @@ export class SendQueue {
       const data = await this.#deliver(
         chatKey,
         options,
-        { type: 'forward', count: list.length },
+        { type: 'forward', count: list.length, ...(label ? { label: String(label).slice(0, 60) } : {}) },
         () => this.onebot.sendForward(kind, id, list, { signal: options.signal })
       );
       const ts = Date.now();

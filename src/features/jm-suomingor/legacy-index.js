@@ -41,6 +41,12 @@ import { rememberSearchPage, searchSenderId } from './search-session.js';
 import { classifyJmDirectCommand, isSilentWhenChatDenied } from './direct-command.js';
 import { createRankService, normalizeRankKind, normalizeRankCategory, rankDisplayInfo } from './rankings.js';
 import { modelServiceOfBaseUrl, resolveThinkingPatch } from '../../core/provider-presets.js';
+import {
+  formatGroupUploadError,
+  formatGroupNetworkError,
+  isNoReceiptError,
+  FORWARD_UNCERTAIN_HINTS
+} from '../../core/error-explain.js';
 
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const TASKS_FILE = () => path.join(downloadRoot(), 'tasks.json');
@@ -1203,7 +1209,7 @@ async function runJob(job) {
               if (r.compatibilityNote) filenameCompatibilityNote = r.compatibilityNote;
             } else {
               uploadError = r.error;
-              uploadNote += `\n第 ${sent + 1} 卷上传失败：${r.error}`;
+              uploadNote += `\n第 ${sent + 1} 卷上传失败：${formatGroupUploadError(r)}`;
               break;
             }
           }
@@ -1229,7 +1235,7 @@ async function runJob(job) {
             : `📎 已发送文件：${uploadedName}（${humanSize(size)}）`;
         } else {
           uploadError = r.error;
-          uploadNote = `⚠️ 文件上传失败（PDF 和原图已保留）：${r.error}`;
+          uploadNote = `⚠️ 文件上传失败（PDF 和原图已保留）：${formatGroupUploadError(r)}`;
         }
       }
     }
@@ -1487,12 +1493,12 @@ function splitForUpload(filePath, maxBytes) {
 
 function humanize(msg) {
   const s = String(msg);
-  if (/所有禁漫域名都连不上/.test(s)) return s;
+  if (/所有禁漫域名都连不上/.test(s)) return formatGroupNetworkError(s, '下载');
   if (/本子.*不存在|章节.*不存在/.test(s)) return s;
-  if (/album_missing/.test(s)) return `这本子不存在或已被删除（原文：${s}）`;
-  if (/Restricted Access|ip地区|HTTP 403/.test(s)) return `站点拒绝了本机 IP（可能需要挂代理，或在设置里换域名）。原文：${s}`;
-  if (/超时|TimeoutError/.test(s)) return `请求超时（可能是网络慢或被限速）。可以调大「单次请求超时」。原文：${s}`;
-  return s;
+  if (/album_missing/.test(s)) return '该作品不存在或已被删除。';
+  if (/Restricted Access|ip地区|HTTP 403/.test(s)) return '漫画源站拒绝访问（可能存在地区或 IP 限制），请稍后再试或联系管理员检查线路。';
+  if (/超时|TimeoutError/.test(s)) return '请求超时（漫画源站响应较慢或网络波动），请稍后再试。';
+  return formatGroupNetworkError(s, '处理');
 }
 
 // ───────────────────────── 发消息 ─────────────────────────
@@ -1781,14 +1787,21 @@ export function setup(injected) {
         if (ctx.kind === 'group') {
           if (delivery.visible !== true) {
             warn(`JM 群搜索卡片送达待核对：${chatKey} kind=${delivery.kind} messageId=${delivery.messageId ?? 'none'} history=${delivery.visible}`);
+            if (!ctx?.session) {
+              await sendDirectToolText(ctx, chatKey, FORWARD_UNCERTAIN_HINTS.jmSearch);
+            }
             return { content: '搜索卡片送达尚未确认，请核对群历史；不要自动重发或宣称已送达。' };
           }
           if (delivery.kind !== '搜索') warn(`JM 群搜索已降级送达：${chatKey} kind=${delivery.kind}`);
         }
         return { content: `已发送「${query}」第 ${page}/${result.pages} 页${delivery.kind}卡片，请勿重复发送。` };
       } catch (error) {
-        // 外部发送可能已生效，交给现有 outbox 核对，不能再补发一条错误提示。
+        // 外部发送可能已生效：不自动重发卡片；但群里若完全无回音会让群友误以为卡死，
+        // 遇到 QQ 无回执时补发一条中性短提示告知状况（失败静默，绝不二次抛错）。
         warn(`JM 搜索卡片发送待核对：${error?.message ?? error}`);
+        if (ctx.kind === 'group' && isNoReceiptError(error)) {
+          await sendDirectToolText(ctx, chatKey, FORWARD_UNCERTAIN_HINTS.jmSearch);
+        }
         return { content: '搜索卡片发送状态未确认，请核对发送记录后再决定是否重试。' };
       }
     }

@@ -5,6 +5,7 @@ import { imageSearchConfig, IMAGE_SEARCH_PLATFORMS } from './config.js';
 import { MAX_IMAGE_BYTES, boundedBody, formatFindReply, formatSearchReply } from './common.js';
 import { searchSegments } from './command.js';
 import { imageType } from '../../core/image-type.js';
+import { isNoReceiptError, FORWARD_UNCERTAIN_HINTS } from '../../core/error-explain.js';
 import { searchResultNodes } from './result-images.js';
 
 export class ImageSearchManager {
@@ -129,7 +130,7 @@ export class ImageSearchManager {
           reports.push(report);
         } catch {
           signal.throwIfAborted();
-          reports.push({ platform, status: 'error', message: '查询失败或超时，请检查中转服务及平台状态', results: [] });
+          reports.push({ platform, status: 'error', message: '本次查询超时或暂不可用，请稍后再试', results: [] });
         }
       }
       record.platforms = reports.map((r) => ({ platform: r.platform, status: r.status, count: r.results.length }));
@@ -146,9 +147,14 @@ export class ImageSearchManager {
             ? await this.forward(chatKey, { nodes, label: '以图搜图结果' }, { runId, signal })
             : await this.send(chatKey, [command.mode === 'find' ? formatFindReply(reports[0]) : formatSearchReply(reports, settings.limit)], { runId, preserveCode: false, signal });
           if (sent?.failed?.length) throw new Error('部分发送未确认');
-        } catch {
+        } catch (sendErr) {
           record.status = 'send-unknown';
           try { this.save(); } catch { /* 不重试外发。 */ }
+          if (nodes && String(chatKey || '').startsWith('group:') && isNoReceiptError(sendErr)) {
+            try {
+              await this.send(chatKey, [FORWARD_UNCERTAIN_HINTS.generic], { runId: `${runId}-uncertain-hint`, preserveCode: false });
+            } catch { /* 补发提示失败静默，不改变 send-unknown 状态 */ }
+          }
         }
       }
     } catch (error) {
@@ -157,7 +163,7 @@ export class ImageSearchManager {
       try { this.save(); } catch { /* 历史写盘失败不能触发重复外发。 */ }
       if (!signal.aborted && this.settings().enabled && this.canRun(chatKey)) {
         // 不把包含地址或令牌的底层网络异常发到 QQ。
-        const hint = /请发送|仅支持|平台已关闭/.test(error.message) ? error.message : '搜图未完成，请检查中转配置或稍后手动重试。';
+        const hint = /请发送|仅支持|平台已关闭/.test(error.message) ? error.message : '搜图未完成（搜图服务超时或暂不可用），请稍后再试；若持续失败请联系管理员排查。';
         try { await this.send(chatKey, [hint], { runId: `${runId}-error`, preserveCode: false }); } catch { /* 无自动重试。 */ }
       }
     } finally { clearInterval(guard); }
