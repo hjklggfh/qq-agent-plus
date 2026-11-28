@@ -4,7 +4,7 @@
 'use strict';
 
 
-import { refreshStatus, renderSettings } from '../app.js';
+import { closeModelModal, loadSettings, modelModalShell, refreshStatus, renderSettings } from '../app.js';
 import { api } from '../core/api.js';
 import { MOMENT_STATUS_LABELS, QZONE_ACTION_LABELS, QZONE_RUN_LABELS } from '../core/constants.js';
 import {
@@ -293,20 +293,117 @@ function renderGroupGameSection(c) {
 }
 
 function renderRemindersSection(c) {
+  const rem = c.reminders || {};
+  const providers = state.providers || [];
+  const useChat = rem.useChatModel !== false;
+  const selP = providers.find((p) => p.id === rem.provider);
+  const currentDisplay = selP ? `${selP.displayName || selP.id} · ${rem.model || '未选模型'}` : (rem.model || '未选模型');
   return `
     <h3 id="settings-reminders">定时提醒</h3>
-    <div class="hint">群友说「明天 9 点提醒我交作业」时它会把提醒记下来（落盘、重启不丢），到点用它自己的口吻说出来。
+    <div class="hint">群友说「明天 9 点提醒我交作业」「12 月 3 号 19 点提醒我」时它会把提醒记下来（落盘、重启不丢），到点用它自己的口吻说出来。
       限制：单条 ≤200 字、最多设到 30 天后、单会话待触发 10 条 / 全局 50 条、离线导致迟到超 12 小时作废不补发。</div>
-    <div class="checkbox-row"><input type="checkbox" id="cfg-reminders-enabled" ${c.reminders?.enabled !== false ? 'checked' : ''} />
+    <div class="checkbox-row"><input type="checkbox" id="cfg-reminders-enabled" ${rem.enabled !== false ? 'checked' : ''} />
       <label for="cfg-reminders-enabled">启用定时提醒（关掉后不再接受新提醒、到点也不派发；已存数据保留，重新打开继续用）</label></div>
+    <div class="checkbox-row"><input type="checkbox" id="cfg-reminders-usechat" ${useChat ? 'checked' : ''} />
+      <label for="cfg-reminders-usechat">定时提醒对话使用与聊天机器人相同的模型</label></div>
+    <div id="reminders-model-box" style="${useChat ? 'display:none' : ''}">
+      <div class="field"><label>定时提醒专用模型（点击选择）</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="cfg-reminders-model-pick" readonly placeholder="点击选择模型" value="${esc(currentDisplay)}" style="flex:1;cursor:pointer" />
+        </div>
+        <div class="hint" id="reminders-model-hint">${selP ? `当前：${esc(selP.displayName)} @ ${esc(selP.baseURL)}` : '尚未选择专用模型'}（仅在识别到设/查/改/取消提醒的轮次临时切换，调用失败自动回落主聊天模型）</div>
+        <input type="hidden" id="cfg-reminders-provider" value="${esc(rem.provider || '')}" />
+        <input type="hidden" id="cfg-reminders-model" value="${esc(rem.model || '')}" />
+      </div>
+    </div>
     <h3 style="margin-top:18px">待触发</h3>
     <div id="reminders-pending"><span class="muted">正在读取…</span></div>
     <h3 style="margin-top:18px">最近完成（触发 / 取消 / 过期）</h3>
     <div id="reminders-recent"><span class="muted">正在读取…</span></div>
     <div class="settings-actions">
       <button class="btn btn-small" id="reminders-refresh-btn" type="button">刷新</button>
-      <span class="muted">取消某条立即生效，不需要保存；上面的开关改完要点「保存设置」</span>
+      <span class="muted">取消某条立即生效，不需要保存；上面的开关与专用模型设置改完要点「保存设置」</span>
     </div>`;
+}
+
+/** 选择定时提醒专用模型：复用模型目录选择器，保存到 config.reminders.provider/model。 */
+function openReminderModelPicker() {
+  const providers = state.providers || [];
+  if (!providers.length) {
+    const hint = $('#reminders-model-hint');
+    if (hint) hint.textContent = '模型目录为空：请先到「模型 API」页签选服务预设或填地址添加。';
+    return;
+  }
+  const overlay = modelModalShell({
+    head: '选择定时提醒专用模型',
+    body: `
+      <div class="model-modal-left" id="mm-left"></div>
+      <div class="model-modal-right" id="mm-right"></div>`,
+    foot: '<button class="btn" id="mm-cancel">取消</button>'
+  });
+  const left = overlay.querySelector('#mm-left');
+  const right = overlay.querySelector('#mm-right');
+  const currentProvider = $('#cfg-reminders-provider')?.value || state.config?.reminders?.provider || '';
+  const currentModel = $('#cfg-reminders-model')?.value || state.config?.reminders?.model || '';
+  let activePid = currentProvider || providers[0].id;
+  function renderLeft() {
+    left.innerHTML = providers.map((p) =>
+      `<div class="mm-prov ${p.id === activePid ? 'active' : ''}" data-pid="${esc(p.id)}">${esc(p.displayName || p.id)}</div>`).join('');
+    left.querySelectorAll('.mm-prov').forEach((el) => {
+      el.addEventListener('click', () => { activePid = el.dataset.pid; renderLeft(); renderRight(); });
+    });
+  }
+  function renderRight() {
+    const p = providers.find((x) => x.id === activePid);
+    if (!p) { right.innerHTML = ''; return; }
+    const names = p.modelNames || {};
+    right.innerHTML = p.models.map((m) => `
+      <div class="mm-model" data-pid="${esc(p.id)}" data-model="${esc(m)}">
+        <span class="mm-check">${m === currentModel && p.id === currentProvider ? '✓' : ''}</span>
+        <span>${esc(names[m] || m)}</span>
+        <span class="muted" style="font-size:11px">${esc(m)}</span>
+      </div>`).join('') || '<div class="muted" style="padding:10px">该提供商下没有模型</div>';
+    right.querySelectorAll('.mm-model').forEach((el) => {
+      el.addEventListener('click', async () => {
+        const pid = el.dataset.pid;
+        const model = el.dataset.model;
+        try {
+          const useChatBox = $('#cfg-reminders-usechat');
+          const useChatModel = useChatBox ? !!useChatBox.checked
+            : (state.config?.reminders?.useChatModel !== false);
+          await api('/api/config', {
+            method: 'POST',
+            body: JSON.stringify({ reminders: { provider: pid, model, useChatModel } })
+          });
+          closeModelModal(overlay);
+          loadSettings();
+        } catch (e) {
+          const hint = $('#reminders-model-hint');
+          if (hint) hint.textContent = `选择失败：${e.message}`;
+          closeModelModal(overlay);
+        }
+      });
+    });
+  }
+  renderLeft();
+  renderRight();
+  overlay.querySelector('#mm-cancel').addEventListener('click', () => closeModelModal(overlay));
+}
+
+function bindRemindersModelControls() {
+  const useChat = $('#cfg-reminders-usechat');
+  if (useChat && !useChat.dataset.bound) {
+    useChat.dataset.bound = '1';
+    useChat.addEventListener('change', () => {
+      const box = $('#reminders-model-box');
+      if (box) box.style.display = useChat.checked ? 'none' : '';
+    });
+  }
+  const pick = $('#cfg-reminders-model-pick');
+  if (pick && !pick.dataset.bound) {
+    pick.dataset.bound = '1';
+    pick.addEventListener('click', () => openReminderModelPicker());
+  }
 }
 
 /** 定时提醒页的列表加载（待触发 + 最近完成），取消后也走这里刷新。 */
@@ -718,8 +815,8 @@ async function loadQzoneInteractionStatus() {
 
 
 export {
-  launchExperimentalFeature, loadDailyMomentsStatus, loadGroupGameView, loadQzoneInteractionStatus,
-  loadRemindersView, momentStatusLabel, renderDailyMomentsSection, renderExperimentalSettingsSectionImpl,
+  bindRemindersModelControls, launchExperimentalFeature, loadDailyMomentsStatus, loadGroupGameView, loadQzoneInteractionStatus,
+  loadRemindersView, momentStatusLabel, openReminderModelPicker, renderDailyMomentsSection, renderExperimentalSettingsSectionImpl,
   renderGroupChecklist, renderGroupGameSection, renderMomentWindowRow, renderQzoneInteractionSection,
   renderRemindersSection
 };

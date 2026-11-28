@@ -412,3 +412,48 @@ test('memory_query 有条数上限：跨会话记忆不会被一次全灌进一�
   const one = JSON.parse((await tool('memory_query').execute(fx.ctx, { userId: '1005' })).content);
   assert.equal(one.memberImpression.length, 1, '指定 userId 时只给这个人的');
 });
+
+test('remind 工具：支持绝对日期 YYYY-MM-DD HH:MM、禁止 at 与 minutes 同时传入、返回值含日期与星期', async () => {
+  const { ReminderStore } = await import('../src/core/reminders.js');
+  const store = new ReminderStore(path.join(__dir, 'reminders-tool.json'));
+  const fx = context({ reminders: store, selfNickname: 'Gemi本咪' });
+
+  // 同时传 at 和 minutes 必须报错，不再静默忽略 minutes
+  const conflict = await tool('remind').execute(fx.ctx, {
+    action: 'add',
+    at: '00:00',
+    minutes: 4320,
+    text: '周一吃万妖果'
+  });
+  assert.equal(conflict.isError, true);
+  assert.match(conflict.content, /只能二选一/);
+  assert.equal(store.list('group:1').length, 0);
+
+  // 都不传报错
+  const missing = await tool('remind').execute(fx.ctx, { action: 'add', text: '缺时间' });
+  assert.equal(missing.isError, true);
+
+  // 构造未来 3 天的北京时间 "YYYY-MM-DD HH:MM"
+  const future = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000 + 8 * 3600 * 1000);
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const ymd = `${future.getUTCFullYear()}-${pad2(future.getUTCMonth() + 1)}-${pad2(future.getUTCDate())}`;
+  const createdRes = await tool('remind').execute(fx.ctx, {
+    action: 'add',
+    at: `${ymd} 19:00`,
+    text: '三天后的宣讲会'
+  });
+  assert.equal(createdRes.isError, undefined);
+  const payload = JSON.parse(createdRes.content);
+  assert.equal(payload.created, true);
+  assert.ok(payload.at.startsWith(ymd) && payload.at.includes('19:00') && /（周[一二三四五六日]）/.test(payload.at), `返回值应含完整年月日与星期：${payload.at}`);
+  assert.match(payload.note, /核对/);
+  assert.equal(store.list('group:1').length, 1);
+
+  // 非法日期格式报错
+  const badDate = await tool('remind').execute(fx.ctx, {
+    action: 'add',
+    at: '2026-02-30 19:00',
+    text: '不存在的日期'
+  });
+  assert.equal(badDate.isError, true);
+});

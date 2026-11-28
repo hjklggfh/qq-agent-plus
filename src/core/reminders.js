@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { DATA_DIR } from './config.js';
-import { minuteOfDayInZone, sanitizeUserText } from './util.js';
+import { ZONE_OFFSET_MS, sanitizeUserText, shanghaiDayStart } from './util.js';
 
 const FILE = path.join(DATA_DIR, 'reminders.json');
 export const MAX_REMINDER_TEXT = 200;
@@ -15,19 +15,163 @@ const MAX_PENDING = 50;       // 全局待触发上限
 const DONE_KEEP = 5;          // 每个会话保留最近几条已完成记录（供 list 查看）
 const MAX_DELAY_MS = 30 * 24 * 60 * 60 * 1000; // 最多 30 天后（再远没意义）
 const EXPIRE_AFTER_MS = 12 * 60 * 60 * 1000;   // 离线导致迟到超过 12 小时 → 作废不补发
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
-/** "HH:MM" → 下一次出现的绝对毫秒（按项目统一时区 UTC+8；已过则算明天）。非法返回 null。 */
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** 构造上海时区的绝对毫秒时间戳；若日历日期非法（如 2 月 30 日）返回 null。 */
+function shanghaiPartsToMs(year, month, day, hour, minute, second = 0) {
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  if (!Number.isInteger(month) || month < 1 || month > 12) return null;
+  if (!Number.isInteger(day) || day < 1 || day > 31) return null;
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  if (!Number.isInteger(second) || second < 0 || second > 59) return null;
+  const utc = Date.UTC(year, month - 1, day, hour, minute, second);
+  const check = new Date(utc);
+  if (
+    check.getUTCFullYear() !== year
+    || check.getUTCMonth() !== month - 1
+    || check.getUTCDate() !== day
+  ) return null;
+  return utc - ZONE_OFFSET_MS;
+}
+
+/** "HH:MM" → 下一次出现的绝对毫秒（按项目统一时区 UTC+8，整分归零秒；已过则算明天）。非法返回 null。 */
 export function nextAtFromHHMM(hhmm, now = Date.now()) {
   const m = /^(\d{1,2})[:：](\d{2})$/.exec(String(hhmm || '').trim());
   if (!m) return null;
   const hour = Number(m[1]);
   const minute = Number(m[2]);
   if (hour > 23 || minute > 59) return null;
-  const nowMin = minuteOfDayInZone(now);
   const targetMin = hour * 60 + minute;
-  let deltaMin = targetMin - nowMin;
-  if (deltaMin <= 0) deltaMin += 24 * 60;   // 已过（或就是此刻）→ 明天同一时刻
-  return now + deltaMin * 60 * 1000;
+  const todayTarget = shanghaiDayStart(now) + targetMin * 60 * 1000;
+  // 若今天该整分时刻尚未过去（严格晚于 now），就取今天；已过或正好此刻则算明天同一整分。
+  return todayTarget > now ? todayTarget : todayTarget + DAY_MS;
+}
+
+/**
+ * 解析提醒的绝对时间（按北京时间 UTC+8，非法返回 null）：
+ * - "HH:MM"（24 小时内，已过算明天）
+ * - "YYYY-MM-DD HH:MM" / "YYYY/MM/DD HH:MM" / "YYYY.MM.DD HH:MM" / "YYYY年M月D日 HH:MM"（支持 T 分隔与可选 :SS）
+ * - 带显式时区后缀的 ISO 8601（如 "2026-12-03T19:00:00+08:00" 或 "...Z"）
+ * - "MM-DD HH:MM" / "MM/DD HH:MM" / "M.D HH:MM" / "M月D日 HH:MM" / "M月D号 HH:MM"
+ *   （按上海当前年；仅在跨年窗口内、下一年同月日落在未来 30 天内时自动顺延至下一年）
+ */
+export function parseReminderAt(input, now = Date.now()) {
+  const raw = String(input ?? '').trim();
+  if (!raw) return null;
+
+  // 1. 纯 HH:MM（兼容原接口）
+  if (/^\d{1,2}[:：]\d{2}$/.test(raw)) {
+    return nextAtFromHHMM(raw, now);
+  }
+
+  // 2. 带显式时区的 ISO 8601（如 +08:00 / -05:00 / Z）
+  if (/^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+    const parsed = Date.parse(raw.replace(' ', 'T'));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  // 3. 完整年月日 + 时分（可选秒），按北京时间
+  const full = /^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:[日号])?(?:[\sT]+)(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?$/.exec(raw);
+  if (full) {
+    return shanghaiPartsToMs(
+      Number(full[1]), Number(full[2]), Number(full[3]),
+      Number(full[4]), Number(full[5]), full[6] !== undefined ? Number(full[6]) : 0
+    );
+  }
+
+  // 4. 月日 + 时分（可选秒），按上海当前年（支持 12 月下旬设次年 1 月）
+  const md = /^(\d{1,2})[-/.月](\d{1,2})(?:[日号])?(?:[\sT]+)(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?$/.exec(raw);
+  if (md) {
+    const nowSh = new Date(now + ZONE_OFFSET_MS);
+    const year = nowSh.getUTCFullYear();
+    const month = Number(md[1]);
+    const day = Number(md[2]);
+    const hour = Number(md[3]);
+    const minute = Number(md[4]);
+    const second = md[5] !== undefined ? Number(md[5]) : 0;
+    const thisYear = shanghaiPartsToMs(year, month, day, hour, minute, second);
+    if (thisYear === null) {
+      // 例如平年写 02-29 → 仍按非法日期拒绝
+      return null;
+    }
+    if (thisYear < now - DAY_MS) {
+      const nextYear = shanghaiPartsToMs(year + 1, month, day, hour, minute, second);
+      if (nextYear !== null && nextYear > now && nextYear - now <= MAX_DELAY_MS) {
+        return nextYear;
+      }
+    }
+    return thisYear;
+  }
+
+  return null;
+}
+
+/** 格式化提醒绝对时间（北京时间，含年/月/日/星期/时:分，便于模型一眼核对日期与星期）。 */
+export function formatReminderAt(ts) {
+  const value = Number(ts);
+  if (!Number.isFinite(value)) return '时间未知';
+  const d = new Date(value + ZONE_OFFSET_MS);
+  return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}（${WEEKDAYS[d.getUTCDay()]}）${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}`;
+}
+
+const REMINDER_EXPLICIT_RE = /(?:定时提醒|定时任务|定个?时|设个?时|闹钟|报时|提醒我|提醒一下|提醒下|别忘了提醒|记得提醒|取消提醒|删(?:掉|除).*提醒|别提醒|不用提醒|有哪些提醒|看看.*提醒|查(?:一下|看).*提醒|改(?:一下)?.*提醒)/;
+const REMINDER_TIME_CALL_RE = /(?:(?:分钟|小时|钟头)后|半小时|一会儿|待会儿?|稍后|明天|后天|大后天|明早|明晚|今晚|今夜|今早|下?周[一二三四五六日天末]|下?星期[一二三四五六日天]|\d{1,2}\s*[点時:：]|\d{1,2}\s*[月号日]|\d{1,2}[./-]\d{1,2}|凌晨|早上|上午|中午|下午|傍晚|晚上).{0,20}(?:叫我|喊我|戳我|通知我|提醒|再定一个|定一个|设一个|叫一下我|喊一下我)|(?:叫我|喊我|戳我|通知我).{0,16}(?:起床|开会|吃药|喝水|拿快递|上班|下班|出门|睡觉|抢|打卡|交|报|领|吃|看)/;
+const REMINDER_FOLLOWUP_RE = /(?:改到|改成|换成|提前|推迟|延迟|晚点|开始|取消|算了别|不是今天|今天才周|日子|星期|周[一二三四五六日天]|(?:\d{1,2}|[零一二两三四五六七八九十]{1,3})\s*(?:点|时|[:：]|号|日))/;
+
+/**
+ * 判断本轮用户消息是否像是在设置/查询/修改/取消定时提醒（用于将提醒相关轮次路由到专用模型）。
+ * 只读纯函数：不发网络、不改状态。
+ */
+export function looksLikeReminderRequest(
+  triggerEntries = [],
+  { hasPendingReminders = false, recentAssistantText = '' } = {}
+) {
+  const texts = [];
+  for (const entry of triggerEntries || []) {
+    if (!entry || entry.self) continue;
+    const body = String(entry.text || '').trim();
+    if (body) texts.push(body);
+    const quoted = String(entry.reply?.text || '').trim();
+    if (quoted) texts.push(quoted);
+  }
+  if (!texts.length) return false;
+  const combined = texts.join('\n');
+  if (REMINDER_EXPLICIT_RE.test(combined)) return true;
+  if (REMINDER_TIME_CALL_RE.test(combined)) return true;
+  if (
+    (hasPendingReminders || /(?:提醒|闹钟|小手账|定时)/.test(String(recentAssistantText || '')))
+    && REMINDER_FOLLOWUP_RE.test(combined)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 解析定时提醒专用模型的 overrides（与记忆整理专用模型同口径）。
+ * useChatModel !== false 或配置不完整时返回 null（调用方沿用主模型）。
+ */
+export function resolveReminderModelOverride(cfg, providers = []) {
+  const rem = cfg?.reminders || {};
+  if (rem.enabled === false || rem.useChatModel !== false) return null;
+  const providerId = String(rem.provider || '').trim();
+  const model = String(rem.model || '').trim();
+  if (!providerId || !model) return null;
+  const p = (Array.isArray(providers) ? providers : []).find((x) => x && x.id === providerId);
+  if (!p?.baseURL || !p?.apiKey) return null;
+  return {
+    providerId: p.id,
+    baseUrl: p.baseURL,
+    apiKey: p.apiKey,
+    model,
+    timeoutMs: Math.max(5000, Number(cfg?.api?.timeoutMs) || 60000)
+  };
 }
 
 export class ReminderStore {

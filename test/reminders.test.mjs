@@ -8,7 +8,15 @@ import path from 'node:path';
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qq-reminders-'));
 process.env.QQ_AGENT_DATA_DIR = dataDir;
 
-const { ReminderStore, nextAtFromHHMM, MAX_REMINDER_TEXT } = await import('../src/core/reminders.js');
+const {
+  ReminderStore,
+  nextAtFromHHMM,
+  parseReminderAt,
+  formatReminderAt,
+  looksLikeReminderRequest,
+  resolveReminderModelOverride,
+  MAX_REMINDER_TEXT
+} = await import('../src/core/reminders.js');
 
 test('nextAtFromHHMM：未来时刻取今天、已过取明天、非法为 null', () => {
   // 造一个"现在"= 北京时间 10:00（UTC+8）→ UTC 02:00
@@ -109,4 +117,62 @@ test('提醒容量（#9）：先清「过期未处理」的占位项再判上限
   const leftPending = store.items.filter((it) => it.status === 'pending');
   assert.ok(leftPending.every((it) => it.at > now - 12 * 3600 * 1000), '不再有过期未处理的占位项');
   assert.equal(store.list('group:me').length, 1);
+});
+
+test('nextAtFromHHMM 与 parseReminderAt：秒数归零、跨天日期解析、跨年窗口与非法日期拒绝', () => {
+  // 北京时间 2026-11-27 11:30:51（周五） → UTC 2026-11-27 03:30:51
+  const now = Date.UTC(2026, 10, 27, 3, 30, 51);
+  // HH:MM 应归零秒数：19:00 对应 2026-11-27 19:00:00（UTC 11:00:00）
+  assert.equal(nextAtFromHHMM('19:00', now), Date.UTC(2026, 10, 27, 11, 0, 0));
+  // 完整日期时间 YYYY-MM-DD HH:MM（北京时间）
+  const dec3 = parseReminderAt('2026-12-03 19:00', now);
+  assert.equal(dec3, Date.UTC(2026, 11, 3, 11, 0, 0));
+  assert.equal(formatReminderAt(dec3), '2026-12-03（周四）19:00');
+  // 中文月日 + 全角冒号
+  assert.equal(parseReminderAt('12月3号 19：00', now), Date.UTC(2026, 11, 3, 11, 0, 0));
+  assert.equal(parseReminderAt('11/30 00:00', now), Date.UTC(2026, 10, 29, 16, 0, 0));
+  // 带显式时区的 ISO
+  assert.equal(parseReminderAt('2026-12-03T19:00:00+08:00', now), Date.UTC(2026, 11, 3, 11, 0, 0));
+  // 跨年窗口：2026-12-28 设 "01-03 09:00" 自动顺延到 2027-01-03 09:00
+  const lateDec = Date.UTC(2026, 11, 28, 4, 0, 0);
+  assert.equal(parseReminderAt('01-03 09:00', lateDec), Date.UTC(2027, 0, 3, 1, 0, 0));
+  // 已过去的今年日期（不在跨年 30 天内）：返回过去时间戳，绝不静默顺延一年
+  const pastThisYear = parseReminderAt('11-20 09:00', now);
+  assert.equal(pastThisYear, Date.UTC(2026, 10, 20, 1, 0, 0));
+  assert.ok(pastThisYear < now);
+  // 非法日历日期拒绝
+  assert.equal(parseReminderAt('2026-02-30 10:00', now), null);
+  assert.equal(parseReminderAt('2026-13-01 10:00', now), null);
+  assert.equal(parseReminderAt('明天早上九点', now), null);
+});
+
+test('looksLikeReminderRequest 与 resolveReminderModelOverride：准确识别提醒意图并解析专用渠道', () => {
+  assert.equal(looksLikeReminderRequest([{ text: '12.3号晚上19点有个宣讲会，记得提醒我' }]), true);
+  assert.equal(looksLikeReminderRequest([{ text: '定个闹钟，周一凌晨30号0点叫我吃万妖果' }]), true);
+  assert.equal(looksLikeReminderRequest([{ text: '周日晚上10点钟，再定一个' }]), true);
+  assert.equal(looksLikeReminderRequest([{ text: '明天早上8点叫我起床' }]), true);
+  assert.equal(looksLikeReminderRequest([{ text: '帮我取消提醒' }]), true);
+  // 引用提醒消息吐槽也命中
+  assert.equal(looksLikeReminderRequest([{ text: '今天才周五', reply: { text: '周日晚上10点钟提醒我' } }]), true);
+  // 有待触发提醒时说“改到两点半”命中
+  assert.equal(looksLikeReminderRequest([{ text: '下午两点半开始' }], { hasPendingReminders: true }), true);
+  // 普通闲聊不误切
+  assert.equal(looksLikeReminderRequest([{ text: '今天晚饭吃啥呀' }]), false);
+  assert.equal(looksLikeReminderRequest([{ text: '下午两点半开始' }], { hasPendingReminders: false }), false);
+
+  const providers = [{ id: 'p-ds', baseURL: 'https://api.deepseek.com/v1', apiKey: 'sk-ds' }];
+  assert.equal(resolveReminderModelOverride({ reminders: { enabled: true, useChatModel: true, provider: 'p-ds', model: 'deepseek-flash' } }, providers), null);
+  assert.equal(resolveReminderModelOverride({ reminders: { enabled: false, useChatModel: false, provider: 'p-ds', model: 'deepseek-flash' } }, providers), null);
+  assert.equal(resolveReminderModelOverride({ reminders: { enabled: true, useChatModel: false, provider: 'missing', model: 'deepseek-flash' } }, providers), null);
+  const ov = resolveReminderModelOverride({
+    api: { timeoutMs: 45000 },
+    reminders: { enabled: true, useChatModel: false, provider: 'p-ds', model: 'deepseek-flash' }
+  }, providers);
+  assert.deepEqual(ov, {
+    providerId: 'p-ds',
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKey: 'sk-ds',
+    model: 'deepseek-flash',
+    timeoutMs: 45000
+  });
 });

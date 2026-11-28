@@ -2127,6 +2127,106 @@ it('换卡后 24 小时内，历史与交接口径会说明"旧口癖不作数"'
     assert.ok(seen.every((x) => x.model === 'gemini-3.5-flash-lite'));
   });
 
+  it('定时提醒专用模型：命中提醒意图时切到 DeepSeek 渠道，失败自动回落主模型，普通闲聊不受影响', async (t) => {
+    const { runner, cfg, append } = fixture(t, {
+      reminders: new ReminderStore(path.join(root, 'reminders-route.json'))
+    });
+    setRuntimeConfig({
+      ...cfg,
+      api: {
+        ...cfg.api,
+        provider: 'p-main',
+        baseUrl: 'https://primary.example.com/v1',
+        apiKey: 'sk-main',
+        model: 'gemini-3.5-flash-lite'
+      },
+      providers: [
+        { id: 'p-main', name: 'Main', baseURL: 'https://primary.example.com/v1', apiKey: 'sk-main', models: ['gemini-3.5-flash-lite'] },
+        { id: 'p-ds', name: 'DeepSeek', baseURL: 'https://api.deepseek.com/v1', apiKey: 'sk-ds', models: ['deepseek-flash'] }
+      ],
+      reminders: {
+        enabled: true,
+        useChatModel: false,
+        provider: 'p-ds',
+        model: 'deepseek-flash'
+      }
+    });
+
+    const calls = [];
+    let failDeepSeek = false;
+    globalThis.fetch = async (url, init = {}) => {
+      const href = String(url);
+      const body = JSON.parse(String(init.body || '{}'));
+      calls.push({ href, model: body.model });
+      if (href.includes('api.deepseek.com') && failDeepSeek) {
+        return new Response(JSON.stringify({ error: { message: 'insufficient balance' } }), { status: 402 });
+      }
+      return Response.json({
+        model: body.model,
+        choices: [{ message: { content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+      });
+    };
+
+    // 1. 命中提醒意图 → 切到 DeepSeek 专用模型
+    append(1, '12月3号晚上19点提醒我参加宣讲会');
+    await runner.wake('group:1');
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].href.includes('api.deepseek.com'), '提醒轮次应走 DeepSeek 渠道');
+    assert.equal(calls[0].model, 'deepseek-flash');
+
+    // 2. 普通闲聊 → 保持主模型，不被提醒模型粘滞
+    calls.length = 0;
+    append(2, '今天午饭吃什么好呢');
+    await runner.wake('group:1');
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].href.includes('primary.example.com'), '普通闲聊应回到主渠道');
+    assert.equal(calls[0].model, 'gemini-3.5-flash-lite');
+
+    // 3. 提醒专用模型故障 → 自动回落主模型不中断对话
+    calls.length = 0;
+    failDeepSeek = true;
+    append(3, '定个闹钟明天早上8点提醒我出门');
+    await runner.wake('group:1');
+    assert.equal(calls.length, 2, '先试 DeepSeek 失败，再自动回落主模型');
+    assert.ok(calls[0].href.includes('api.deepseek.com'));
+    assert.ok(calls[1].href.includes('primary.example.com'));
+    assert.equal(calls[1].model, 'gemini-3.5-flash-lite');
+  });
+
+  it('定时提醒到期唤醒：发送给模型的提示词只有唯一干净的【本次唤醒】，不混入控制台唤醒与 schedule_wake 引导', async (t) => {
+    const { runner } = fixture(t, {
+      reminders: new ReminderStore(path.join(root, 'reminders-clean-wake.json'))
+    });
+    runner.reminders.items.push({
+      id: 'r-clean',
+      chatKey: 'group:1',
+      at: Date.now() - 1000,
+      text: '12月3号晚上19点开宣讲会',
+      status: 'pending',
+      createdBy: 'Gemi本咪'
+    });
+    let capturedUserPrompt = '';
+    globalThis.fetch = async (_url, init = {}) => {
+      const body = JSON.parse(String(init.body || '{}'));
+      capturedUserPrompt = String(body.messages?.find((m) => m.role === 'user')?.content || '');
+      return Response.json({
+        model: body.model,
+        choices: [{ message: { content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 }
+      });
+    };
+
+    runner.fireDueReminders();
+    await Promise.all([...runner.runTasks]);
+
+    assert.equal((capturedUserPrompt.match(/【本次唤醒】/g) || []).length, 1, '只能有一段【本次唤醒】');
+    assert.ok(capturedUserPrompt.includes('【定时提醒】'), '应包含定时提醒正文');
+    assert.ok(capturedUserPrompt.includes('12月3号晚上19点开宣讲会'));
+    assert.equal(capturedUserPrompt.includes('管理员从控制台主动唤醒'), false, '不应混入控制台手动唤醒文案');
+    assert.equal(capturedUserPrompt.includes('schedule_wake'), false, '不应混入自主节奏的 schedule_wake 引导');
+  });
+
 });
 
 describe('proactiveProbability（冷场开话题的发言概率）', () => {

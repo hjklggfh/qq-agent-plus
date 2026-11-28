@@ -249,7 +249,7 @@ function hasAssistantToolCallsWithoutReasoning(messages) {
 }
 
 /** 跨渠道切兜底时剥掉上一家厂商私有的 tool_call 扩展字段（如 Google thought_signature），只保留标准 OpenAI 结构。 */
-function stripVendorToolCallExtras(messages) {
+export function stripVendorToolCallExtras(messages) {
   if (!Array.isArray(messages)) return messages;
   return messages.map((m) => {
     if (m?.role !== 'assistant' || !Array.isArray(m.tool_calls) || !m.tool_calls.length) return m;

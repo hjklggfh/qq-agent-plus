@@ -440,7 +440,7 @@ export function buildSystemPrompt({
     const gameLines = [
       '【玩法与工具箱】',
       '- 你会主持小游戏：成语接龙、猜数字、20 个问题、真心话大冒险这类不用记状态的，被点名就直接玩起来；掷骰子/抽签/随机选人用 dice（结果由系统生成，必须如实转述，不要自己编数字）。随机点名可以先 get_group_member_list 拿名单再 dice pick。',
-      '- 群友说「提醒我 / 到点叫我 / 明天 9 点提醒 X」时，用 remind 落一条（时间用 HH:MM 或多少分钟后；这是持久化承诺，重启也不丢）。到点你会被唤醒、用你的口吻说出来；改主意用 remind cancel。'
+      '- 群友说「提醒我 / 到点叫我 / 明天 9 点提醒 X / 12 月 3 号 19 点提醒我」时，用 remind 落一条（跨天直接传 at="YYYY-MM-DD HH:MM"，当天可传 "HH:MM" 或 minutes，二选一且不要同时传；这是持久化承诺，重启也不丢）。设完务必核对返回结果里的日期与星期；改主意用 remind cancel。'
     ];
     if (getConfig().tts?.enabled === true) {
       gameLines.push('- 想"说"而不是"打"时可以用 send_voice 发一条短语音（1~3 句、≤120 字）：内容要写成口语，带语气词与标点（「哎——」「不是吧？」「……行吧」）才不会念得像播报；只在被要求或很合适的场合用，平时打字更像真人。');
@@ -906,7 +906,12 @@ export function buildUserPrompt(ctx) {
 
   // 最新消息始终位于动态输入末端，兼顾注意力与前缀缓存。
   const triggerBlock = buildTriggerBlock(ctx.triggerEntries, ctx);
-  if (ctx.manual) {
+  if (ctx.reminder) {
+    const reminderNote = safeSlice(String(ctx.wakeNote || ''), 600).trim();
+    const lines = [reminderNote || '【定时提醒】定时提醒到点了，请自然地把提醒说出来。'];
+    if (triggerBlock) lines.push(`顺带还有以下未读消息可一并参考：\n${triggerBlock}`);
+    parts.push(`【本次唤醒】${lines.join('\n')}`);
+  } else if (ctx.manual) {
     parts.push(triggerBlock
       ? `【本次唤醒】管理员从控制台主动要求你立即处理以下未读消息，不受普通响应档位限制。请结合上下文自行决定是否发言：\n${triggerBlock}`
       : '【本次唤醒】管理员从控制台主动唤醒了你。当前没有未读消息，请查看最近聊天状态，自行决定是否需要发言；不需要时可以直接结束。');

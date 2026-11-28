@@ -529,7 +529,10 @@ export const DEFAULT_CONFIG = {
   // 关闭后 remind 工具与到期派发都停，已存数据保留（重新打开继续用）。
   // 控制台「设置 → 定时提醒」可开关并查看/取消已立的提醒。
   reminders: {
-    enabled: true
+    enabled: true,
+    useChatModel: true,           // true = 跟随聊天模型；false = 命中提醒意图时切到下方专用模型
+    provider: '',                 // 专用模型所属提供商 id（useChatModel=false 时生效）
+    model: ''                     // 专用模型 id（useChatModel=false 时生效）
   },
   // 每日群聊记忆总结与 QQ 空间动态
   dailyMoments: {

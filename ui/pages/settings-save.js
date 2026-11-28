@@ -230,8 +230,14 @@ async function saveConfig({ quiet = false } = {}) {
   }
 
   if (sec === 'reminders') {
-    // 这一页只有一个开关；列表与取消是即时操作，不走保存
-    patch.reminders = { enabled: chk('#cfg-reminders-enabled', c.reminders?.enabled !== false) };
+    // 列表与取消是即时操作；开关与专用模型设置走保存
+    patch.reminders = {
+      ...(c.reminders || {}),
+      enabled: chk('#cfg-reminders-enabled', c.reminders?.enabled !== false),
+      useChatModel: chk('#cfg-reminders-usechat', c.reminders?.useChatModel !== false),
+      provider: val('#cfg-reminders-provider', c.reminders?.provider || '').trim(),
+      model: val('#cfg-reminders-model', c.reminders?.model || '').trim()
+    };
   }
 
   if (sec === 'moments') {

@@ -121,7 +121,8 @@ import { buildSystemPrompt, buildUserPrompt, isAtMe, resolveContextTier } from '
 import { personaSwitchConfig, resolveChatProfile, activateChatProfile, matchSwitchRequest, touchAltProfile, stripSwitchTags, chatCardState, planGroupCard, rememberChatCard, forgetChatCard, markChatCardFailed, activeAltChats, avatarState, planAvatar, markAvatarApplied, markAvatarFailed } from './persona-switch.js';
 import { memoryStoreForChat } from '../memory/memory-routing.js';
 import { probeModel, classifyUnavailable, markProbeResult } from './persona-availability.js';
-import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError } from '../llm/llm.js';
+import { chatCompletion, chatCompletionWithRetry, addUsage, isRetryableError, stripVendorToolCallExtras } from '../llm/llm.js';
+import { looksLikeReminderRequest, resolveReminderModelOverride } from './reminders.js';
 import { buildToolDefs, toOpenAiTools, executeTool } from '../tools/tools.js';
 import { trpgToolDefs } from '../features/trpg/tools.js';
 import { normalizeMid } from '../tools/tools-core.js';
@@ -1087,7 +1088,7 @@ export class Orchestrator {
     return task;
   }
 
-  async #wake(chatKey, { proactive = false, privateProactive = false, manual = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
+  async #wake(chatKey, { proactive = false, privateProactive = false, manual = false, reminder = false, waitingSessionId = null, wakeNote = '', paced = false } = {}) {
     if (proactive && this.getTrpg()?.narratorActive(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return; }
     if (!canRun(chatKey)) { if (waitingSessionId) this.#discardWaiting(waitingSessionId); return; }
     if (!this.#chatRuntimeDecision(chatKey).allowed) {
@@ -1179,7 +1180,7 @@ export class Orchestrator {
           tier: 4,
           count: manualContextCount,
           shouldRespond: true,
-          reason: paced ? '自主节奏唤醒' : '控制台主动唤醒'
+          reason: reminder ? '定时提醒到期' : (paced ? '自主节奏唤醒' : '控制台主动唤醒')
         };
       }
 
@@ -1191,7 +1192,7 @@ export class Orchestrator {
             tier: 4,
             count: manualContextCount,
             shouldRespond: true,
-            reason: paced ? '自主节奏唤醒' : '控制台主动唤醒'
+            reason: reminder ? '定时提醒到期' : (paced ? '自主节奏唤醒' : '控制台主动唤醒')
           }
         : tierResult0;
 
@@ -1270,7 +1271,9 @@ export class Orchestrator {
 
       // 触发摘要
       const first = triggerEntries[0];
-      const triggerSummary = manual
+      const triggerSummary = reminder
+        ? '定时提醒到期'
+        : manual
         ? '控制台主动唤醒'
         : privateProactive
         ? '主动私信'
@@ -1332,7 +1335,7 @@ export class Orchestrator {
     }
 
     try {
-      const runResult = await this.#runAgent(session, { kind, chatId, chatKey, triggerEntries, proactive, privateProactive, wakeNote, paced, seq,
+      const runResult = await this.#runAgent(session, { kind, chatId, chatKey, triggerEntries, proactive, privateProactive, wakeNote, paced, reminder, seq,
         manual, contextLimit: tierResult.count, tierInfo: tierResult, conversation, signal: controller.signal, deadlineAt });
       controller.signal.throwIfAborted();
       if (conversation.mode === 'lifecycle') {
@@ -1723,7 +1726,7 @@ export class Orchestrator {
   /** 明确被叫到却没有任何可见发送时，最多再请求一次模型；仍失败只发固定说明。 */
   async #ensureDirectedReply({
     session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
-    manual, signal, runLimits, replyRepairAttempted, roundsExhausted, stickToFallback = false, deadlineAt = 0
+    manual, signal, runLimits, replyRepairAttempted, roundsExhausted, stickToFallback = false, reminderOverride = null, deadlineAt = 0
   }) {
     if (replyRepairAttempted && session.sent.length) {
       session.replyCorrection = 'corrected';
@@ -1767,8 +1770,9 @@ export class Orchestrator {
           signal,
           deadlineAt,
           purpose: 'chat',
-          model: stickToFallback ? '' : (session.model || undefined),
-          useFallback: stickToFallback,
+          model: reminderOverride ? '' : (stickToFallback ? '' : (session.model || undefined)),
+          overrides: reminderOverride || null,
+          useFallback: reminderOverride ? false : stickToFallback,
           noFallback: session.chatProfile === 'alt'
         });
         signal.throwIfAborted();
@@ -1847,6 +1851,7 @@ export class Orchestrator {
     privateProactive = false,
     wakeNote = '',
     paced = false,
+    reminder = false,
     manual = false,
     seq,
     contextLimit = null,
@@ -2053,6 +2058,25 @@ export class Orchestrator {
       }
       : cfg.persona;
     const activeModel = altActive && switchCfg.altModel ? switchCfg.altModel : cfg.api.model;
+    const hasPendingReminders = Boolean(this.reminders?.list?.(chatKey)?.length);
+    const recentAssistantText = myMessages.length ? String(myMessages[myMessages.length - 1]?.text || '') : '';
+    const shouldRouteReminderModel = !trpgAction && !privateProactive && !altActive && !reminder
+      && cfg.reminders?.enabled !== false
+      && cfg.reminders?.useChatModel === false
+      && looksLikeReminderRequest(triggerEntries, { hasPendingReminders, recentAssistantText });
+    const reminderOverride = shouldRouteReminderModel
+      ? resolveReminderModelOverride(cfg, currentProviders())
+      : null;
+    if (shouldRouteReminderModel && !reminderOverride) {
+      log.warn(`[reminder] ${chatKey} 命中定时提醒意图，但专用模型未配置完整，本轮沿用默认聊天模型`);
+    }
+    let useReminderOverride = Boolean(reminderOverride);
+    const routedModel = useReminderOverride ? reminderOverride.model : activeModel;
+    const routedProvider = useReminderOverride ? reminderOverride.providerId : String(cfg.api.provider || '');
+    const routedBaseUrl = useReminderOverride ? reminderOverride.baseUrl : String(cfg.api.baseUrl || '');
+    if (useReminderOverride) {
+      log.info(`[reminder] ${chatKey} 命中定时提醒意图，本轮切换专用模型 ${reminderOverride.model}`);
+    }
     const systemPrompt = buildSystemPrompt({
       persona: activePersona,
       // 与【此刻状态】用同一个名字（群名片优先），否则同一次请求里会出现两个"你在群里的名字"
@@ -2065,11 +2089,11 @@ export class Orchestrator {
       trpgNarrator
     });
     const promptPrefixHash = crypto.createHash('sha256')
-      .update(String(cfg.api.provider || ''))
+      .update(String(routedProvider || ''))
       .update('\0')
-      .update(String(cfg.api.baseUrl || ''))
+      .update(String(routedBaseUrl || ''))
       .update('\0')
-      .update(String(activeModel || ''))
+      .update(String(routedModel || ''))
       .update('\0')
       .update(systemPrompt)
       .update('\0')
@@ -2158,6 +2182,8 @@ export class Orchestrator {
       moreUnreadDuringRun: this.store.unreadCount(chatKey) > 0,
       proactive,
       manual,
+      reminder,
+      wakeNote,
       contextLimit,
       tierInfo,
       thread,
@@ -2173,14 +2199,17 @@ export class Orchestrator {
     session.userPrompt = userPrompt;
     session.promptChars = systemPrompt.length + userPrompt.length
       + JSON.stringify(priorProviderMessages).length;
-    session.model = activeModel;
+    session.model = routedModel;
     session.chatProfile = chatProfile.profile;
     session.conversationMode = conversationCfg.mode;
     session.lifecycleContinuation = lifecycleContinuation;
     session.threadId = thread?.threadId || null;
     // 记录本次调用走的是哪个渠道（A6API / openrouter / 本地中转…）。
     // 同名模型在不同渠道是不同商品，用量与价格要分开统计。
-    session.vendor = vendorOfConfig(cfg);
+    session.vendor = useReminderOverride
+      ? (vendorOfBaseUrl(cfg, routedBaseUrl) || vendorOfConfig(cfg))
+      : vendorOfConfig(cfg);
+    if (useReminderOverride) session.reminderModelRouted = true;
     session.chatName = chatName;
     // 记录本次读了多长的上下文（排查提示词长度时很有用）
     if (tierInfo) {
@@ -2209,9 +2238,11 @@ export class Orchestrator {
       : '你可以主动抛一个自然的话题（像随口说的，不要像播报），也可以判断没必要说话就安静结束。';
     const currentUserMessage = {
       role: 'user',
-      content: proactive && !manual
-        ? `${userPrompt}\n\n【本次唤醒】${wakeLead}${wakeTail}`
-        : (paced ? `${userPrompt}\n\n【本次唤醒】${pacedLead}` : userPrompt)
+      content: reminder
+        ? userPrompt
+        : (proactive && !manual
+          ? `${userPrompt}\n\n【本次唤醒】${wakeLead}${wakeTail}`
+          : (paced ? `${userPrompt}\n\n【本次唤醒】${pacedLead}` : userPrompt))
     };
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -2336,21 +2367,42 @@ export class Orchestrator {
           deadlineAt,
           cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
           purpose: 'chat',
-          model: stickToFallback ? '' : activeModel,
-          useFallback: stickToFallback,
+          model: useReminderOverride ? '' : (stickToFallback ? '' : activeModel),
+          overrides: useReminderOverride ? reminderOverride : null,
+          useFallback: useReminderOverride ? false : stickToFallback,
           // 第二人设值班时不许兜底：宁可这一轮交还默认人设重答，
           // 也不要"Claude 的词配别家的脑子"。
           noFallback: altActive
         });
       } catch (error) {
-        // 站岗中途额度/鉴权挂了：临时交还默认人设（哈基米顶上），本批消息回队列重答。
-        const reason = classifyUnavailable(error);
-        if (altActive && this.#handBackUnavailablePersona({ chatKey, switchCfg, cfg, reason })) {
-          const handoff = new Error(`第二人设不可用，已临时交还默认人设：${error?.message ?? error}`);
-          handoff.code = 'PERSONA_HANDED_BACK';
-          throw handoff;
+        if (useReminderOverride && !signal.aborted) {
+          log.warn(`[reminder] ${chatKey} 专用模型 ${reminderOverride.model} 调用失败，回落到默认聊天模型：${error?.message ?? error}`);
+          useReminderOverride = false;
+          session.reminderModelFallback = true;
+          session.model = activeModel;
+          session.vendor = vendorOfConfig(cfg);
+          const fallbackMessages = stripVendorToolCallExtras(messages);
+          response = await chatCompletionWithRetry({
+            messages: fallbackMessages,
+            tools: roundTools,
+            signal,
+            deadlineAt,
+            cacheKey: `qq-agent:${promptPrefixHash.slice(0, 32)}`,
+            purpose: 'chat',
+            model: stickToFallback ? '' : activeModel,
+            useFallback: stickToFallback,
+            noFallback: altActive
+          });
+        } else {
+          // 站岗中途额度/鉴权挂了：临时交还默认人设（哈基米顶上），本批消息回队列重答。
+          const reason = classifyUnavailable(error);
+          if (altActive && this.#handBackUnavailablePersona({ chatKey, switchCfg, cfg, reason })) {
+            const handoff = new Error(`第二人设不可用，已临时交还默认人设：${error?.message ?? error}`);
+            handoff.code = 'PERSONA_HANDED_BACK';
+            throw handoff;
+          }
+          throw error;
         }
-        throw error;
       }
       signal.throwIfAborted();
       if (response.viaFallback && !altActive) stickToFallback = true;
@@ -2609,7 +2661,7 @@ export class Orchestrator {
     await this.#ensureDirectedReply({
       session, messages, ctx, toolDefs, kind, triggerEntries, proactive, privateProactive,
       manual, signal, runLimits, replyRepairAttempted, roundsExhausted: !finish && !completed,
-      stickToFallback, deadlineAt
+      stickToFallback, reminderOverride: useReminderOverride ? reminderOverride : null, deadlineAt
     });
     // 轮次用尽是"干不完活"的护栏，不是"需要人工核对"的故障：与 token 预算同口径，
     // 当作本轮正常收尾（已经说的话照常发出、消息正常 ack），并在会话里标注原因。
@@ -2645,7 +2697,9 @@ export class Orchestrator {
     const containsInlineImage = hasInlineImage(providerTranscriptDelta);
     const rolloverReason = containsInlineImage
       ? 'multimodal-context'
-      : (stickToFallback ? 'fallback-model' : '');
+      : (stickToFallback
+        ? 'fallback-model'
+        : (session.reminderModelRouted || session.reminderModelFallback ? 'reminder-model-route' : ''));
     return {
       providerTranscriptDelta: rolloverReason ? [] : providerTranscriptDelta,
       forceThreadRollover: rolloverReason
@@ -2858,7 +2912,7 @@ export class Orchestrator {
         }
         continue;
       }
-      this.wake(chatKey, { manual: true, paced: true, wakeNote: note })
+      this.wake(chatKey, { manual: true, paced: true, reminder: true, wakeNote: note })
         .catch((error) => log.error('[reminder] 唤醒出错:', error?.message ?? error));
       for (const it of chosen) this.reminders.markFired(it.id, now);
       const deferred = items.length - chosen.length;

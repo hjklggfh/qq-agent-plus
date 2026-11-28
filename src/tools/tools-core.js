@@ -13,7 +13,7 @@ import { searchChatHistory } from '../memory/chat-history-search.js';
 import { knowledgeSearch, knowledgeSettings } from '../llm/knowledge-search.js';
 import { assertTimeAllowed } from '../core/time-gate.js';
 import { imageType } from '../core/image-type.js';
-import { nextAtFromHHMM } from '../core/reminders.js';
+import { formatReminderAt, parseReminderAt } from '../core/reminders.js';
 import { synthesizeSpeech, ttsConfigured } from '../llm/tts.js';
 import { generateImage, MAX_PROMPT_CHARS } from '../llm/image-gen.js';
 import { resolveApiKey } from '../llm/llm.js';
@@ -680,7 +680,7 @@ export function buildToolDefs() {
           if (!Number.isFinite(m) || m < 5 || m > 240) return err('minutes 需要是 5~240 之间的数字');
           const note = safeSlice(String(args.note ?? ''), 200);
           const at = ctx.scheduleWake(Math.round(m * 60000), note);
-          const when = new Date(at).toLocaleTimeString('zh-CN', { hour12: false });
+          const when = new Date(at).toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
           return ok({ scheduled: true, minutes: Math.round(m), at: when, note, hint: '到点会作为主动机会唤醒你；不需要再回复这条结果。' });
         } catch (error) {
           return err(error?.message ?? error);
@@ -910,13 +910,13 @@ export function buildToolDefs() {
     },
     {
       name: 'remind',
-      description: '给当前会话设一个定时提醒（到点你会被唤醒，用你的口吻把这件事说出来）；也可查询/取消。minutes 或 HH:MM 二选一，HH:MM 按北京时间、已过则算明天。这是给别人设的提醒（重启后依然有效），与给自己排开口时机的 schedule_wake 不同。',
+      description: '给当前会话设一个定时提醒（到点你会被唤醒，用你的口吻把这件事说出来）；也可查询/取消。at 与 minutes 只能二选一（禁止同时传）：涉及具体日期或钟点时优先传 at（支持 "YYYY-MM-DD HH:MM"、"MM-DD HH:MM" 或 24 小时内的 "HH:MM"，均按北京时间），相对时长（如"30分钟后"）才传 minutes。这是给别人设的持久化承诺（重启后依然有效），与给自己排开口时机的 schedule_wake 不同。',
       parameters: {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['add', 'list', 'cancel'], description: 'add=新增；list=查看本会话待触发；cancel=取消（不传 id 取消最近一条）' },
-          minutes: { type: 'number', description: 'add 用：多少分钟后（1~43200）' },
-          at: { type: 'string', description: 'add 用：绝对时间 HH:MM（北京时间，已过则算明天）' },
+          minutes: { type: 'number', description: 'add 用（与 at 二选一）：相对时长，多少分钟后（1~43200）。不要与 at 同时传入' },
+          at: { type: 'string', description: 'add 用（与 minutes 二选一）：北京时间绝对时间；跨天请直接写 "YYYY-MM-DD HH:MM"（如 "2026-12-03 19:00"）或 "MM-DD HH:MM"；今天/明天 24 小时内也可写 "HH:MM"（如 "09:30"）。不要与 minutes 同时传入' },
           text: { type: 'string', description: 'add 用：提醒内容（必填，≤200 字）' },
           id: { type: 'string', description: 'cancel 用：提醒 id（list 里可见）' }
         },
@@ -928,9 +928,8 @@ export function buildToolDefs() {
         // 控制台开关（设置 → 定时提醒）：关掉后不再接受新的提醒，已有数据保留
         if (getConfig().reminders?.enabled === false) return err('定时提醒未启用（管理员可在控制台打开）');
         const action = String(args.action || '');
-        // 提醒的绝对时间按项目统一口径（Asia/Shanghai）格式化：服务器时区不同时，
-        // "明天 09:30" 会被格式化成另一个钟点误导模型（2026-09-29 审查 P2）
-        const fmt = (ts) => new Date(ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        // 统一按北京时间输出含完整年/月/日/星期的格式，方便模型直接核对是否与用户要求的日期一致
+        const fmt = (ts) => formatReminderAt(ts);
         if (action === 'list') {
           const items = store.list(ctx.chatKey);
           if (!items.length) return ok({ pending: 0, hint: '本会话没有待触发的提醒' });
@@ -941,10 +940,22 @@ export function buildToolDefs() {
           if (!hit) return err('没找到对应的待触发提醒（可用 list 查看 id）');
           return ok({ canceled: true, text: hit.text, at: fmt(hit.at) });
         }
+        if (action !== 'add') {
+          return err('action 必须是 add / list / cancel');
+        }
+        const rawAt = args.at !== undefined && args.at !== null ? String(args.at).trim() : '';
+        const hasAt = rawAt !== '';
+        const hasMinutes = args.minutes !== undefined && args.minutes !== null && String(args.minutes).trim() !== '';
+        if (hasAt && hasMinutes) {
+          return err('at 和 minutes 只能二选一，不能同时传入：指定具体日期/时刻请只传 at（如 "2026-12-03 19:00"），相对时长请只传 minutes');
+        }
+        if (!hasAt && !hasMinutes) {
+          return err('请提供 at（如 "2026-12-03 19:00" 或 "09:30"）或 minutes（1~43200），二选一');
+        }
         let at = null;
-        if (args.at !== undefined && String(args.at).trim() !== '') {
-          at = nextAtFromHHMM(String(args.at));
-          if (at === null) return err('at 需要是 HH:MM（24 小时制，如 09:30）');
+        if (hasAt) {
+          at = parseReminderAt(rawAt);
+          if (at === null) return err('at 格式不正确：请使用北京时间 "YYYY-MM-DD HH:MM"（如 "2026-12-03 19:00"）、"MM-DD HH:MM" 或 "HH:MM"');
         } else {
           const m = Number(args.minutes);
           if (!Number.isFinite(m) || m < 1 || m > 30 * 24 * 60) return err('minutes 需要是 1~43200 之间的数字（最多 30 天）');
@@ -952,7 +963,12 @@ export function buildToolDefs() {
         }
         try {
           const { id } = store.add({ chatKey: ctx.chatKey, at, text: String(args.text ?? ''), createdBy: ctx.selfNickname || '' });
-          return ok({ created: true, id, at: fmt(at), note: '到点你会被唤醒并知道该提醒什么；不需要再回复这条结果。' });
+          return ok({
+            created: true,
+            id,
+            at: fmt(at),
+            note: '已落盘，请核对上方 at 的日期与星期是否与对方要求完全一致（若不一致请立刻 cancel 后重建）；确认无误后再答复对方。'
+          });
         } catch (error) {
           return err(String(error?.message ?? error));
         }

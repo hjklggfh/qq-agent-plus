@@ -18,7 +18,7 @@ import { state } from '../core/state.js';
 import { loadExperimentalFeatureStatuses } from './features.js';
 import { openMemoryModelPicker } from './memory.js';
 import {
-  launchExperimentalFeature, loadDailyMomentsStatus, loadGroupGameView, loadQzoneInteractionStatus,
+  bindRemindersModelControls, launchExperimentalFeature, loadDailyMomentsStatus, loadGroupGameView, loadQzoneInteractionStatus,
   loadRemindersView, momentStatusLabel, renderGroupChecklist, renderMomentWindowRow
 } from './moments.js';
 import {
@@ -128,6 +128,7 @@ function bindCrossSectionControls() {
   }
   if ($('#settings-reminders')) {
     loadRemindersView();
+    bindRemindersModelControls();
     const refreshBtn = $('#reminders-refresh-btn');
     if (refreshBtn && !refreshBtn.dataset.bound) {
       refreshBtn.dataset.bound = '1';
